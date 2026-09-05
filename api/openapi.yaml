@@ -1,0 +1,172 @@
+openapi: 3.1.0
+info:
+  title: OfferLogs API
+  version: 0.1.0
+  description: |
+    求职追踪系统后端契约（计划 §9）。所有业务端点位于 /api/v1 且要求会话；
+    写请求需携带 X-CSRF-Token（登录返回 csrf_token）。错误统一为
+    {code,message,request_id}。
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    cookieSession:
+      type: apiKey
+      in: cookie
+      name: offerlogs_session
+  schemas:
+    Application:
+      type: object
+      properties:
+        id: { type: integer }
+        company_name: { type: string }
+        position: { type: string }
+        status:
+          type: string
+          enum: [saved, preparing, applied, screening, assessment,
+                 interviewing, offer, accepted, rejected, withdrawn, closed]
+        channel: { type: string }
+        priority: { type: string, enum: [high, medium, low] }
+        tags: { type: array, items: { type: string } }
+        version: { type: integer, description: 乐观锁版本 }
+        archived: { type: boolean }
+        deleted: { type: boolean }
+    FilterCondition:
+      type: object
+      properties:
+        field: { type: string, description: 内置字段或自定义属性 key }
+        op:
+          type: string
+          enum: [eq, neq, contains, starts_with, gt, lt, gte, lte, in, is_empty, is_not_empty]
+        value: {}
+    FilterGroup:
+      type: object
+      properties:
+        op: { type: string, enum: [and, or] }
+        conditions: { type: array, items: { oneOf: [{ $ref: '#/components/schemas/FilterCondition' }, { $ref: '#/components/schemas/FilterGroup' }] } }
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        request_id: { type: string }
+paths:
+  /auth/login:
+    post:
+      summary: 登录，返回 csrf_token 并设置会话 cookie
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: 成功
+        '401': { description: 凭据错误 }
+  /auth/logout:
+    post: { summary: 注销 }
+  /auth/me:
+    get: { summary: 当前用户 }
+  /applications:
+    get:
+      summary: 分页列表（status/search/trash/archived 查询参数）
+    post:
+      summary: 创建（仅 company_name/position 必填；同公司同名仅提示不禁止）
+  /applications/{id}:
+    get: { summary: 详情 }
+    patch:
+      summary: 普通字段更新（携带 version，冲突返回 409）
+    delete: { summary: 软删除 }
+  /applications/{id}/transitions:
+    post:
+      summary: 状态转换（version + idempotency_key；规则见领域层）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_status, version]
+              properties:
+                to_status: { type: string }
+                occurred_at: { type: string, format: date-time }
+                reason: { type: string }
+                note: { type: string }
+                submitted_at: { type: string, format: date-time }
+                first_response_at: { type: string, format: date-time }
+                idempotency_key: { type: string }
+  /applications/{id}/events:
+    get: { summary: 状态时间线 }
+  /applications/{id}/corrections:
+    post:
+      summary: 历史纠正（保留 corrects_event_id 审计）
+  /applications/{id}/restore: { post: { summary: 从回收站恢复 } }
+  /applications/{id}/archive: { post: { summary: 归档 } }
+  /applications/{id}/unarchive: { post: { summary: 取消归档 } }
+  /applications/bulk:
+    post:
+      summary: 批量（标签/优先级/归档，≤100 条）
+  /applications/{id}/interviews: { get: {}, post: { summary: 安排面试轮次 } }
+  /applications/{id}/actions: { get: {}, post: {} }
+  /applications/{id}/notes: { get: {}, post: {} }
+  /actions:
+    get: { summary: 今日待办用的跨申请开放行动项（open=1） }
+  /files:
+    post:
+      summary: 流式上传（multipart file + category + 可选 application_id）
+      description: 单文件 ≤20MiB；允许 PDF/DOCX/TXT/PNG/JPEG
+    get: { summary: 文件列表（可 filter application_id） }
+  /files/{id}/download:
+    get: { summary: 鉴权后下载（校验 owner） }
+  /files/{id}:
+    delete: { summary: 删除（被引用则 409） }
+  /views:
+    get: {}
+    post:
+      summary: 保存视图（name/layout/filter_ast/sort/columns）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                layout: { type: string, enum: [table, board, list] }
+                filter_ast: { type: array, items: { $ref: '#/components/schemas/FilterGroup' } }
+                sort: { type: array, items: { type: object } }
+  /views/query:
+    post:
+      summary: 服务端筛选/排序/分页查询（校验字段与权限，参数化 SQL）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filters: { type: array, items: { $ref: '#/components/schemas/FilterGroup' } }
+                sort: { type: array, items: { type: object } }
+                page: { type: integer }
+                page_size: { type: integer }
+  /properties:
+    get: {}
+    post: { summary: 创建自定义属性（text/number/select/multi_select/date/checkbox/url） }
+  /analytics/summary:
+    post: { summary: 指标（§5.2 口径） }
+  /analytics/sankey:
+    post:
+      summary: 桑基 A（当前快照）或 B（历史路径 mode=history）
+  /analytics/drilldowns/{token}:
+    get: { summary: 快照下钻成员（过期返回 404） }
+  /imports/preview:
+    post: { summary: CSV 预检（映射/类型错误/重复候选） }
+  /imports/{batch_id}/commit:
+    post: { summary: 幂等提交 }
+  /exports/applications.csv:
+    get: { summary: CSV 导出（公式注入转义） }
+  /health/live:
+    get: {}
+  /health/ready:
+    get: { summary: 检查 DB 与 schema }

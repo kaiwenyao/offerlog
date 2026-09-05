@@ -1,0 +1,136 @@
+# Self-contained OfferLogs deployment (plan §11).
+# Services: caddy (TLS+static), api, worker, postgres, and an optional
+# self-contained SeaweedFS (profile "seaweedfs"). To connect to an existing
+# SeaweedFS/S3 instead, run: docker compose --profile external-s3 up -d
+# with OBJECTSTORE_PROVIDER=s3 and S3_* variables set.
+
+name: offerlogs
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-offerlogs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-offerlogs}
+      POSTGRES_DB: ${POSTGRES_DB:-offerlogs}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-offerlogs} -d ${POSTGRES_DB:-offerlogs}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    # NOT exposed to the public internet (plan §11).
+    expose: ["5432"]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-offerlogs}:${POSTGRES_PASSWORD:-offerlogs}@postgres:5432/${POSTGRES_DB:-offerlogs}?sslmode=disable
+      OBJECTSTORE_PROVIDER: ${OBJECTSTORE_PROVIDER:-local}
+      OBJECTSTORE_LOCAL_DIR: /data/objects
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://s3gateway:8333}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-offerlogs}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Dublin}
+      CSRF_SECRET: ${CSRF_SECRET:-change-me-in-production}
+      PUBLIC_BASE: ${PUBLIC_BASE:-http://localhost}
+      HTTP_ADDR: :8080
+      DATA_DIR: /data
+    volumes:
+      - objects:/data/objects
+    expose: ["8080"]
+    # localhost-only port for acceptance/debugging (prod ingress stays HTTPS-only)
+    ports:
+      - "127.0.0.1:8081:8080"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    command: ["/app/worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-offerlogs}:${POSTGRES_PASSWORD:-offerlogs}@postgres:5432/${POSTGRES_DB:-offerlogs}?sslmode=disable
+      OBJECTSTORE_PROVIDER: ${OBJECTSTORE_PROVIDER:-local}
+      OBJECTSTORE_LOCAL_DIR: /data/objects
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://s3gateway:8333}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-offerlogs}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      CSRF_SECRET: ${CSRF_SECRET:-change-me-in-production}
+      DATA_DIR: /data
+    volumes:
+      - objects:/data/objects
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8-alpine
+    depends_on: [api]
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  # Self-contained SeaweedFS (S3 gateway in front of filer).
+  # Enable with: docker compose --profile seaweedfs up -d
+  seaweedfs-master:
+    profiles: ["seaweedfs"]
+    image: chrislusf/seaweedfs:3.76
+    command: master -ip=seaweedfs-master -mdir=/data
+    volumes:
+      - swf_master:/data
+    restart: unless-stopped
+
+  seaweedfs-volume:
+    profiles: ["seaweedfs"]
+    image: chrislusf/seaweedfs:3.76
+    command: volume -mserver=seaweedfs-master:9333 -ip=seaweedfs-volume -dir=/data -max=100
+    depends_on: [seaweedfs-master]
+    volumes:
+      - swf_volume:/data
+    restart: unless-stopped
+
+  seaweedfs-filer:
+    profiles: ["seaweedfs"]
+    image: chrislusf/seaweedfs:3.76
+    command: filer -master=seaweedfs-master:9333 -ip=seaweedfs-filer -defaultStoreDir=/data
+    depends_on: [seaweedfs-master]
+    volumes:
+      - swf_filer:/data
+    restart: unless-stopped
+
+  s3gateway:
+    profiles: ["seaweedfs"]
+    image: chrislusf/seaweedfs:3.76
+    command: s3 -filer=seaweedfs-filer:8888 -ip.bind=0.0.0.0 -port=8333
+    depends_on: [seaweedfs-filer]
+    expose: ["8333"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  objects:
+  caddy_data:
+  caddy_config:
+  swf_master:
+  swf_volume:
+  swf_filer:

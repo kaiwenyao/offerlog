@@ -1,0 +1,72 @@
+# OfferLogs CI (plan §12.5): format, vet, tests, typecheck, build per PR.
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: offerlogs
+          POSTGRES_PASSWORD: offerlogs
+          POSTGRES_DB: offerlogs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U offerlogs"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: backend/go.sum
+      - name: fmt + vet
+        working-directory: backend
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+      - name: unit + integration tests
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgres://offerlogs:offerlogs@localhost:5432/offerlogs?sslmode=disable
+        run: go test ./...
+      - name: build
+        working-directory: backend
+        run: go build ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: install
+        working-directory: frontend
+        run: npm ci
+      - name: typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit
+      - name: component tests
+        working-directory: frontend
+        run: npx vitest run
+      - name: build
+        working-directory: frontend
+        run: npm run build
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: OpenAPI lint
+        run: npx --yes @redocly/cli lint api/openapi.yaml --config api/redocly.yaml
+      - name: migrations in sync
+        run: cmp backend/db/migrations/00001_init.sql backend/internal/platform/migrate/migrations/00001_init.sql

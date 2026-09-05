@@ -1,0 +1,9 @@
+backend/bin/
+bin/
+frontend/node_modules/
+frontend/dist/
+deploy/.env
+*.log
+.DS_Store
+data/
+backend/data/

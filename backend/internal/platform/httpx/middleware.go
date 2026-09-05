@@ -1,0 +1,143 @@
+package httpx
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"offerlogs/backend/internal/identity/domain"
+	authservice "offerlogs/backend/internal/identity/service"
+	"offerlogs/backend/internal/platform/observability"
+)
+
+// RequestID assigns a request id to every request and stores it in context.
+func RequestID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.GetHeader("X-Request-ID")
+		if id == "" {
+			b := make([]byte, 8)
+			_, _ = rand.Read(b)
+			id = hex.EncodeToString(b)
+		}
+		c.Header("X-Request-ID", id)
+		c.Request = c.Request.WithContext(observability.WithRequestID(c.Request.Context(), id))
+		c.Next()
+	}
+}
+
+const cookieName = "offerlogs_session"
+
+// SessionCookieName is exported for the frontend.
+const SessionCookieName = cookieName
+
+// NewSessionCookie returns the cookie storing the opaque session token.
+func NewSessionCookie(token string, expires time.Time, secure bool) *http.Cookie {
+	return &http.Cookie{
+		Name:     cookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  expires,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// Auth resolves the session cookie into a user and stores it in context.
+// Requests without a valid session proceed without a user; RequireUser guards
+// protect individual routes.
+func Auth(auth *authservice.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if tok, err := c.Cookie(cookieName); err == nil && tok != "" {
+			if u, err := auth.ValidateToken(c.Request.Context(), tok); err == nil {
+				du := &domain.User{ID: u.ID, Email: u.Email, DisplayName: u.DisplayName,
+					Timezone: u.Timezone, Locale: u.Locale, IsAdmin: u.IsAdmin}
+				SetUser(c, du)
+			}
+		}
+		c.Next()
+	}
+}
+
+// CSRF requires a valid CSRF token for state-changing methods; the token
+// travels in the X-CSRF-Token header and must match the session cookie.
+func CSRF(auth *authservice.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		m := c.Request.Method
+		if m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions {
+			c.Next()
+			return
+		}
+		// Login/logout bootstrap or tear down the session itself; they are
+		// protected by SameSite cookies + the Origin check below.
+		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth/") {
+			c.Next()
+			return
+		}
+		tok, err := c.Cookie(cookieName)
+		if err != nil {
+			WriteErr(c, Unauthorized("会话缺失"))
+			c.Abort()
+			return
+		}
+		// SameSite=Lax already stops cross-site POSTs; Origin check adds
+		// defense in depth.
+		if origin := c.GetHeader("Origin"); origin != "" && !sameOrigin(origin, c.Request) {
+			WriteErr(c, Forbidden("Origin 校验失败"))
+			c.Abort()
+			return
+		}
+		header := c.GetHeader("X-CSRF-Token")
+		if !auth.ValidateCSRF(c.Request.Context(), tok, header) {
+			WriteErr(c, Forbidden("CSRF 校验失败"))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func sameOrigin(origin string, r *http.Request) bool {
+	host := r.Host
+	return strings.HasPrefix(origin, "http://"+host) || strings.HasPrefix(origin, "https://"+host)
+}
+
+// SecurityHeaders sets baseline headers.
+func SecurityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Referrer-Policy", "same-origin")
+		c.Header("X-Frame-Options", "DENY")
+		if c.Request.TLS != nil {
+			c.Header("Strict-Transport-Security", "max-age=63072000")
+		}
+		c.Next()
+	}
+}
+
+// LoginRateLimiter is a tiny in-memory per-IP limiter for login.
+type LoginRateLimiter struct {
+	hits map[string][]time.Time
+}
+
+func NewLoginRateLimiter() *LoginRateLimiter {
+	return &LoginRateLimiter{hits: map[string][]time.Time{}}
+}
+
+// Allow reports whether ip may attempt a login now (≤10/min).
+func (l *LoginRateLimiter) Allow(ip string) bool {
+	now := time.Now()
+	l.hits[ip] = append(l.hits[ip], now)
+	var recent []time.Time
+	for _, t := range l.hits[ip] {
+		if now.Sub(t) < time.Minute {
+			recent = append(recent, t)
+		}
+	}
+	l.hits[ip] = recent
+	return len(recent) <= 10
+}

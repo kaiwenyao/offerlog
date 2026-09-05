@@ -1,0 +1,11 @@
+# Redocly lint config: keep errors that signal real contract problems but
+# relax doc-completeness noise (this OpenAPI is the working contract, not
+# generated docs).
+extends:
+  - recommended
+rules:
+  operation-summary: off
+  path-parameters-defined: off
+  operation-4xx-response: off
+  no-server-example.com: off
+  security-defined: off

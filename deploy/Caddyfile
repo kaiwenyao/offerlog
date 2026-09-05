@@ -1,0 +1,28 @@
+# OfferLogs reverse proxy: serves the SPA and /api/v1, terminates HTTPS.
+# In production replace example.com with your domain and remove the
+# tls internal line or use a real issuer. PUBLIC_HOST is injected via env.
+
+{
+	http_port 80
+	https_port 443
+}
+
+http://{$PUBLIC_HOST}:80 {
+	redir / https://{$PUBLIC_HOST}{uri} permanent
+}
+
+https://{$PUBLIC_HOST} {
+	encode gzip zstd
+	tls internal # self-signed for local testing; use a real issuer in prod
+
+	# Everything (SPA + /api/v1 + /health) proxies to the api container, which
+	# serves the built frontend with SPA fallback and the API.
+	reverse_proxy api:8080 {
+		flush_interval -1
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+}
