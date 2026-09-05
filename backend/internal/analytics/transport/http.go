@@ -102,6 +102,15 @@ func (h *Handler) sankey(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
+	// Persist the cohort membership so node/edge drilldowns can never disagree
+	// with the chart (token bound to user+mode+filter+as_of; expires ~10min).
+	members, err := h.repo.ScopeMemberIDs(c.Request.Context(), sr)
+	if err == nil {
+		tok, serr := h.SaveSnapshot(c, req.Mode, members, map[string]any{"scope": req})
+		if serr == nil {
+			sk.DrilldownToken = tok
+		}
+	}
 	c.JSON(http.StatusOK, sk)
 }
 

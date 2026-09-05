@@ -244,3 +244,24 @@ var StatusName = map[string]string{
 }
 
 var _ = time.Now
+
+// ScopeMemberIDs returns the application ids in scope for a snapshot request,
+// in a stable order. Used to back the drilldown token so chart counts and the
+// member list stay consistent.
+func (r *Repo) ScopeMemberIDs(ctx context.Context, req *SnapshotRequest) ([]int64, error) {
+	where, args := r.whereClause(req)
+	rows, err := r.db.Pool().Query(ctx, `SELECT id FROM applications WHERE `+where+` ORDER BY id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

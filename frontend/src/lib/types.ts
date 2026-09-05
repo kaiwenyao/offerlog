@@ -147,6 +147,7 @@ export interface SankeyData {
   definition_version: number
   mode: string
   notes: string
+  drilldown_token?: string
 }
 
 export interface Me {

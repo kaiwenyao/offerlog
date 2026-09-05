@@ -142,6 +142,7 @@ function SankeyPanel({
         </div>
       )}
       <SankeyTable data={display} />
+      {data?.drilldown_token && <Drilldown token={data.drilldown_token} />}
     </div>
   )
 }
@@ -245,3 +246,26 @@ function Channels() {
 export const _internal = { statusMeta }
 
 export default AnalyticsPage
+
+// Drilldown lists the snapshot members bound to the chart token so figures can
+// be audited against the real record ids (§5.4 reproducibility).
+function Drilldown({ token }: { token: string }) {
+  const q = useQuery({
+    queryKey: ['analytics', 'drilldown', token],
+    queryFn: () => api.get<{ member_ids: number[]; expires_at: string }>(`/api/v1/analytics/drilldowns/${encodeURIComponent(token)}`),
+    staleTime: 1000 * 60 * 8,
+  })
+  if (q.isLoading) return <div className="small muted mt8"><Spinner /></div>
+  if (q.isError) return <p className="small err mt8">下钻令牌已过期，请刷新图表后重试</p>
+  const ids = q.data?.member_ids ?? []
+  return (
+    <details className="mt8">
+      <summary className="small muted" style={{ cursor: 'pointer' }}>
+        下钻成员（快照内 {ids.length} 条记录 ID，与图表同时刻）
+      </summary>
+      <p className="small muted num" style={{ wordBreak: 'break-all' }}>
+        {ids.join(', ')}
+      </p>
+    </details>
+  )
+}

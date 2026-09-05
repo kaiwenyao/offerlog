@@ -32,6 +32,7 @@ type Sankey struct {
 	DefinitionVersion int    `json:"definition_version"`
 	Mode              string `json:"mode"`
 	Notes             string `json:"notes"`
+	DrilldownToken    string `json:"drilldown_token,omitempty"`
 }
 
 const DefinitionVersion = 1
