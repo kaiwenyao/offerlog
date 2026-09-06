@@ -2,24 +2,31 @@ import React, { useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-// Self-hosted fonts: serif display for headings (dossier voice) and mono for
-// dates/counts — bundled so the Docker deployment works fully offline.
-import '@fontsource/noto-serif-sc/600.css'
-import '@fontsource/noto-serif-sc/700.css'
-import '@fontsource/ibm-plex-mono/400.css'
-import '@fontsource/ibm-plex-mono/500.css'
-import '@fontsource/ibm-plex-mono/600.css'
-import './styles/global.css'
+// Self-hosted design-system fonts: Schibsted Grotesk for display, Inter for
+// body/UI, Noto Sans SC for Chinese — bundled so Docker deployments work fully
+// offline (the design's Google Fonts CDN links are intentionally not used).
+import '@fontsource/schibsted-grotesk/400.css'
+import '@fontsource/schibsted-grotesk/500.css'
+import '@fontsource/schibsted-grotesk/600.css'
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/noto-sans-sc/400.css'
+import '@fontsource/noto-sans-sc/500.css'
+import '@fontsource/noto-sans-sc/700.css'
+import './styles/app.css'
 import { fetchMe, setCsrf } from './lib/api'
 import type { Me } from './lib/types'
 import { AppLayout } from './app/layout'
+import { PageSpinner } from './components/ui'
 import { TodayPage } from './features/today/TodayPage'
 import { DatabasePage } from './features/database/DatabasePage'
 import { DetailPage } from './features/detail/DetailPage'
-const AnalyticsPage = React.lazy(() => import('./features/analytics/AnalyticsPage'))
 import { FilesPage } from './features/files/FilesPage'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { LoginPage } from './features/auth/LoginPage'
+
+const AnalyticsPage = React.lazy(() => import('./features/analytics/AnalyticsPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -27,9 +34,12 @@ const queryClient = new QueryClient({
   },
 })
 
-function SessionGate({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<'loading' | 'anon' | 'authed'>('loading')
+type SessionState = 'loading' | 'anon' | 'authed'
+
+export default function App() {
+  const [state, setState] = useState<SessionState>('loading')
   const [me, setMe] = useState<Me | null>(null)
+
   useEffect(() => {
     fetchMe()
       .then((m) => {
@@ -43,44 +53,56 @@ function SessionGate({ children }: { children: React.ReactNode }) {
       })
       .catch(() => setState('anon'))
   }, [])
+
   useEffect(() => {
-    const h = () => setState('anon')
-    window.addEventListener('offerlog:unauthorized', h)
-    return () => window.removeEventListener('offerlog:unauthorized', h)
+    const onUnauthorized = () => setState('anon')
+    window.addEventListener('offerlog:unauthorized', onUnauthorized)
+    return () => window.removeEventListener('offerlog:unauthorized', onUnauthorized)
   }, [])
+
   if (state === 'loading') {
     return (
-      <div style={{ height: '100vh', display: 'grid', placeItems: 'center' }}>
-        <span className="spinner" />
+      <div className="app-shell">
+        <div style={{ flex: 1, display: 'grid', placeItems: 'center' }}>
+          <PageSpinner />
+        </div>
       </div>
     )
   }
-  if (state === 'anon') return <LoginPage onLoggedIn={(m) => { setMe(m); setState('authed') }} />
-  return children
-}
 
-export default function App() {
+  if (state === 'anon') {
+    return (
+      <LoginPage
+        onLoggedIn={(m) => {
+          setMe(m)
+          setState('authed')
+        }}
+      />
+    )
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <SessionGate>
-          <Routes>
-            <Route element={<AppLayout />}>
-              <Route path="/" element={<TodayPage />} />
-              <Route path="/database" element={<DatabasePage />} />
-              <Route path="/database/:id" element={<DatabasePage />} />
-              <Route path="/apps/:id" element={<DetailPage />} />
-              <Route path="/analytics" element={
-                <React.Suspense fallback={<div style={{ padding: 40 }}><span className="spinner" /></div>}>
+        <Routes>
+          <Route element={<AppLayout me={me} />}>
+            <Route path="/" element={<TodayPage />} />
+            <Route path="/database" element={<DatabasePage />} />
+            <Route path="/database/:id" element={<DatabasePage />} />
+            <Route path="/apps/:id" element={<DetailPage />} />
+            <Route
+              path="/analytics"
+              element={
+                <React.Suspense fallback={<PageSpinner />}>
                   <AnalyticsPage />
                 </React.Suspense>
-              } />
-              <Route path="/files" element={<FilesPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </SessionGate>
+              }
+            />
+            <Route path="/files" element={<FilesPage />} />
+            <Route path="/settings" element={<SettingsPage me={me} />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </BrowserRouter>
     </QueryClientProvider>
   )

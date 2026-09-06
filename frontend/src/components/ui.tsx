@@ -1,10 +1,28 @@
-import { useEffect, useRef } from 'react'
+import type { ReactNode } from 'react'
 import { statusMeta } from '../lib/status'
+import { Badge, Card, Dialog } from '../ds'
 
+/**
+ * Status pill. Keeps the `.status-chip` hook the Playwright suites assert on
+ * while rendering the design's dot + label badge.
+ */
 export function StatusChip({ status }: { status: string }) {
   const m = statusMeta(status)
-  // dot + label (§4.1): the label carries the meaning; the colored dot is texture
-  return <span className={`status-chip ${m.color}`}>{m.label}</span>
+  return (
+    <Badge className="status-chip" tone={m.tone} dot>
+      {m.label}
+    </Badge>
+  )
+}
+
+/** Colored dot used by group headers, board columns and the activity feed. */
+export function Dot({ color, size = 7 }: { color: string; size?: number }) {
+  return (
+    <span
+      aria-hidden
+      style={{ width: size, height: size, borderRadius: '50%', background: color, flex: '0 0 auto' }}
+    />
+  )
 }
 
 export function Modal({
@@ -12,46 +30,52 @@ export function Modal({
   onClose,
   children,
   footer,
+  width,
 }: {
   title: string
   onClose: () => void
-  children: React.ReactNode
-  footer?: React.ReactNode
+  children: ReactNode
+  footer?: ReactNode
+  width?: number
 }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', h)
-    ref.current?.querySelector<HTMLElement>('input,button,select,textarea')?.focus()
-    return () => document.removeEventListener('keydown', h)
-  }, [onClose])
   return (
-    <div
-      className="modal-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-    >
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title} ref={ref}>
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <h2 className="panel-title" style={{ margin: 0 }}>{title}</h2>
-          <button className="btn btn-ghost" style={{ minWidth: 36, padding: 0 }} onClick={onClose} aria-label="关闭">
-            ✕
-          </button>
-        </div>
-        <div className="mt16">{children}</div>
-        {footer && <div className="mt16 row" style={{ justifyContent: 'flex-end' }}>{footer}</div>}
-      </div>
+    <Dialog title={title} onClose={onClose} footer={footer} width={width}>
+      {children}
+    </Dialog>
+  )
+}
+
+export function Spinner({ size = 18 }: { size?: number }) {
+  return <span className="spinner" role="status" aria-label="加载中" style={{ width: size, height: size }} />
+}
+
+export function PageSpinner() {
+  return (
+    <div style={{ display: 'grid', placeItems: 'center', padding: 'var(--space-16) 0' }}>
+      <Spinner size={22} />
     </div>
   )
 }
 
-export function Spinner() {
-  return <span className="spinner" role="status" aria-label="加载中" />
+export function EmptyHint({ children }: { children: ReactNode }) {
+  return (
+    <Card style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', alignItems: 'center' }}>
+        {children}
+      </div>
+    </Card>
+  )
 }
 
-export function EmptyHint({ children }: { children: React.ReactNode }) {
-  return <div className="card empty-hint">{children}</div>
+export function ErrorText({ children }: { children: ReactNode }) {
+  return (
+    <p role="alert" className="err">
+      {children}
+    </p>
+  )
+}
+
+/** Monospace figure — dates, counts, ids. */
+export function Num({ children, color }: { children: ReactNode; color?: string }) {
+  return <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-13)', color }}>{children}</span>
 }

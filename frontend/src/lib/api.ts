@@ -50,7 +50,28 @@ async function request<T>(method: string, path: string, body?: unknown, isForm =
     }
     throw new ApiError(code, message, res.status)
   }
-  return text ? (JSON.parse(text) as T) : ({} as T)
+  return text ? (normalizeLists(JSON.parse(text)) as T) : ({} as T)
+}
+
+/**
+ * Go marshals a nil slice as JSON `null`, so a list endpoint with no rows
+ * answers `{"items": null}` rather than `{"items": []}`. Coerce the collection
+ * fields of the response envelope to arrays once, here at the boundary, so no
+ * caller has to defend against it.
+ */
+const LIST_FIELDS = ['items', 'nodes', 'links', 'errors', 'duplicate_candidates', 'member_ids']
+
+function normalizeLists(body: unknown): unknown {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return body
+  const src = body as Record<string, unknown>
+  let patch: Record<string, unknown> | null = null
+  for (const field of LIST_FIELDS) {
+    if (field in src && src[field] === null) {
+      patch ??= {}
+      patch[field] = []
+    }
+  }
+  return patch ? { ...src, ...patch } : src
 }
 
 export const api = {

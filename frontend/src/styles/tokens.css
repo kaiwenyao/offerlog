@@ -1,0 +1,203 @@
+/* Glass design system tokens — ported from the Claude Design project
+   "glass-design-system-d886cd80". Values are verbatim; only the font stacks
+   name the self-hosted @fontsource families instead of the Google Fonts CDN so
+   the Docker deployment keeps working fully offline. */
+
+:root {
+  /* ---- fonts ---- */
+  --font-display: "Schibsted Grotesk", "Noto Sans SC", "Inter", system-ui, sans-serif;
+  --font-body: "Inter", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  --font-ui: "Inter", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ---- colors: base ---- */
+  --bg: #fafaff;
+  --bg-gradient:
+    radial-gradient(70% 60% at 15% -5%, #ffd7ec 0%, transparent 65%),
+    radial-gradient(65% 55% at 85% 25%, #c9dcff 0%, transparent 65%),
+    radial-gradient(75% 60% at 45% 105%, #d8c8ff 0%, transparent 65%);
+  --surface: rgba(255, 255, 255, .6);
+  --surface-strong: rgba(255, 255, 255, .85);
+  --surface-thin: rgba(255, 255, 255, .4);
+  --text: #0f0f14;
+  --text-muted: #5a5a68;
+  --border: rgba(255, 255, 255, .5);
+  --border-alt: rgba(15, 15, 20, .08);
+  --accent: #8b5cf6;
+  --accent-hover: #7c3aed;
+  --accent-soft: #c4b5fd;
+
+  /* gradient stops, exposed for composition */
+  --wash-pink: #ffe0f0;
+  --wash-blue: #d4e4ff;
+  --wash-violet: #e0d4ff;
+
+  /* semantic tints — soft, never neon */
+  --positive: #3aa675;
+  --positive-soft: #c9ecdb;
+  --warning: #d18a2b;
+  --warning-soft: #f7e3c4;
+  --danger: #d94a5a;
+  --danger-soft: #f7cfd4;
+  --info: #4a7fd9;
+  --info-soft: #cfdcf7;
+  --neutral: #8b8b99;
+
+  /* semantic aliases */
+  --text-body: var(--text);
+  --text-secondary: var(--text-muted);
+  --text-on-accent: #fff;
+  --text-link: var(--accent);
+  --surface-card: var(--surface);
+  --surface-nav: var(--surface-strong);
+  --surface-input: var(--surface);
+  --surface-page: var(--bg);
+  --border-glass: var(--border);
+  --border-hairline: var(--border-alt);
+  --focus-ring: var(--accent);
+
+  /* ---- typography ---- */
+  --text-13: 13px;
+  --text-15: 15px;
+  --text-17: 17px;
+  --text-20: 20px;
+  --text-26: 26px;
+  --text-36: 36px;
+  --text-52: 52px;
+  --text-72: 72px;
+  --lh-tight: 1.08;
+  --lh-snug: 1.25;
+  --lh-normal: 1.5;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --tracking-display: -.02em;
+  --tracking-normal: 0;
+  --type-display: var(--weight-medium) var(--text-72)/var(--lh-tight) var(--font-display);
+  --type-h1: var(--weight-medium) var(--text-52)/var(--lh-tight) var(--font-display);
+  --type-h2: var(--weight-medium) var(--text-36)/var(--lh-snug) var(--font-display);
+  --type-h3: var(--weight-medium) var(--text-26)/var(--lh-snug) var(--font-display);
+  --type-h4: var(--weight-medium) var(--text-20)/var(--lh-snug) var(--font-display);
+  --type-body: var(--weight-regular) var(--text-17)/var(--lh-normal) var(--font-body);
+  --type-body-sm: var(--weight-regular) var(--text-15)/var(--lh-normal) var(--font-body);
+  --type-ui: var(--weight-medium) var(--text-15)/1.2 var(--font-ui);
+  --type-caption: var(--weight-medium) var(--text-13)/1.3 var(--font-ui);
+
+  /* ---- spacing ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-28: 112px;
+  --gutter: var(--space-8);
+  --container-max: 1200px;
+  --control-h-sm: 32px;
+  --control-h-md: 40px;
+  --control-h-lg: 48px;
+
+  /* ---- radii ---- */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-pill: 999px;
+  --radius-control: var(--radius-md);
+  --radius-card: var(--radius-lg);
+  --radius-panel: var(--radius-2xl);
+
+  /* ---- elevation ---- */
+  --blur-sm: blur(8px) saturate(140%);
+  --blur-md: blur(12px) saturate(150%);
+  --blur-lg: blur(20px) saturate(160%);
+  --blur-xl: blur(30px) saturate(170%);
+  --shadow-nav: 0 4px 16px rgba(15, 15, 20, .08);
+  --shadow-card: 0 8px 32px rgba(15, 15, 20, .08);
+  --shadow-pop: 0 16px 48px rgba(15, 15, 20, .12);
+  --highlight-inner: inset 0 1px 0 rgba(255, 255, 255, .6);
+  --glass-card: var(--highlight-inner), var(--shadow-card);
+
+  /* ---- motion ---- */
+  --ease-glass: cubic-bezier(.2, .8, .2, 1);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 360ms;
+  --transition-control:
+    background var(--dur-fast) var(--ease-glass),
+    box-shadow var(--dur-fast) var(--ease-glass),
+    transform var(--dur-fast) var(--ease-glass);
+}
+
+/* ---- base ---- */
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text-body);
+  font: var(--type-body);
+  -webkit-font-smoothing: antialiased;
+  text-wrap: pretty;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: var(--bg-gradient);
+  background-color: var(--bg);
+  z-index: -1;
+  pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  body::before {
+    background:
+      radial-gradient(at 20% 0%, var(--wash-pink) 0%, transparent 55%),
+      radial-gradient(at 80% 60%, var(--wash-blue) 0%, transparent 55%);
+    background-color: var(--bg);
+  }
+}
+
+a {
+  color: var(--text-link);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
