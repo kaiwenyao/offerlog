@@ -13,7 +13,8 @@ make up
 
 构建并启动 postgres + api + worker，自动创建首个账号。完成后打开
 <http://localhost:8080>，默认登录 `me@example.com / testpass12345`
-（可用 `LOCAL_ADMIN_EMAIL` / `LOCAL_ADMIN_PASSWORD` 覆盖）。
+（可用 `LOCAL_ADMIN_EMAIL` / `LOCAL_ADMIN_PASSWORD` 覆盖，建议直接 `cp .env.example .env` 后修改；
+不建 `.env` 也能直接 `make up`，全走默认值）。
 
 ```bash
 make down
