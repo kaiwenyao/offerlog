@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { login } from '../../lib/api'
 import type { Me } from '../../lib/types'
+import { SealMark } from '../../components/Icon'
 
 export function LoginPage({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
   const [email, setEmail] = useState('')
@@ -23,10 +24,13 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
   return (
     <div className="login-wrap">
       <form className="card login-card" onSubmit={submit}>
-        <h1 className="display" style={{ fontSize: 26, margin: '0 0 4px' }}>
-          ◈ OfferLogs
-        </h1>
-        <p style={{ color: '#5c6b7f', marginTop: 0 }}>个人求职追踪工作台</p>
+        <div className="login-brand">
+          <SealMark size={40} />
+          <div>
+            <h1 className="display login-title">OfferLogs</h1>
+            <p className="login-sub small">个人求职追踪工作台</p>
+          </div>
+        </div>
         <label className="lbl" htmlFor="email">邮箱</label>
         <input
           id="email"
@@ -48,7 +52,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
           required
         />
         {err && <p role="alert" className="err">{err}</p>}
-        <button className="btn btn-primary" style={{ width: '100%' }} disabled={busy}>
+        <button className="btn btn-primary" style={{ width: '100%', marginTop: 14 }} disabled={busy}>
           {busy ? <span className="spinner" /> : '登录'}
         </button>
       </form>

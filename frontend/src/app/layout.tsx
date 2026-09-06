@@ -1,13 +1,14 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { logout } from '../lib/api'
+import { Icon, SealMark, type IconName } from '../components/Icon'
 
-const NAV = [
-  { to: '/', label: '今日待办', icon: '✅', end: true },
-  { to: '/database', label: '求职数据库', icon: '🗃️', end: false },
-  { to: '/analytics', label: '统计分析', icon: '📊', end: false },
-  { to: '/files', label: '文件库', icon: '📎', end: false },
-  { to: '/settings', label: '设置', icon: '⚙️', end: false },
+const NAV: Array<{ to: string; label: string; icon: IconName; end?: boolean }> = [
+  { to: '/', label: '今日待办', icon: 'today', end: true },
+  { to: '/database', label: '求职数据库', icon: 'database' },
+  { to: '/analytics', label: '统计分析', icon: 'analytics' },
+  { to: '/files', label: '文件库', icon: 'files' },
+  { to: '/settings', label: '设置', icon: 'settings' },
 ]
 
 export function AppLayout() {
@@ -28,7 +29,8 @@ export function AppLayout() {
           className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}
           onClick={() => setMenuOpen(false)}
         >
-          <span aria-hidden>{n.icon}</span> {n.label}
+          <Icon name={n.icon} size={17} />
+          <span>{n.label}</span>
         </NavLink>
       ))}
     </nav>
@@ -37,21 +39,22 @@ export function AppLayout() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden>◈</span>
+          <SealMark size={28} />
           <span className="display brand-name">OfferLogs</span>
         </div>
         {navList}
         <div className="sidebar-foot">
-          <button className="btn btn-ghost" style={{ width: '100%' }} onClick={doLogout}>
-            退出登录
+          <button className="btn btn-ghost btn-small" style={{ width: '100%' }} onClick={doLogout}>
+            <Icon name="logout" size={15} />
+            <span>退出登录</span>
           </button>
         </div>
       </aside>
       <header className="topbar">
-        <button className="btn btn-ghost menu-btn" aria-label="打开菜单" onClick={() => setMenuOpen((v) => !v)}>
+        <button className="menu-btn" aria-label="打开菜单" onClick={() => setMenuOpen((v) => !v)}>
           ☰
         </button>
-        <span className="topbar-title display">求职工作台</span>
+        <span className="topbar-title display">OfferLogs</span>
       </header>
       {menuOpen && (
         <div className="mobile-menu" onClick={() => setMenuOpen(false)}>
@@ -69,7 +72,9 @@ export function AppLayout() {
             end={n.end}
             className={({ isActive }) => 'bn-item' + (isActive ? ' active' : '')}
           >
-            <span aria-hidden className="bn-icon">{n.icon}</span>
+            <span aria-hidden className="bn-icon">
+              <Icon name={n.icon} size={19} />
+            </span>
             <span className="bn-label">{n.label.replace('求职', '').replace('数据', '岗位')}</span>
           </NavLink>
         ))}

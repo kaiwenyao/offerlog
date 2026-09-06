@@ -164,10 +164,18 @@ func (h *Handler) listActions(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
-	if items == nil {
-		items = []*actrepo.Action{}
+	// Repo structs have no JSON tags; serialize through the DTO so the
+	// contract stays camelCase like every other endpoint.
+	out := make([]actionDTO, 0, len(items))
+	for _, a := range items {
+		out = append(out, actionDTO{
+			ID: a.ID, ApplicationID: a.ApplicationID, Title: a.Title,
+			DueDate: a.DueDate, DueTs: a.DueTs, DoneAt: a.DoneAt,
+			RemindMe: a.RemindMe, RemindAt: a.RemindAt, CreatedAt: a.CreatedAt,
+			CompanyName: a.CompanyName, Position: a.Position, Status: a.Status,
+		})
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
 func (h *Handler) createAction(c *gin.Context) {

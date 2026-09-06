@@ -3,11 +3,8 @@ import { statusMeta } from '../lib/status'
 
 export function StatusChip({ status }: { status: string }) {
   const m = statusMeta(status)
-  return (
-    <span className={`status-chip ${m.color}`} title={m.label}>
-      <span aria-hidden>{m.icon}</span> {m.label}
-    </span>
-  )
+  // dot + label (§4.1): the label carries the meaning; the colored dot is texture
+  return <span className={`status-chip ${m.color}`}>{m.label}</span>
 }
 
 export function Modal({
@@ -56,9 +53,5 @@ export function Spinner() {
 }
 
 export function EmptyHint({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="card" style={{ padding: 40, textAlign: 'center', color: '#6a7a90' }}>
-      {children}
-    </div>
-  )
+  return <div className="card empty-hint">{children}</div>
 }

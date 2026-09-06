@@ -2,6 +2,13 @@ import React, { useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+// Self-hosted fonts: serif display for headings (dossier voice) and mono for
+// dates/counts — bundled so the Docker deployment works fully offline.
+import '@fontsource/noto-serif-sc/600.css'
+import '@fontsource/noto-serif-sc/700.css'
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/500.css'
+import '@fontsource/ibm-plex-mono/600.css'
 import './styles/global.css'
 import { fetchMe, setCsrf } from './lib/api'
 import type { Me } from './lib/types'
