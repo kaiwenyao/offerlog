@@ -108,11 +108,13 @@ services:
       - go_mod:/go/pkg/mod
       - go_build:/root/.cache/go-build
     depends_on:
+      # 不依赖 bootstrap（建号只服务 e2e）：测试 setup 自带 migrate.Up（PR #6，
+      # 幂等 + advisory lock）。也不能依赖它 —— bootstrap 是秒退的一次性容器，
+      # compose 在 bootstrap 启动后还要拉 integration 镜像，等待
+      # service_completed_successfully 会错过其退出状态，报
+      # "integration is missing dependency bootstrap"（CI 节点实测竞态）。
       postgres:
         condition: service_healthy
-      # bootstrap runs migrate.Up (via create-user) — tests expect a migrated schema
-      bootstrap:
-        condition: service_completed_successfully
     restart: "no"
 
   e2e:
