@@ -11,20 +11,40 @@ import (
 )
 
 type Handler struct {
-	auth    *idservice.Store
-	limiter *httpx.LoginRateLimiter
-	secure  bool
+	auth             *idservice.Store
+	limiter          *httpx.LoginRateLimiter
+	regLimiter       *httpx.LoginRateLimiter
+	secure           bool
+	registrationOpen bool
+	defaultTZ        string
 }
 
-func New(auth *idservice.Store, secure bool) *Handler {
-	return &Handler{auth: auth, limiter: httpx.NewLoginRateLimiter(), secure: secure}
+// Config carries the transport-level switches resolved from app config.
+type Config struct {
+	Secure           bool
+	RegistrationOpen bool
+	DefaultTZ        string
 }
 
-// Routes mounts auth endpoints. Login/logout/me sit outside CSRF because the
-// session itself is the CSRF anchor; the Origin check in CSRF middleware
-// protects them from cross-site requests when a cookie is already present.
+func New(auth *idservice.Store, cfg Config) *Handler {
+	return &Handler{
+		auth:             auth,
+		limiter:          httpx.NewLoginRateLimiter(),
+		regLimiter:       httpx.NewLoginRateLimiter(),
+		secure:           cfg.Secure,
+		registrationOpen: cfg.RegistrationOpen,
+		defaultTZ:        cfg.DefaultTZ,
+	}
+}
+
+// Routes mounts auth endpoints. Login/register/logout/me sit outside CSRF
+// because the session itself is the CSRF anchor; the Origin check in CSRF
+// middleware protects them from cross-site requests when a cookie is already
+// present.
 func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.POST("/login", h.login)
+	g.POST("/register", h.register)
+	g.GET("/config", h.authConfig)
 	g.POST("/logout", h.logout)
 	g.GET("/me", h.me)
 }
@@ -59,6 +79,60 @@ func (h *Handler) login(c *gin.Context) {
 		"timezone": u.Timezone, "locale": u.Locale,
 		"csrf_token": sess.CSRF,
 	})
+}
+
+// registerReq mirrors loginReq plus an optional display name.
+type registerReq struct {
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name"`
+}
+
+func (h *Handler) register(c *gin.Context) {
+	if !h.regLimiter.Allow(httpx.RealIP(c)) {
+		httpx.WriteErr(c, httpx.BadRequest("rate_limited", "尝试过于频繁，请一分钟后再试"))
+		return
+	}
+	var req registerReq
+	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	if req.Email == "" || req.Password == "" {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_request", "请输入邮箱和密码"))
+		return
+	}
+	if !h.registrationOpen {
+		httpx.WriteErr(c, &httpx.ErrorKind{
+			Status: http.StatusForbidden, Code: "registration_closed",
+			Message: "当前实例未开放注册，请联系管理员创建账号",
+		})
+		return
+	}
+	u, err := h.auth.Register(c.Request.Context(), req.Email, req.Password, req.DisplayName, h.defaultTZ)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	// Signup signs the user in immediately: one argon2 verify more than a
+	// dedicated session mint, but it reuses the exact login session path.
+	sess, u, err := h.auth.CreateSession(c.Request.Context(), u.Email, req.Password)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	http.SetCookie(c.Writer, httpx.NewSessionCookie(sess.Token, sess.Expires, h.secure))
+	c.JSON(http.StatusCreated, gin.H{
+		"id": u.ID, "email": u.Email, "display_name": u.DisplayName,
+		"timezone": u.Timezone, "locale": u.Locale,
+		"csrf_token": sess.CSRF,
+	})
+}
+
+// authConfig is the public, unauthenticated settings surface for the login
+// page (which fields to render before any session exists).
+func (h *Handler) authConfig(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"registration_open": h.registrationOpen})
 }
 
 func (h *Handler) logout(c *gin.Context) {

@@ -12,9 +12,11 @@ cp .env.example .env    # 必需：本地配置文件（默认值可直接用，
 make up
 ```
 
-构建并启动 postgres + api + worker，自动创建首个账号。完成后打开
-<http://localhost:8080>，默认登录 `me@example.com / testpass12345`
-（在 `.env` 里用 `LOCAL_ADMIN_EMAIL` / `LOCAL_ADMIN_PASSWORD` 修改）。
+构建并启动 postgres + api + worker。完成后打开 <http://localhost:8080>：
+本地栈默认开放注册（`REGISTRATION_OPEN=true`），没有默认初始用户 ——
+首次使用在登录页「注册」标签直接开号，smoke/e2e 验收脚本也会自动注册一次性账号；
+要闭门使用就在 `.env` 设 `REGISTRATION_OPEN=false`，再用 api-admin create-user
+建号（见 [docs/runbook.md](./docs/runbook.md)）。
 
 ```bash
 make down

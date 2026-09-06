@@ -3,7 +3,7 @@
 //   - node:   npm ci, tsc typecheck, Vitest unit tests, production build.
 //   - docker: E2E through the repo's own Docker harness
 //             (deploy/compose.test.yaml, profile "e2e") — a full application
-//             stack (postgres + api + worker + bootstrap) plus a Playwright
+//             stack (postgres + api + worker) plus a Playwright
 //             runner container. On main, build & push the static frontend
 //             tier ghcr.io/<user>/offerlog-web:<short-sha> from
 //             deploy/web.Dockerfile (nginx serving the built SPA).
@@ -178,9 +178,15 @@ spec:
                             sh '''
                             set -eu
                             # Full application stack + Playwright runner (PR #3
-                            # harness): bootstrap creates the login account the
-                            # e2e script expects, api serves the built SPA.
-                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e run --rm e2e
+                            # harness): the test api opens registration
+                            # (REGISTRATION_OPEN=true) and the e2e script signs
+                            # up a one-off account; api serves the built SPA.
+                            # --build is mandatory: the <project>-api image name
+                            # only encodes $BUILD_NUMBER, which collides across
+                            # jobs on the shared host docker — compose run would
+                            # silently reuse a leftover stale image (no register
+                            # endpoint → e2e login timeout, PR #11 build #3).
+                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e run --build --rm e2e
                             '''
                         }
                     }

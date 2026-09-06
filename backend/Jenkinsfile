@@ -201,9 +201,12 @@ spec:
                         container('docker') {
                             sh '''
                             set -eu
-                            # Disposable tmpfs postgres + go test container, wired
-                            # and migrated by the bootstrap service (PR #3 harness).
-                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration run --rm integration
+                            # Disposable tmpfs postgres + go test container; the
+                            # suite applies migrations itself (PR #3 harness).
+                            # --build guards against reusing a leftover
+                            # <project>-integration image from another job with
+                            # the same $BUILD_NUMBER on the shared host docker.
+                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration run --build --rm integration
                             '''
                         }
                     }

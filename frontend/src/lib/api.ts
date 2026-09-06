@@ -112,6 +112,33 @@ export async function login(email: string, password: string): Promise<Me> {
   return me
 }
 
+export async function fetchAuthConfig(): Promise<{ registration_open: boolean }> {
+  return api.get<{ registration_open: boolean }>('/api/v1/auth/config')
+}
+
+export async function register(email: string, password: string, displayName?: string): Promise<Me> {
+  const res = await fetch('/api/v1/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ email, password, display_name: displayName }),
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    let code = 'register_failed'
+    let msg = '注册失败'
+    try {
+      const j = JSON.parse(text)
+      code = j.code ?? code
+      msg = j.message ?? msg
+    } catch { /* noop */ }
+    throw new ApiError(code, msg, res.status)
+  }
+  const me = JSON.parse(text) as Me
+  setCsrf(me.csrf_token ?? null)
+  return me
+}
+
 export async function logout(): Promise<void> {
   try {
     await api.post('/api/v1/auth/logout')

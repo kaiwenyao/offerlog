@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ var (
 	ErrBadLogin       = errors.New("invalid credentials")
 	ErrNoPermission   = errors.New("permission denied")
 	ErrSessionExpired = errors.New("session expired")
+	ErrInvalidSignup  = errors.New("invalid email, display name, or password")
+	ErrWeakPassword   = errors.New("password must be 8-128 characters")
 )
 
 type UserRow struct {
@@ -118,23 +121,56 @@ func verifyPassword(hash, pw string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-// Register is used by the admin CLI to seed the first account (public signup
-// is closed in v1).
-func (s *Store) Register(ctx context.Context, email, password, displayName, tz string) error {
+// Register creates an account. Shared by the admin CLI and the public
+// /auth/register endpoint; input is validated identically for both paths.
+// It returns the created row so callers can mint a session right away.
+func (s *Store) Register(ctx context.Context, email, password, displayName, tz string) (*UserRow, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
+	displayName = strings.TrimSpace(displayName)
+	if err := validateSignup(email, password, displayName); err != nil {
+		return nil, err
+	}
+	if tz == "" {
+		tz = "Europe/Dublin"
+	}
 	hash, err := hashPassword(password)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	_, err = s.users.FindUserByEmail(ctx, email)
 	if err == nil {
-		return ErrEmailTaken
+		return nil, ErrEmailTaken
 	}
 	if !errors.Is(err, ErrNotFound) {
-		return err
+		return nil, err
 	}
 	u := &UserRow{Email: email, PasswordHash: hash, DisplayName: displayName, Timezone: tz}
-	return s.users.CreateUser(ctx, u)
+	if err := s.users.CreateUser(ctx, u); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// validateSignup enforces the same input rules for CLI-created and
+// self-registered accounts.
+func validateSignup(email, password, displayName string) error {
+	if email == "" || password == "" {
+		return ErrInvalidSignup
+	}
+	if len(password) < 8 || len(password) > 128 {
+		return ErrWeakPassword
+	}
+	if len(email) > 254 {
+		return ErrInvalidSignup
+	}
+	addr, err := mail.ParseAddress(email)
+	if err != nil || addr.Address != email {
+		return ErrInvalidSignup
+	}
+	if len(displayName) > 80 {
+		return ErrInvalidSignup
+	}
+	return nil
 }
 
 var ErrNotFound = errors.New("not found")

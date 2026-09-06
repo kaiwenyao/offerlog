@@ -12,10 +12,30 @@ const { chromium } = require('playwright');
   const email = process.env.E2E_EMAIL || 'me@example.com';
   const password = process.env.E2E_PASSWORD || 'testpass12345';
   await page.goto(base + '/', { waitUntil: 'networkidle' });
-  await page.fill('input[type=email]', email);
-  await page.fill('input[type=password]', password);
-  await page.click('button:has-text("登录")');
-  await page.waitForSelector('text=今日待办', { timeout: 8000 });
+  // 注册开放（测试栈固定 REGISTRATION_OPEN=true）→ 用唯一邮箱注册一次性账号
+  // （重跑免清库）；关闭注册时回退到预建账号（E2E_EMAIL/E2E_PASSWORD）登录。
+  // 两条路都打印出来：静默回退会把「api 镜像过期（没有 /auth/config）」伪装成
+  // 登录失败超时，难以排查（PR #11 CI 实测）。
+  const regTab = page.locator('button[role=tab]:has-text("注册")');
+  if (await regTab.count()) {
+    console.log('0 register tab found: signing up a one-off account');
+    await regTab.click();
+    await page.fill('input[type=email]', email.replace(/^(.+?)@/, `$1.${Date.now()}@`));
+    await page.fill('input[type=password]', password);
+  } else {
+    console.log('0 register tab NOT found (registration closed or stale api image): falling back to E2E_EMAIL login');
+    await page.fill('input[type=email]', email);
+    await page.fill('input[type=password]', password);
+  }
+  await page.click('button[type=submit]');
+  try {
+    await page.waitForSelector('text=今日待办', { timeout: 15000 });
+  } catch {
+    // 带出表单上的错误文案，避免只留一个裸超时。
+    const form = await page.locator('form').innerText().catch(() => '');
+    throw new Error('login/register did not reach dashboard; form says: '
+      + form.replace(/\s+/g, ' ').trim().slice(0, 200));
+  }
 
   const company = 'E2E-Corp-' + Date.now();
   const position = '全栈工程师';

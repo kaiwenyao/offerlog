@@ -23,7 +23,7 @@ import (
 func main() {
 	create := flag.NewFlagSet("create-user", flag.ExitOnError)
 	email := create.String("email", "", "login email")
-	password := create.String("password", "", "password (min 10 chars)")
+	password := create.String("password", "", "password (min 8 chars)")
 	name := create.String("name", "Owner", "display name")
 	tz := create.String("timezone", "Europe/Dublin", "user timezone")
 
@@ -60,7 +60,7 @@ func main() {
 			slog.Error("migrate", "error", err)
 			os.Exit(1)
 		}
-		if err := app.Auth.Register(ctx, *email, *password, *name, *tz); err != nil {
+		if _, err := app.Auth.Register(ctx, *email, *password, *name, *tz); err != nil {
 			fmt.Println("create user failed:", err)
 			os.Exit(1)
 		}

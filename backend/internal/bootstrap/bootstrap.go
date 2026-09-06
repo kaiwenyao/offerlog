@@ -83,10 +83,14 @@ func (a *App) Handler() http.Handler {
 	r.Use(gin.Recovery(), httpx.RequestID(), httpx.SecurityHeaders(), httpx.Auth(a.Auth))
 
 	api := r.Group("/api/v1", httpx.CSRF(a.Auth))
-	// Auth endpoints live OUTSIDE the CSRF-protected group: login has no
-	// session yet (nothing to protect), and logout only clears the cookie.
-	// A dedicated Origin check middleware guards them.
-	authH := idtransport.New(a.Auth, a.Cfg.HTTP.PublicBase != "" && strings.HasPrefix(a.Cfg.HTTP.PublicBase, "https"))
+	// Auth endpoints live OUTSIDE the CSRF-protected group: login/register
+	// have no session yet (nothing to protect), and logout only clears the
+	// cookie. A dedicated Origin check middleware guards them.
+	authH := idtransport.New(a.Auth, idtransport.Config{
+		Secure:           a.Cfg.HTTP.PublicBase != "" && strings.HasPrefix(a.Cfg.HTTP.PublicBase, "https"),
+		RegistrationOpen: a.Cfg.App.RegistrationOpen,
+		DefaultTZ:        a.Cfg.App.TimeZone,
+	})
 	authRoutes := api.Group("/auth")
 	authH.Routes(authRoutes)
 
