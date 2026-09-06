@@ -83,7 +83,7 @@ e2e 镜像基于 `mcr.microsoft.com/playwright:v1.59.1-noble`（与 scripts/pack
 
 - [`backend/Jenkinsfile`](./backend/Jenkinsfile)：gofmt/vet/构建/单测（go 容器）→ Docker 化集成测试（复用 `deploy/compose.test.yaml`，docker 容器）→ main 上构建推送 `ghcr.io/<user>/offerlog-api:<short-sha>` 并自动 bump k3s-home 的 api/worker Deployment
 - [`frontend/Jenkinsfile`](./frontend/Jenkinsfile)：npm ci/tsc/vitest/构建（node 容器）→ Docker 化 E2E（同一 harness 的 e2e profile）→ main 上构建推送 `ghcr.io/<user>/offerlog-web:<short-sha>`（`deploy/web.Dockerfile`，nginx 静态前端层）并自动 bump k3s-home 的 web Deployment
-- 前后端分离部署：k8s 集群里 ingress 把 `/` 指向 web 层、`/api` 直达 api 层，前端改动只发布 web 镜像，不再触发 api 镜像重建（api 镜像内嵌的 SPA 仅服务 compose 单入口模式）
+- 前后端分离部署：k8s 集群里 ingress 把 `/` 指向 web 层、`/api` 直达 api 层；发布阶段共享测试阶段的 changeset 门控——前端 commit 只发布 web 镜像，后端 commit 只发布 api/worker（`deploy/**` 变更两条流水线都会跑，docker 镜像重建无害）；api 镜像内嵌的 SPA 仅服务 compose 单入口模式
 - 每次构建使用独立 compose 项目名（`offerlog-ci-$BUILD_NUMBER-*`），post 阶段兜底 `down -v` 清理；镜像标签为 commit 短 SHA，不可变、无 latest
 
 ## 主要实现要点（对应计划章节）

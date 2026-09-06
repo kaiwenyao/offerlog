@@ -12,7 +12,9 @@
 //             scripts/update-k3s-home.sh, the same flow backend/Jenkinsfile
 //             uses for the api image. The split k8s deployment routes ingress
 //             / to the web Service and /api straight to the api Service, so
-//             frontend changes deploy independently of the api image.
+//             frontend changes deploy independently of the api image
+//             (publish stages share the changeset gate — backend-only
+//             commits skip the web rebuild/bump).
 //
 // Cluster assumptions (same as eventpulse): cloud name `kubernetes` and a
 // Docker-enabled node exposing /var/run/docker.sock.
@@ -198,6 +200,16 @@ spec:
         stage('5. Build & Push Web Image') {
             when {
                 branch 'main'
+                // Split-deploy gate (mirror of backend stage 4): a
+                // backend-only commit on main skips the web image rebuild +
+                // web bump; UserIdCause/first-build always publish. deploy/**
+                // stays coarse: both pipelines watch all of it.
+                anyOf {
+                    changeset pattern: 'frontend/**'
+                    changeset pattern: 'deploy/**'
+                    triggeredBy 'UserIdCause'
+                    expression { currentBuild.previousBuild == null }
+                }
             }
             steps {
                 container('docker') {
@@ -234,7 +246,15 @@ spec:
 
         stage('6. Update k3s-home') {
             when {
+                // Identical to stage 5's gate: it consumes stage 5's
+                // FULL_IMAGE, so the two must skip/run together.
                 branch 'main'
+                anyOf {
+                    changeset pattern: 'frontend/**'
+                    changeset pattern: 'deploy/**'
+                    triggeredBy 'UserIdCause'
+                    expression { currentBuild.previousBuild == null }
+                }
             }
             steps {
                 container('gitops') {
