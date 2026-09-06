@@ -66,6 +66,17 @@ node scripts/e2e.cjs                           # 主流程 E2E：新增→投递
 E2E_BASE=http://localhost:8081 E2E_EMAIL=... E2E_PASSWORD=... node scripts/e2e.cjs  # 对 Compose 部署跑验收
 ```
 
+### Docker 化测试（无需本机 Go/Playwright 环境）
+
+```bash
+make test-integration   # Go 单测+集成测试，golang 容器挂载源码，tmpfs PostgreSQL，即弃
+make e2e-docker         # 起完整应用栈（postgres/api/worker/bootstrap）+ Playwright 容器跑 e2e.cjs
+```
+
+两套测试各自独立 compose 项目（`deploy/compose.test.yaml`，tmpfs 数据即弃，跑完自动清理）；
+e2e 镜像基于 `mcr.microsoft.com/playwright:v1.59.1-noble`（与 scripts/package.json 锁定版本一致），
+测试栈 api 调试端口暴露在 `127.0.0.1:8082`。
+
 ## 主要实现要点（对应计划章节）
 
 - **状态机**（§2.2）：11 状态、跳转校验（进入招聘阶段须有投递时间、accepted 须有 Offer 历史、终态重开须原因）；
