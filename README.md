@@ -8,13 +8,13 @@
 前置：安装 Docker（含 docker compose）即可，无需本机 Go / Node 环境。
 
 ```bash
+cp .env.example .env    # 必需：本地配置文件（默认值可直接用，按需修改）
 make up
 ```
 
 构建并启动 postgres + api + worker，自动创建首个账号。完成后打开
 <http://localhost:8080>，默认登录 `me@example.com / testpass12345`
-（可用 `LOCAL_ADMIN_EMAIL` / `LOCAL_ADMIN_PASSWORD` 覆盖，建议直接 `cp .env.example .env` 后修改；
-不建 `.env` 也能直接 `make up`，全走默认值）。
+（在 `.env` 里用 `LOCAL_ADMIN_EMAIL` / `LOCAL_ADMIN_PASSWORD` 修改）。
 
 ```bash
 make down
@@ -24,7 +24,9 @@ make down
 
 说明：
 
+- `make up` 强制要求根目录存在 `.env`（缺失会直接报错并提示 cp 命令），所有本地变量集中在 `.env`。
 - 数据保存在 Docker 命名卷中，`make up` 反复重启不丢数据；只有 `make down` 会清空。
+- 改 `.env` 里的 postgres 口令只对新初始化的卷生效：需 `make down` 清卷后再 `make up`。
 - postgres 同时暴露在 `127.0.0.1:55432`，便于本机 psql / DBeaver 连接排查。
 
 ## 目录
