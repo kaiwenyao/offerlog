@@ -181,7 +181,12 @@ spec:
                             # harness): the test api opens registration
                             # (REGISTRATION_OPEN=true) and the e2e script signs
                             # up a one-off account; api serves the built SPA.
-                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e run --rm e2e
+                            # --build is mandatory: the <project>-api image name
+                            # only encodes $BUILD_NUMBER, which collides across
+                            # jobs on the shared host docker — compose run would
+                            # silently reuse a leftover stale image (no register
+                            # endpoint → e2e login timeout, PR #11 build #3).
+                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e run --build --rm e2e
                             '''
                         }
                     }

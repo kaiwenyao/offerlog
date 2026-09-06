@@ -1,11 +1,13 @@
 # OfferLog Docker 测试工具链（集成测试 + E2E，全部在容器里跑）。
 #
 #   # Go 单测 + 集成测试（真实 PostgreSQL 容器）：
-#   docker compose -f deploy/compose.test.yaml --profile integration run --rm integration
+#   docker compose -f deploy/compose.test.yaml --profile integration run --build --rm integration
 #   docker compose -f deploy/compose.test.yaml --profile integration down -v --remove-orphans
 #   # 起完整应用栈 + Playwright 容器跑主流程 E2E：
-#   docker compose -f deploy/compose.test.yaml --profile e2e run --rm e2e
+#   docker compose -f deploy/compose.test.yaml --profile e2e run --build --rm e2e
 #   docker compose -f deploy/compose.test.yaml --profile e2e down -v --remove-orphans
+#   # run 必须带 --build：镜像名只含项目名，共享 docker 宿主上不同构建/任务的
+#   # 同名残留镜像会被静默复用，测到旧代码（compose 仅在镜像缺失时才构建）。
 #
 # 设计：
 #   - postgres 用 tmpfs —— 数据即弃、跑得快；每次 run 都是干净状态。
