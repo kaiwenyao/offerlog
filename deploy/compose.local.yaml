@@ -1,6 +1,7 @@
 # OfferLog 本地 Docker 部署（一条命令跑通，无 TLS / 无反代）。
 #
-#   make local-up   # 或: docker compose -f deploy/compose.local.yaml up -d --build
+#   make up   # 需先 cp .env.example .env（根目录 .env 必需，make 会自动带上）
+#             # 手动等价：docker compose --env-file .env -f deploy/compose.local.yaml up -d --build
 #
 # 与 deploy/compose.yaml（生产式：Caddy HTTPS + 端口 80/443）的差异：
 #   - 不起 Caddy：api 直接在 http://localhost:8080 服务 SPA + /api/v1
@@ -8,7 +9,7 @@
 #   - 内置一次性 bootstrap 服务：自动建首个账号（幂等，已存在则跳过）
 #     账号可用 LOCAL_ADMIN_EMAIL / LOCAL_ADMIN_PASSWORD 覆盖（默认与
 #     scripts/smoke.cjs、scripts/e2e.cjs 的凭据一致，便于直接跑验收）。
-# 数据落在命名卷 pgdata_local / objects_local；`make local-clean` 连卷一起清掉。
+# 数据落在命名卷 pgdata_local / objects_local；`make down` 停止时连卷一起清掉。
 
 name: offerlog-local
 

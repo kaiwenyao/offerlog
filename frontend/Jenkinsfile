@@ -4,9 +4,9 @@
 //   - docker: E2E through the repo's own Docker harness
 //             (deploy/compose.test.yaml, profile "e2e") — a full application
 //             stack (postgres + api + worker + bootstrap) plus a Playwright
-//             runner container, exactly like `make e2e-docker`. On main, build
-//             & push the static frontend tier ghcr.io/<user>/offerlog-web:<short-sha>
-//             from deploy/web.Dockerfile (nginx serving the built SPA).
+//             runner container. On main, build & push the static frontend
+//             tier ghcr.io/<user>/offerlog-web:<short-sha> from
+//             deploy/web.Dockerfile (nginx serving the built SPA).
 //   - gitops: on main, after the image push, bump the offerlog-web image line
 //             in k3s-home/main (apps/offerlog/web-deployment.yaml) via
 //             scripts/update-k3s-home.sh, the same flow backend/Jenkinsfile

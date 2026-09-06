@@ -15,6 +15,10 @@ COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 COPY backend/ ./
 
-# TEST_DATABASE_URL is provided by compose.test.yaml; the compose project
-# mounts named go_mod/go_build volumes for in-run compile caching.
+# TEST_DATABASE_URL is provided by compose.test.yaml. The compose project
+# mounts a named go_build volume for in-run compile caching; nothing is
+# mounted over /go/pkg/mod on purpose: modules live in this image layer (a
+# failed download fails the build, so the layer is always complete), while
+# a named volume there is filled by copy-on-create, which a flaky CI node can
+# interrupt into a truncated module cache that go then trusts blindly.
 CMD ["go", "test", "./...", "-count=1"]

@@ -1,82 +1,28 @@
-# OfferLog monorepo Makefile
-.PHONY: all dev api worker test lint build frontend-backend compose-up compose-down local-up local-down local-logs local-clean test-integration e2e-docker migrate-create backrestore docker-build smoke e2e help
-SHELL := /bin/bash
+# OfferLog — 本地 Docker 部署（唯一入口）
+#
+#   cp .env.example .env   # 必需！先建本地配置（默认值可直接用，按需修改）
+#   make up                # 构建并启动 postgres + api + worker，自动创建首个账号
+#   make down              # 停止并移除所有容器数据（容器、网络、数据卷全部清空）
+#
+# 启动后访问 http://localhost:8080，默认账号 me@example.com / testpass12345，
+# 在 .env 里覆盖（LOCAL_ADMIN_EMAIL / LOCAL_ADMIN_PASSWORD 等）。
+
+# compose 默认只读 compose 文件旁的 deploy/.env，不读仓库根目录，故显式 --env-file。
+# （up 已强制要求 .env 存在；down 在 .env 缺失时也允许执行，便于清理）
+COMPOSE := docker compose -f deploy/compose.local.yaml $(if $(wildcard .env),--env-file .env)
+
+.PHONY: help up down
 
 help:
-	@echo "offerlog targets:"
-	@echo "  dev            run local postgres + api (dev ports)"
-	@echo "  api            build & run api binary"
-	@echo "  worker         build & run worker binary"
-	@echo "  admin          create-user via CLI"
-	@echo "  test           Go unit + integration tests"
-	@echo "  frontend       build the React app into frontend/dist"
-	@echo "  build          full backend + frontend build"
-	@echo "  compose-up     start the self-contained deployment (Docker Compose)"
-	@echo "  local-up       one-command local deployment on :8080 (Docker, no TLS)"
-	@echo "  test-integration  Go unit + integration tests against a Postgres container"
-	@echo "  e2e-docker     full stack + Playwright E2E, all in Docker"
-	@echo "  smoke / e2e    Playwright acceptance"
-	@echo "  fmt / lint     gofmt + vet + tsc"
+	@echo "offerlog:"
+	@echo "  up      启动本地 Docker 栈，访问 http://localhost:8080（需先 cp .env.example .env）"
+	@echo "  down    停止并删除所有容器数据（含数据卷，不可恢复）"
 
-fmt:
-	cd backend && gofmt -w . && go vet ./...
-	cd frontend && npx tsc --noEmit
+up:
+	@test -f .env || { echo "缺少 .env：请先执行  cp .env.example .env  （可按需修改）再 make up"; exit 1; }
+	$(COMPOSE) up -d --build
+	@echo "OfferLog: http://localhost:8080  (账号与口令见 .env；默认 me@example.com / testpass12345)"
 
-test:
-	cd backend && go test ./...
-
-admin:
-	cd backend && go run ./cmd/admin create-user -email "$(EMAIL)" -password "$(PASSWORD)"
-
-api:
-	cd backend && go run ./cmd/api
-
-worker:
-	cd backend && go run ./cmd/worker
-
-frontend:
-	cd frontend && npm ci && npm run build
-
-build: frontend
-	cd backend && go build -o ../bin/api ./cmd/api && go build -o ../bin/worker ./cmd/worker
-
-compose-up:
-	docker compose -f deploy/compose.yaml up -d --build
-
-compose-down:
-	docker compose -f deploy/compose.yaml down
-
-# one-command local deployment: SPA+API on http://localhost:8080 (no Caddy),
-# auto-creates the first account (me@example.com / testpass12345 by default,
-# override with LOCAL_ADMIN_EMAIL / LOCAL_ADMIN_PASSWORD)
-local-up:
-	docker compose -f deploy/compose.local.yaml up -d --build
-	@echo "OfferLog: http://localhost:8080  (login: $${LOCAL_ADMIN_EMAIL:-me@example.com})"
-
-local-down:
-	docker compose -f deploy/compose.local.yaml down
-
-local-logs:
-	docker compose -f deploy/compose.local.yaml logs -f api worker
-
-local-clean:
-	docker compose -f deploy/compose.local.yaml down -v --remove-orphans
-
-# dockerized tests (deploy/compose.test.yaml): ephemeral tmpfs postgres
-test-integration:
-	@docker compose -f deploy/compose.test.yaml --profile integration run --rm integration; 	status=$$?; 	docker compose -f deploy/compose.test.yaml --profile integration down -v --remove-orphans >/dev/null 2>&1; 	exit $$status
-
-e2e-docker:
-	@docker compose -f deploy/compose.test.yaml --profile e2e run --rm e2e; 	status=$$?; 	docker compose -f deploy/compose.test.yaml --profile e2e down -v --remove-orphans >/dev/null 2>&1; 	exit $$status
-
-smoke:
-	cd scripts && node smoke.cjs
-
-e2e:
-	cd scripts && node e2e.cjs
-
-# keep the two migration copies identical (go:embed is package-local)
-migrations-sync:
-	@cmp -s backend/db/migrations/00001_init.sql backend/internal/platform/migrate/migrations/00001_init.sql \
-	  && echo "migrations in sync" \
-	  || echo "WARNING: db/migrations and internal/platform/migrate/migrations differ"
+down:
+	$(COMPOSE) down -v --remove-orphans
+	@echo "OfferLog 已停止：容器、网络与数据卷已全部移除。"

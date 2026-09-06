@@ -1,13 +1,18 @@
 # OfferLog Docker 测试工具链（集成测试 + E2E，全部在容器里跑）。
 #
-#   make test-integration   # Go 单测 + 集成测试（真实 PostgreSQL 容器）
-#   make e2e-docker         # 起完整应用栈 + Playwright 容器跑主流程 E2E
+#   # Go 单测 + 集成测试（真实 PostgreSQL 容器）：
+#   docker compose -f deploy/compose.test.yaml --profile integration run --rm integration
+#   docker compose -f deploy/compose.test.yaml --profile integration down -v --remove-orphans
+#   # 起完整应用栈 + Playwright 容器跑主流程 E2E：
+#   docker compose -f deploy/compose.test.yaml --profile e2e run --rm e2e
+#   docker compose -f deploy/compose.test.yaml --profile e2e down -v --remove-orphans
 #
 # 设计：
 #   - postgres 用 tmpfs —— 数据即弃、跑得快；每次 run 都是干净状态。
 #   - integration：源码由 deploy/integration.Dockerfile COPY 进镜像（不 bind
 #     mount —— Jenkins 经宿主 socket 跑 compose 时挂不到工作区），TEST_DATABASE_URL
-#     指向 postgres 服务；模块/构建缓存放命名卷，二次运行只增量编译。
+#     指向 postgres 服务；模块在镜像层（build 期 go mod download），编译缓存放
+#     命名卷 go_build，二次运行只增量编译。
 #   - e2e：基于 mcr.microsoft.com/playwright 镜像（内含浏览器），只装
 #     scripts 的 npm 依赖；对 compose 内的 api 服务跑 smoke/e2e 脚本。
 #   - bootstrap：与 compose.local 相同的一次性建号（e2e 依赖它完成）。
@@ -114,8 +119,12 @@ services:
     environment:
       TEST_DATABASE_URL: postgres://offerlog:offerlog@postgres:5432/offerlog?sslmode=disable
       CGO_ENABLED: "0"
+    # 不给 /go/pkg/mod 挂卷：模块已在镜像层（RUN go mod download，下载失败则
+    # 镜像构建失败，状态永远完整可信）。命名卷首挂到非空镜像路径时靠
+    # copy-on-create 拷贝，在不稳的 CI 节点被中断会留下残缺缓存（模块目录在、
+    # 子包缺），go 视为已下载不再补，报 "no required module provides package"
+    # （Jenkins build #3 实测）。go_build 只缓存编译产物且镜像内该路径为空，安全。
     volumes:
-      - go_mod:/go/pkg/mod
       - go_build:/root/.cache/go-build
     depends_on:
       # 不依赖 bootstrap（建号只服务 e2e）：测试 setup 自带 migrate.Up（PR #6，
@@ -145,5 +154,4 @@ services:
 
 volumes:
   objects_test:
-  go_mod:
   go_build:
