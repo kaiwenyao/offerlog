@@ -166,8 +166,18 @@ spec:
                         }
                     }
                     post {
+                        // An aborted build may lose the agent (pod gone) before
+                        // post runs; workspace steps then throw
+                        // MissingContextVariableException instead of archiving.
+                        // Guard so cleanup never replaces the build result.
                         always {
-                            archiveArtifacts artifacts: 'frontend/dist/**', allowEmptyArchive: false
+                            script {
+                                try {
+                                    archiveArtifacts artifacts: 'frontend/dist/**', allowEmptyArchive: false
+                                } catch (err) {
+                                    echo("artifact archival skipped: ${err}")
+                                }
+                            }
                         }
                     }
                 }
@@ -192,10 +202,16 @@ spec:
                     }
                     post {
                         always {
-                            container('docker') {
-                                sh '''
-                                $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
-                                '''
+                            script {
+                                try {
+                                    container('docker') {
+                                        sh '''
+                                        $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
+                                        '''
+                                    }
+                                } catch (err) {
+                                    echo("compose teardown skipped: ${err}")
+                                }
                             }
                         }
                     }
@@ -279,7 +295,11 @@ spec:
     post {
         always {
             // Safety net: remove this build's compose project if a later stage
-            // blew up before teardown ran.
+            // blew up before teardown ran. An aborted build can reach post with
+            // NO agent at all (kubernetes pod never provisioned or already
+            // gone) — every step here then throws MissingContextVariableException
+            // (hudson.FilePath missing). Guard each one so cleanup can never
+            // mask the real build result.
             script {
                 try {
                     container('docker') {
@@ -290,8 +310,12 @@ spec:
                 } catch (err) {
                     echo("compose cleanup skipped: ${err}")
                 }
+                try {
+                    cleanWs()
+                } catch (err) {
+                    echo("workspace cleanup skipped: ${err}")
+                }
             }
-            cleanWs()
         }
     }
 }
