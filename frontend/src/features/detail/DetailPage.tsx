@@ -5,7 +5,7 @@ import { AppDetailContent } from '../database/drawer'
 
 /**
  * Full-page detail route (§4.2): a shareable deep link that reuses the same
- * detail component as the drawer, embedded in a glass panel.
+ * detail component as the drawer, embedded in a flat panel.
  */
 export function DetailPage() {
   const { id } = useParams()

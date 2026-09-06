@@ -2,12 +2,8 @@ import React, { useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-// Self-hosted design-system fonts: Schibsted Grotesk for display, Inter for
-// body/UI, Noto Sans SC for Chinese — bundled so Docker deployments work fully
-// offline (the design's Google Fonts CDN links are intentionally not used).
-import '@fontsource/schibsted-grotesk/400.css'
-import '@fontsource/schibsted-grotesk/500.css'
-import '@fontsource/schibsted-grotesk/600.css'
+// Self-hosted fonts: Inter for body/UI and Noto Sans SC as the Chinese
+// fallback — bundled so Docker deployments work fully offline.
 import '@fontsource/inter/400.css'
 import '@fontsource/inter/500.css'
 import '@fontsource/inter/600.css'

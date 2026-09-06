@@ -34,8 +34,8 @@ export function StageTrail({ current, path }: { current: string; path: string[] 
                   width: isCurrent ? 12 : 9,
                   height: isCurrent ? 12 : 9,
                   borderRadius: '50%',
-                  background: reached ? currentColor : 'rgba(15,15,20,.12)',
-                  boxShadow: isCurrent ? '0 0 0 4px rgba(139,92,246,.18)' : 'none',
+                  background: reached ? currentColor : 'var(--border)',
+                  boxShadow: isCurrent ? '0 0 0 4px var(--accent-soft)' : 'none',
                 }}
               />
               <span style={{ color: reached ? 'var(--text)' : 'var(--text-muted)' }}>{statusMeta(st).label}</span>
@@ -44,7 +44,7 @@ export function StageTrail({ current, path }: { current: string; path: string[] 
               <span
                 aria-hidden
                 className="stage-link"
-                style={{ background: i < idx ? currentColor : 'rgba(15,15,20,.1)' }}
+                style={{ background: i < idx ? currentColor : 'var(--border)' }}
               />
             )}
           </span>
@@ -72,10 +72,10 @@ export function StagePips({ status, pips }: { status: string; pips: string[] }) 
               idx === -1
                 ? i < 3
                   ? color
-                  : 'rgba(15,15,20,.09)'
+                  : 'var(--border)'
                 : i <= idx
                   ? color
-                  : 'rgba(15,15,20,.09)',
+                  : 'var(--border)',
           }}
         />
       ))}

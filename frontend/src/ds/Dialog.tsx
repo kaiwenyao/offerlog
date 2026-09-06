@@ -42,9 +42,7 @@ export function Dialog({ open = true, title, description, onClose, footer, width
         display: 'grid',
         placeItems: 'center',
         padding: 'var(--space-6)',
-        background: 'rgba(15,15,20,.18)',
-        backdropFilter: 'blur(6px)',
-        WebkitBackdropFilter: 'blur(6px)',
+        background: 'rgba(31,35,40,.3)',
       }}
     >
       <div
@@ -62,9 +60,7 @@ export function Dialog({ open = true, title, description, onClose, footer, width
           padding: 'var(--space-6)',
           background: 'var(--surface-strong)',
           border: '1px solid var(--border)',
-          backdropFilter: 'var(--blur-xl)',
-          WebkitBackdropFilter: 'var(--blur-xl)',
-          boxShadow: 'var(--highlight-inner),var(--shadow-pop)',
+          boxShadow: 'var(--shadow-pop)',
         }}
       >
         {title && (
