@@ -69,3 +69,4 @@ E2E_BASE=http://localhost:8081 E2E_EMAIL=... E2E_PASSWORD=... node scripts/e2e.c
   结构化错误不泄露内部信息、所有查询按 owner_id 归属。
 
 > 说明：仓库不含真实凭证；`CSRF_SECRET`/数据库口令经 `.env` 注入。
+# offerlog
