@@ -1,6 +1,7 @@
 #!/bin/sh
-# Called only after the offerlog-api image has been pushed successfully
-# (backend/Jenkinsfile). Same flow as eventpulse/scripts/update-k3s-home.sh.
+# Called only after the component's image has been pushed successfully
+# (backend/Jenkinsfile -> backend, frontend/Jenkinsfile -> frontend).
+# Same flow as eventpulse/scripts/update-k3s-home.sh.
 set +x
 set -eu
 
@@ -9,15 +10,21 @@ if [ "${BRANCH_NAME:-}" != main ] || [ -n "${CHANGE_ID:-}" ]; then
     exit 0
 fi
 
-component=${1:?Usage: update-k3s-home.sh backend}
+component=${1:?Usage: update-k3s-home.sh backend|frontend}
 case "$component" in
-    # The api image is the whole deployment: it serves the SPA and /api/v1, and
-    # the worker runs the same image with /app/worker, so one bump moves both
-    # Deployments in a single commit. The optional static-only web image built
-    # by frontend/Jenkinsfile is referenced by no k3s-home manifest.
+    # The api image serves /api/v1 + health endpoints, and the worker runs the
+    # same image with /app/worker, so one bump moves both Deployments in a
+    # single commit. The image still embeds the SPA for the compose
+    # single-entry deployment, but the cluster serves the SPA from the
+    # separate web tier below.
     backend) repository='ghcr.io/kaiwenyao/offerlog-api'
              manifests='apps/offerlog/api-deployment.yaml apps/offerlog/worker-deployment.yaml' ;;
-    *) echo "Unknown component: $component (k3s-home deploys only the offerlog-api image)" >&2; exit 1 ;;
+    # The web image (nginx serving the built SPA) is the cluster's frontend
+    # tier: the ingress routes / to its Service and /api straight to the api
+    # Service. Pushed by frontend/Jenkinsfile stage 5.
+    frontend) repository='ghcr.io/kaiwenyao/offerlog-web'
+             manifests='apps/offerlog/web-deployment.yaml' ;;
+    *) echo "Unknown component: $component (expected backend or frontend)" >&2; exit 1 ;;
 esac
 
 # Use the exact image from the preceding build stage, never recompute its tag

@@ -5,15 +5,16 @@
 //             (deploy/compose.test.yaml, profile "e2e") — a full application
 //             stack (postgres + api + worker + bootstrap) plus a Playwright
 //             runner container, exactly like `make e2e-docker`. On main, build
-//             & push the optional static-only web image
-//             ghcr.io/<user>/offerlog-web:<short-sha> from deploy/web.Dockerfile.
-//             (The default deployment serves the SPA from the api image built
-//             by backend/Jenkinsfile; the web image is for split-tier setups.)
-//   - gitops: none here. k3s-home/apps/offerlog deploys only the api image
-//             (which serves the SPA); that manifest bump happens in
-//             backend/Jenkinsfile's gitops stage. The optional static-only web
-//             image below is referenced by no k3s-home manifest, so there is
-//             nothing to bump for it.
+//             & push the static frontend tier ghcr.io/<user>/offerlog-web:<short-sha>
+//             from deploy/web.Dockerfile (nginx serving the built SPA).
+//   - gitops: on main, after the image push, bump the offerlog-web image line
+//             in k3s-home/main (apps/offerlog/web-deployment.yaml) via
+//             scripts/update-k3s-home.sh, the same flow backend/Jenkinsfile
+//             uses for the api image. The split k8s deployment routes ingress
+//             / to the web Service and /api straight to the api Service, so
+//             frontend changes deploy independently of the api image
+//             (publish stages share the changeset gate — backend-only
+//             commits skip the web rebuild/bump).
 //
 // Cluster assumptions (same as eventpulse): cloud name `kubernetes` and a
 // Docker-enabled node exposing /var/run/docker.sock.
@@ -65,6 +66,23 @@ spec:
       volumeMounts:
         - mountPath: /var/run/docker.sock
           name: docker-sock
+    - name: gitops
+      # Same Git tooling and credentials as backend; no Docker socket needed.
+      image: alpine:3.22
+      command:
+        - sh
+        - -c
+      args:
+        - apk add --no-cache git ca-certificates && sleep 9999999
+      tty: true
+      workingDir: /home/jenkins/agent
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
     # Keep the plugin's default image/connection args; bound the injected agent.
     - name: jnlp
       resources:
@@ -182,6 +200,16 @@ spec:
         stage('5. Build & Push Web Image') {
             when {
                 branch 'main'
+                // Split-deploy gate (mirror of backend stage 4): a
+                // backend-only commit on main skips the web image rebuild +
+                // web bump; UserIdCause/first-build always publish. deploy/**
+                // stays coarse: both pipelines watch all of it.
+                anyOf {
+                    changeset pattern: 'frontend/**'
+                    changeset pattern: 'deploy/**'
+                    triggeredBy 'UserIdCause'
+                    expression { currentBuild.previousBuild == null }
+                }
             }
             steps {
                 container('docker') {
@@ -199,16 +227,43 @@ spec:
                             echo "Pushing ${env.FULL_IMAGE}"
                             sh 'echo "$GHCR_PASS" | docker login ghcr.io -u "$GHCR_USER" --password-stdin'
                             sh '''
-                            # Optional static-only tier: nginx serving the SPA,
-                            # /api proxied to the api service. The default
-                            # compose deployment does not use this image (the
-                            # api serves the SPA itself); it exists for
-                            # split-tier setups (e.g. k8s ingress + api svc).
+                            # The static frontend tier: nginx serving the SPA.
+                            # In the split k8s deployment the ingress routes /
+                            # to this tier's Service (offerlog-web) while /api
+                            # goes straight to the api Service — frontend
+                            # changes deploy without touching the api image.
+                            # (The compose single-entry deployment instead
+                            # serves the SPA from the api image.)
                             docker build -f deploy/web.Dockerfile -t "$FULL_IMAGE" .
                             docker push "$FULL_IMAGE"
                             '''
                             sh 'docker logout ghcr.io'
                         }
+                    }
+                }
+            }
+        }
+
+        stage('6. Update k3s-home') {
+            when {
+                // Identical to stage 5's gate: it consumes stage 5's
+                // FULL_IMAGE, so the two must skip/run together.
+                branch 'main'
+                anyOf {
+                    changeset pattern: 'frontend/**'
+                    changeset pattern: 'deploy/**'
+                    triggeredBy 'UserIdCause'
+                    expression { currentBuild.previousBuild == null }
+                }
+            }
+            steps {
+                container('gitops') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'k3s-home-write',
+                        usernameVariable: 'GITOPS_USER',
+                        passwordVariable: 'GITOPS_TOKEN'
+                    )]) {
+                        sh 'sh scripts/update-k3s-home.sh frontend'
                     }
                 }
             }

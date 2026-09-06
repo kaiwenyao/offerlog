@@ -7,12 +7,26 @@
 //             tmpfs postgres + the go test suite in containers, exactly like
 //             `make test-integration`. On main, build & push the application
 //             image ghcr.io/<user>/offerlog-api:<short-sha> from
-//             deploy/api.Dockerfile (the api binary embeds the frontend SPA —
-//             see the Dockerfile — so this one image is the whole deployment).
+//             deploy/api.Dockerfile. The api binary still embeds the frontend
+//             SPA for the compose single-entry deployment — see the
+//             Dockerfile — but the k8s deployment is split-tier: the cluster
+//             serves the SPA from the separate web image built by
+//             frontend/Jenkinsfile, and frontend-only commits no longer
+//             rebuild/repush the api image (publish stages share the
+//             changeset gate — see "Split-deploy gating" below).
 //   - gitops: on main, after the image push, bump the offerlog-api image line
 //             in k3s-home/main (apps/offerlog/api-deployment.yaml +
 //             worker-deployment.yaml — both Deployments share this one image)
-//             via scripts/update-k3s-home.sh, same flow as eventpulse.
+//             via scripts/update-k3s-home.sh, same flow as eventpulse. The
+//             web tier's manifest is bumped by frontend/Jenkinsfile's gitops
+//             stage.
+//
+// Split-deploy gating: the publish/gitops stages (4/5) share the test stage's
+// changeset gate, so frontend-only commits skip the api image rebuild and the
+// api/worker bump entirely (the cluster serves the SPA from the separate web
+// tier; the embedded SPA is compose-only). deploy/** stays coarse on purpose:
+// both pipelines watch all of it, so harness/Dockerfile changes just rebuild
+// both images — harmless, and finer per-file routing isn't worth it yet.
 //
 // Cluster assumptions (same as eventpulse): cloud name `kubernetes`, a
 // Docker-enabled node exposing /var/run/docker.sock (not plain containerd).
@@ -142,7 +156,6 @@ spec:
                 anyOf {
                     changeset pattern: 'backend/**'
                     changeset pattern: 'deploy/**'
-                    changeset pattern: 'frontend/**' // the image embeds the SPA
                     triggeredBy 'UserIdCause'
                     // A branch job's first build has no previous build to diff
                     // against, so the changeset is empty and no pattern above
@@ -210,6 +223,15 @@ spec:
         stage('4. Build & Push Image') {
             when {
                 branch 'main'
+                // Same gate as the test stage: a frontend-only commit on main
+                // skips the api image rebuild + api/worker bump (the web tier
+                // covers it), and UserIdCause/first-build always publish.
+                anyOf {
+                    changeset pattern: 'backend/**'
+                    changeset pattern: 'deploy/**'
+                    triggeredBy 'UserIdCause'
+                    expression { currentBuild.previousBuild == null }
+                }
             }
             steps {
                 container('docker') {
@@ -242,7 +264,15 @@ spec:
 
         stage('5. Update k3s-home') {
             when {
+                // Identical to stage 4's gate: it consumes stage 4's
+                // FULL_IMAGE, so the two must skip/run together.
                 branch 'main'
+                anyOf {
+                    changeset pattern: 'backend/**'
+                    changeset pattern: 'deploy/**'
+                    triggeredBy 'UserIdCause'
+                    expression { currentBuild.previousBuild == null }
+                }
             }
             steps {
                 container('gitops') {

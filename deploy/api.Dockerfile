@@ -1,5 +1,8 @@
 # Multi-stage: builds the frontend, then the api+worker binaries, and serves
-# the SPA from the final stage (Caddy proxies to the api container).
+# the SPA from the final stage (Caddy proxies to the api container). The SPA
+# stays embedded for the compose single-entry deployment; the split k8s
+# deployment serves the SPA from the separate web image instead
+# (deploy/web.Dockerfile).
 FROM node:22-alpine AS fe
 WORKDIR /fe
 COPY frontend/package*.json ./
