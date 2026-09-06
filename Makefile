@@ -1,5 +1,5 @@
 # OfferLogs monorepo Makefile
-.PHONY: all dev api worker test lint build frontend-backend compose-up compose-down local-up local-down local-logs local-clean migrate-create backrestore docker-build smoke e2e help
+.PHONY: all dev api worker test lint build frontend-backend compose-up compose-down local-up local-down local-logs local-clean test-integration e2e-docker migrate-create backrestore docker-build smoke e2e help
 SHELL := /bin/bash
 
 help:
@@ -13,6 +13,8 @@ help:
 	@echo "  build          full backend + frontend build"
 	@echo "  compose-up     start the self-contained deployment (Docker Compose)"
 	@echo "  local-up       one-command local deployment on :8080 (Docker, no TLS)"
+	@echo "  test-integration  Go unit + integration tests against a Postgres container"
+	@echo "  e2e-docker     full stack + Playwright E2E, all in Docker"
 	@echo "  smoke / e2e    Playwright acceptance"
 	@echo "  fmt / lint     gofmt + vet + tsc"
 
@@ -59,6 +61,13 @@ local-logs:
 
 local-clean:
 	docker compose -f deploy/compose.local.yaml down -v --remove-orphans
+
+# dockerized tests (deploy/compose.test.yaml): ephemeral tmpfs postgres
+test-integration:
+	@docker compose -f deploy/compose.test.yaml --profile integration run --rm integration; 	status=$$?; 	docker compose -f deploy/compose.test.yaml --profile integration down -v --remove-orphans >/dev/null 2>&1; 	exit $$status
+
+e2e-docker:
+	@docker compose -f deploy/compose.test.yaml --profile e2e run --rm e2e; 	status=$$?; 	docker compose -f deploy/compose.test.yaml --profile e2e down -v --remove-orphans >/dev/null 2>&1; 	exit $$status
 
 smoke:
 	cd scripts && node smoke.cjs
