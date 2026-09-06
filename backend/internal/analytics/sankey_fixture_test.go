@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"offerlogs/backend/internal/applications/domain"
-	"offerlogs/backend/internal/platform/database"
+	"offerlog/backend/internal/applications/domain"
+	"offerlog/backend/internal/platform/database"
 )
 
 func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.New(ctx, "postgres://offerlogs:offerlogs@localhost:5433/offerlogs?sslmode=disable")
+	db, err := database.New(ctx, "postgres://offerlog:offerlog@localhost:5433/offerlog?sslmode=disable")
 	if err != nil {
 		t.Skip("no local db:", err)
 	}

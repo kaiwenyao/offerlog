@@ -9,10 +9,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	appdomain "offerlogs/backend/internal/applications/domain"
-	apprepo "offerlogs/backend/internal/applications/repository"
-	appservice "offerlogs/backend/internal/applications/service"
-	"offerlogs/backend/internal/platform/httpx"
+	appdomain "offerlog/backend/internal/applications/domain"
+	apprepo "offerlog/backend/internal/applications/repository"
+	appservice "offerlog/backend/internal/applications/service"
+	"offerlog/backend/internal/platform/httpx"
 )
 
 type Handler struct {

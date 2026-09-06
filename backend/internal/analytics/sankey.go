@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"offerlogs/backend/internal/applications/domain"
+	"offerlog/backend/internal/applications/domain"
 )
 
 // Node and Link are ECharts sankey primitives enriched with labels.

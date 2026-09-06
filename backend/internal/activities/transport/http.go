@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	actrepo "offerlogs/backend/internal/activities/repository"
-	"offerlogs/backend/internal/platform/httpx"
+	actrepo "offerlog/backend/internal/activities/repository"
+	"offerlog/backend/internal/platform/httpx"
 )
 
 type Handler struct {

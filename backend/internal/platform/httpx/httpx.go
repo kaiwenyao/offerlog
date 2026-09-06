@@ -11,9 +11,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"offerlogs/backend/internal/identity/domain"
-	authservice "offerlogs/backend/internal/identity/service"
-	"offerlogs/backend/internal/platform/observability"
+	"offerlog/backend/internal/identity/domain"
+	authservice "offerlog/backend/internal/identity/service"
+	"offerlog/backend/internal/platform/observability"
 )
 
 // ErrBody is the canonical error envelope (plan §9): {code,message,request_id}.
@@ -90,7 +90,7 @@ func WriteErr(c *gin.Context, err error) {
 	c.JSON(status, ErrBody{Code: code, Message: msg, RequestID: observability.RequestID(ctx)})
 }
 
-const userKey = "offerlogs.user"
+const userKey = "offerlog.user"
 
 // SetUser stores the authenticated principal in the gin context.
 func SetUser(c *gin.Context, u *domain.User) { c.Set(userKey, u) }

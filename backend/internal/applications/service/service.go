@@ -12,9 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"offerlogs/backend/internal/applications/domain"
-	"offerlogs/backend/internal/applications/repository"
-	"offerlogs/backend/internal/platform/database"
+	"offerlog/backend/internal/applications/domain"
+	"offerlog/backend/internal/applications/repository"
+	"offerlog/backend/internal/platform/database"
 )
 
 var ErrNotFound = errors.New("not found")

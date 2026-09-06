@@ -1,9 +1,9 @@
-# OfferLogs monorepo Makefile
+# OfferLog monorepo Makefile
 .PHONY: all dev api worker test lint build frontend-backend compose-up compose-down local-up local-down local-logs local-clean test-integration e2e-docker migrate-create backrestore docker-build smoke e2e help
 SHELL := /bin/bash
 
 help:
-	@echo "offerlogs targets:"
+	@echo "offerlog targets:"
 	@echo "  dev            run local postgres + api (dev ports)"
 	@echo "  api            build & run api binary"
 	@echo "  worker         build & run worker binary"
@@ -51,7 +51,7 @@ compose-down:
 # override with LOCAL_ADMIN_EMAIL / LOCAL_ADMIN_PASSWORD)
 local-up:
 	docker compose -f deploy/compose.local.yaml up -d --build
-	@echo "OfferLogs: http://localhost:8080  (login: $${LOCAL_ADMIN_EMAIL:-me@example.com})"
+	@echo "OfferLog: http://localhost:8080  (login: $${LOCAL_ADMIN_EMAIL:-me@example.com})"
 
 local-down:
 	docker compose -f deploy/compose.local.yaml down

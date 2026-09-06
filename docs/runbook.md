@@ -1,4 +1,4 @@
-# OfferLogs 运维手册
+# OfferLog 运维手册
 
 ## 本地开发
 ```bash

@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: OfferLogs API
+  title: OfferLog API
   version: 0.1.0
   description: |
     求职追踪系统后端契约（计划 §9）。所有业务端点位于 /api/v1 且要求会话；
@@ -13,7 +13,7 @@ components:
     cookieSession:
       type: apiKey
       in: cookie
-      name: offerlogs_session
+      name: offerlog_session
   schemas:
     Application:
       type: object

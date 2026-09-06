@@ -1,4 +1,4 @@
-// OfferLogs frontend CI — modeled on eventpulse/frontend/Jenkinsfile.
+// OfferLog frontend CI — modeled on eventpulse/frontend/Jenkinsfile.
 // Kubernetes cloud agent; the Jenkins kubernetes-plugin injects the jnlp sidecar.
 //   - node:   npm ci, tsc typecheck, Vitest unit tests, production build.
 //   - docker: E2E through the repo's own Docker harness
@@ -6,7 +6,7 @@
 //             stack (postgres + api + worker + bootstrap) plus a Playwright
 //             runner container, exactly like `make e2e-docker`. On main, build
 //             & push the optional static-only web image
-//             ghcr.io/<user>/offerlogs-web:<short-sha> from deploy/web.Dockerfile.
+//             ghcr.io/<user>/offerlog-web:<short-sha> from deploy/web.Dockerfile.
 //             (The default deployment serves the SPA from the api image built
 //             by backend/Jenkinsfile; the web image is for split-tier setups.)
 //   - gitops: offerlog has no k3s-home manifest repo yet; the image tag is the
@@ -24,7 +24,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   labels:
-    jenkins/label: offerlogs-frontend-build
+    jenkins/label: offerlog-frontend-build
 spec:
   containers:
     - name: node
@@ -159,7 +159,7 @@ spec:
                             # Full application stack + Playwright runner (PR #3
                             # harness): bootstrap creates the login account the
                             # e2e script expects, api serves the built SPA.
-                            $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-e2e --profile e2e run --rm e2e
+                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e run --rm e2e
                             '''
                         }
                     }
@@ -167,7 +167,7 @@ spec:
                         always {
                             container('docker') {
                                 sh '''
-                                $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
+                                $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
                                 '''
                             }
                         }
@@ -192,7 +192,7 @@ spec:
                             if (!(gitCommit ==~ /^[0-9a-f]{7,40}$/)) {
                                 error("GIT_COMMIT is missing or invalid (got: ${gitCommit})")
                             }
-                            env.FULL_IMAGE = "ghcr.io/${env.GHCR_USER.toLowerCase()}/offerlogs-web:${gitCommit.take(7)}"
+                            env.FULL_IMAGE = "ghcr.io/${env.GHCR_USER.toLowerCase()}/offerlog-web:${gitCommit.take(7)}"
                             echo "Pushing ${env.FULL_IMAGE}"
                             sh 'echo "$GHCR_PASS" | docker login ghcr.io -u "$GHCR_USER" --password-stdin'
                             sh '''
@@ -220,7 +220,7 @@ spec:
                 try {
                     container('docker') {
                         sh '''
-                        $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
+                        $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
                         '''
                     }
                 } catch (err) {

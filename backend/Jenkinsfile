@@ -1,4 +1,4 @@
-// OfferLogs backend CI — modeled on eventpulse/backend/Jenkinsfile.
+// OfferLog backend CI — modeled on eventpulse/backend/Jenkinsfile.
 // Kubernetes cloud agent; the Jenkins kubernetes-plugin injects the jnlp sidecar.
 //   - go:     gofmt gate, go vet, build, and unit tests (everything except the
 //             DB-backed integration suite).
@@ -6,7 +6,7 @@
 //             (deploy/compose.test.yaml, profile "integration") — a disposable
 //             tmpfs postgres + the go test suite in containers, exactly like
 //             `make test-integration`. On main, build & push the application
-//             image ghcr.io/<user>/offerlogs-api:<short-sha> from
+//             image ghcr.io/<user>/offerlog-api:<short-sha> from
 //             deploy/api.Dockerfile (the api binary embeds the frontend SPA —
 //             see the Dockerfile — so this one image is the whole deployment).
 //   - gitops: offerlog has no k3s-home manifest repo yet; the image tag is the
@@ -24,7 +24,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   labels:
-    jenkins/label: offerlogs-backend-build
+    jenkins/label: offerlog-backend-build
 spec:
   containers:
     - name: go
@@ -162,7 +162,7 @@ spec:
                             set -eu
                             # Disposable tmpfs postgres + go test container, wired
                             # and migrated by the bootstrap service (PR #3 harness).
-                            $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-integration --profile integration run --rm integration
+                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration run --rm integration
                             '''
                         }
                     }
@@ -170,7 +170,7 @@ spec:
                         always {
                             container('docker') {
                                 sh '''
-                                $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
+                                $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
                                 '''
                             }
                         }
@@ -195,7 +195,7 @@ spec:
                             if (!(gitCommit ==~ /^[0-9a-f]{7,40}$/)) {
                                 error("GIT_COMMIT is missing or invalid (got: ${gitCommit})")
                             }
-                            env.FULL_IMAGE = "ghcr.io/${env.GHCR_USER.toLowerCase()}/offerlogs-api:${gitCommit.take(7)}"
+                            env.FULL_IMAGE = "ghcr.io/${env.GHCR_USER.toLowerCase()}/offerlog-api:${gitCommit.take(7)}"
                             echo "Pushing ${env.FULL_IMAGE}"
                             sh 'echo "$GHCR_PASS" | docker login ghcr.io -u "$GHCR_USER" --password-stdin'
                             sh '''
@@ -221,7 +221,7 @@ spec:
                 try {
                     container('docker') {
                         sh '''
-                        $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
+                        $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
                         '''
                     }
                 } catch (err) {

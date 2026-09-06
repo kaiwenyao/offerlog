@@ -6,8 +6,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	auth "offerlogs/backend/internal/identity/service"
-	"offerlogs/backend/internal/platform/database"
+	auth "offerlog/backend/internal/identity/service"
+	"offerlog/backend/internal/platform/database"
 )
 
 type SQLUsers struct {

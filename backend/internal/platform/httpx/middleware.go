@@ -9,9 +9,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"offerlogs/backend/internal/identity/domain"
-	authservice "offerlogs/backend/internal/identity/service"
-	"offerlogs/backend/internal/platform/observability"
+	"offerlog/backend/internal/identity/domain"
+	authservice "offerlog/backend/internal/identity/service"
+	"offerlog/backend/internal/platform/observability"
 )
 
 // RequestID assigns a request id to every request and stores it in context.
@@ -29,7 +29,7 @@ func RequestID() gin.HandlerFunc {
 	}
 }
 
-const cookieName = "offerlogs_session"
+const cookieName = "offerlog_session"
 
 // SessionCookieName is exported for the frontend.
 const SessionCookieName = cookieName

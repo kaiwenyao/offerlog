@@ -1,4 +1,4 @@
-// Command api runs the OfferLogs HTTP API (frontend static files + /api/v1).
+// Command api runs the OfferLog HTTP API (frontend static files + /api/v1).
 package main
 
 import (
@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"offerlogs/backend/internal/bootstrap"
-	"offerlogs/backend/internal/platform/config"
-	"offerlogs/backend/internal/platform/migrate"
-	"offerlogs/backend/internal/platform/observability"
+	"offerlog/backend/internal/bootstrap"
+	"offerlog/backend/internal/platform/config"
+	"offerlog/backend/internal/platform/migrate"
+	"offerlog/backend/internal/platform/observability"
 )
 
 func main() {

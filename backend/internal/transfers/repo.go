@@ -15,8 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"offerlogs/backend/internal/applications/domain"
-	"offerlogs/backend/internal/platform/database"
+	"offerlog/backend/internal/applications/domain"
+	"offerlog/backend/internal/platform/database"
 )
 
 type Repo struct{ db *database.DB }
