@@ -1,12 +1,48 @@
 @import './layout.css';
 
+/* ---------------------------------------------------------------------------
+   OfferLogs design tokens — 宣纸/玄墨/松青/朱砂
+   A personal job-hunt dossier: cool paper canvas, ink structure, pine for
+   "advance/complete" actions, cinnabar seal-red as the single saturated
+   accent (brand stamp, overdue urgency, high priority).
+--------------------------------------------------------------------------- */
 :root {
-  --canvas: #f5f7fa;
+  --paper: #f2f4f3;
   --surface: #ffffff;
-  --ink: #18263a;
-  --primary: #2855d9;
-  --positive: #147d70;
-  --attention: #a64826;
+  --ink: #1c2a33;
+  --ink-2: #46565e;
+  --muted: #64747a;
+  --faint: #9aa8ac;
+  --hairline: #e2e7e5;
+  --line-strong: #d2dad7;
+
+  --pine: #0d6b5a;
+  --pine-hover: #0a594b;
+  --pine-soft: #e2efeb;
+  --seal: #c2452d;
+  --seal-hover: #a83a24;
+  --seal-soft: #f8e9e4;
+  --indigo: #31519e;
+  --indigo-soft: #e6ebf7;
+  --gold: #8a6414;
+  --gold-soft: #f7f0da;
+  --plum: #6d4f93;
+  --plum-soft: #f0eaf6;
+
+  --radius-s: 6px;
+  --radius: 10px;
+  --radius-l: 14px;
+
+  --font-body:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC',
+    sans-serif;
+  --font-display:
+    'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', ui-serif, serif;
+  --font-mono:
+    'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+
+  --shadow-overlay: 0 20px 60px rgb(16 30 28 / 0.22);
 }
 
 html,
@@ -17,63 +53,108 @@ body,
 
 body {
   margin: 0;
-  background: var(--canvas);
+  background: var(--paper);
   color: var(--ink);
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    'PingFang SC',
-    'Hiragino Sans GB',
-    'Microsoft YaHei',
-    'Noto Sans SC',
-    sans-serif;
+  font-family: var(--font-body);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 h1,
 h2,
 h3,
 .display {
-  font-family:
-    Manrope,
-    'Noto Sans SC',
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+  font-family: var(--font-display);
+  letter-spacing: 0.01em;
 }
 
+/* mono voice for dates, counts, ids — the dossier stamp texture */
+.mono,
 .num {
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 
-/* Status colors must carry text+icon, never color alone (§4.1) */
-.st-saved { background: #eef1f6; color: #46556b; }
-.st-preparing { background: #e6ecfb; color: #2855d9; }
-.st-applied { background: #e5f3ef; color: #147d70; }
-.st-screening { background: #e5f3ef; color: #147d70; }
-.st-assessment { background: #e5f3ef; color: #147d70; }
-.st-interviewing { background: #e0ecff; color: #1b4bc0; }
-.st-offer { background: #d9f2e8; color: #0c6b4f; }
-.st-accepted { background: #d9f2e8; color: #0c6b4f; }
-.st-rejected { background: #fbe9e5; color: #a64826; }
-.st-withdrawn { background: #f3eef7; color: #6d4f93; }
-.st-closed { background: #e8eaee; color: #5c6b7f; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 
+a {
+  color: var(--pine);
+}
+
+::selection {
+  background: var(--pine-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--pine);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* quiet scrollbars; the thumb appears only over scrollable regions */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------------------------------------------------------------------------
+   Status chips — soft background + colored dot + label (§4.1: status is
+   never color alone; the label carries the meaning, the dot is texture).
+--------------------------------------------------------------------------- */
 .status-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   border-radius: 999px;
-  padding: 2px 10px;
+  padding: 2px 10px 2px 8px;
   font-size: 12.5px;
   font-weight: 500;
   white-space: nowrap;
+  border: 1px solid transparent;
+}
+.status-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
 }
 
+.st-saved      { background: #edf0ef; color: #52626a; border-color: #e0e5e3; }
+.st-preparing  { background: var(--indigo-soft); color: var(--indigo); border-color: #d7dff2; }
+.st-applied    { background: var(--pine-soft); color: var(--pine); border-color: #d0e4de; }
+.st-screening  { background: var(--pine-soft); color: var(--pine); border-color: #d0e4de; }
+.st-assessment { background: var(--pine-soft); color: var(--pine); border-color: #d0e4de; }
+.st-interviewing { background: var(--indigo-soft); color: var(--indigo); border-color: #c9d4ee; }
+.st-offer      { background: var(--gold-soft); color: var(--gold); border-color: #ecdfb7; }
+/* accepted is the stamped moment: solid pine */
+.st-accepted   { background: var(--pine); color: #fff; border-color: var(--pine); }
+.st-rejected   { background: var(--seal-soft); color: var(--seal); border-color: #efd0c6; }
+.st-withdrawn  { background: var(--plum-soft); color: var(--plum); border-color: #e0d3ec; }
+.st-closed     { background: #e9ecea; color: #64747a; border-color: #dcdedd; }
+
+/* ---------------------------------------------------------------------------
+   Buttons
+--------------------------------------------------------------------------- */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -81,75 +162,152 @@ h3,
   gap: 6px;
   min-height: 36px;
   padding: 0 14px;
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: var(--radius-s);
+  font-size: 13.5px;
   font-weight: 500;
+  font-family: inherit;
   border: 1px solid transparent;
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
+  white-space: nowrap;
 }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary { background: var(--primary); color: #fff; }
-.btn-primary:hover:not(:disabled) { background: #1f45c2; }
-.btn-ghost { background: transparent; color: var(--ink); border-color: #d4dbe5; }
-.btn-ghost:hover:not(:disabled) { background: #eef1f6; }
-.btn-danger { background: #a64826; color: #fff; }
-.btn-danger:hover:not(:disabled) { background: #8c3b1d; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.btn-primary { background: var(--pine); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--pine-hover); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-2);
+  border-color: var(--line-strong);
+}
+.btn-ghost:hover:not(:disabled) { background: rgb(28 42 51 / 0.05); color: var(--ink); }
+
+/* selected state for tab-like ghost buttons (views, layouts, modes) */
+.btn-ghost.active-layout {
+  background: var(--pine-soft);
+  border-color: transparent;
+  color: var(--pine);
+  font-weight: 600;
+}
+
+.btn-danger { background: var(--seal); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: var(--seal-hover); }
+
+.btn-small { min-height: 28px; padding: 0 10px; font-size: 12.5px; border-radius: 5px; }
+
+.btn .icon { flex: none; }
+
+/* ---------------------------------------------------------------------------
+   Inputs
+--------------------------------------------------------------------------- */
 .input,
 .select,
 textarea.input {
   width: 100%;
   min-height: 38px;
-  padding: 6px 10px;
-  border: 1px solid #d4dbe5;
-  border-radius: 8px;
-  background: #fff;
+  padding: 6px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
   font-size: 14px;
+  font-family: inherit;
   color: var(--ink);
   outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
+.input::placeholder, textarea.input::placeholder { color: var(--faint); }
+.input:hover, .select:hover { border-color: #b9c4c0; }
 .input:focus,
 .select:focus,
 textarea.input:focus {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgb(40 85 217 / 0.15);
+  border-color: var(--pine);
+  box-shadow: 0 0 0 3px rgb(13 107 90 / 0.14);
 }
+.input:disabled, .select:disabled { background: var(--paper); color: var(--muted); }
 
+/* ---------------------------------------------------------------------------
+   Surfaces
+--------------------------------------------------------------------------- */
 .card {
   background: var(--surface);
-  border: 1px solid #e5eaf0;
-  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
 }
 
 .panel-title {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.01em;
 }
+
+/* date/mono stamp — dates read like stamps on a case file */
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 3px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.stamp.is-overdue {
+  color: var(--seal);
+  border-color: rgb(194 69 45 / 0.45);
+  background: var(--seal-soft);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+   Priority
+--------------------------------------------------------------------------- */
+.priority-high { color: var(--seal); font-weight: 700; }
+.priority-med { color: var(--gold); }
+.priority-low { color: var(--muted); }
+
+/* ---------------------------------------------------------------------------
+   Menus / spinner / misc
+--------------------------------------------------------------------------- */
+.menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  border: none; background: none; padding: 8px 10px; border-radius: var(--radius-s);
+  font-size: 13px; cursor: pointer; color: var(--ink); font-family: inherit;
+}
+.menu-item:hover { background: var(--paper); }
+.menu-item.danger { color: var(--seal); }
+.menu-item.danger:hover { background: var(--seal-soft); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner {
   width: 18px;
   height: 18px;
-  border: 2px solid rgb(40 85 217 / 0.25);
-  border-top-color: var(--primary);
+  border: 2px solid rgb(13 107 90 / 0.2);
+  border-top-color: var(--pine);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   display: inline-block;
 }
 
+.small { font-size: 12.5px; }
+
+/* button that reads as a text link (row titles, inline company links) */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+.linklike:hover { color: var(--pine); }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
-
-.btn-small { min-height: 28px; padding: 0 10px; font-size: 12.5px; }
-.small { font-size: 12.5px; }
-
-.menu-item {
-  display: block; width: 100%; text-align: left; border: none; background: none;
-  padding: 8px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--ink);
-}
-.menu-item:hover { background: #f0f4fa; }
-.menu-item.danger { color: var(--attention); }
-.menu-item.danger:hover { background: #fbe9e5; }

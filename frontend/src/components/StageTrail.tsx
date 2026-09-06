@@ -31,7 +31,6 @@ export function StageTrail({ current, path }: { current: string; path: string[] 
           <span key={st} className="stage-trail-part" style={{ display: 'contents' }}>
             <span className={`stage-node${passed ? ' passed' : ''}${isCurrent ? ' current' : ''}`}>
               <span className="dot" aria-hidden />
-              {isCurrent && <span aria-hidden>{m.icon}</span>}
               <span>{m.label}</span>
             </span>
             {i < showCurrent.length - 1 && <span className={`stage-link${passed ? ' passed' : ''}`} aria-hidden />}

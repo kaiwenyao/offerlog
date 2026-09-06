@@ -55,7 +55,12 @@ export function SettingsPage() {
 
   return (
     <div>
-      <h1 className="display" style={{ fontSize: 24 }}>设置</h1>
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">Settings</div>
+          <h1 className="display">设置</h1>
+        </div>
+      </div>
       <div className="card mt16" style={{ padding: 16, maxWidth: 640 }}>
         <h2 className="panel-title">CSV 导入</h2>
         <p className="small muted">
@@ -63,15 +68,19 @@ export function SettingsPage() {
           先预检（字段映射 + 类型错误 + 重复候选），确认后写入；重复项默认新建，不覆盖已有记录。
         </p>
         <div className="row mt8">
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".csv"
-            onChange={(e) => {
-              const f = e.target.files?.[0]
-              if (f) preview.mutate(f)
-            }}
-          />
+          <label className="btn btn-ghost" style={{ cursor: 'pointer' }}>
+            选择 CSV 文件…
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) preview.mutate(f)
+              }}
+            />
+          </label>
           {batchRef.current && (
             <button className="btn btn-primary" disabled={commit.isPending} onClick={() => commit.mutate()}>
               {commit.isPending ? '导入中…' : '确认导入'}

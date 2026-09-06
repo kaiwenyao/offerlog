@@ -30,8 +30,11 @@ export function FilesPage() {
   })
   return (
     <div>
-      <div className="row" style={{ justifyContent: 'space-between' }}>
-        <h1 className="display" style={{ fontSize: 24 }}>文件库</h1>
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">Documents</div>
+          <h1 className="display">文件库</h1>
+        </div>
         <label className="btn btn-primary" style={{ cursor: 'pointer' }}>
           {up.isPending ? <Spinner /> : '＋ 上传文件'}
           <input
@@ -46,7 +49,7 @@ export function FilesPage() {
           />
         </label>
       </div>
-      <p className="small muted">私有存储：PDF/DOCX/TXT/PNG/JPEG，单文件 ≤ 20 MiB。下载需登录并校验归属。</p>
+      <p className="small muted" style={{ margin: '0 0 12px' }}>私有存储：PDF/DOCX/TXT/PNG/JPEG，单文件 ≤ 20 MiB。下载需登录并校验归属。</p>
       {err && <p role="alert" className="err">{err}</p>}
       {q.isLoading ? (
         <Spinner />

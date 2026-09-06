@@ -82,11 +82,27 @@ export function TodayPage() {
     ...actionList.map((a) => ({ ...a })),
   ]
   const groups = groupActions(merged)
+  const todayStamp = new Date().toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'long',
+  })
+  // 逾期 = due strictly before today; due-today stays calm (it is the 今天 group)
+  const overdueBefore = new Date().setHours(0, 0, 0, 0)
 
   return (
     <div>
-      <h1 className="display" style={{ fontSize: 24 }}>今日待办</h1>
-      <p className="muted small">逾期、今天与未来 7 天的下一步行动。完成后一键标记，或进入详情改期。</p>
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">Today</div>
+          <h1 className="display">今日待办</h1>
+          <p className="page-sub small">逾期、今天与未来 7 天的下一步行动。完成后一键标记，或进入详情改期。</p>
+        </div>
+        <span className="stamp" aria-label="今天日期">
+          {todayStamp}
+        </span>
+      </div>
       {toast && <p role="alert" className="err">{toast}</p>}
       {groups.length === 0 && (
         <EmptyHint>
@@ -95,21 +111,24 @@ export function TodayPage() {
           <button className="btn btn-primary mt8" onClick={() => nav('/database')}>去添加岗位</button>
         </EmptyHint>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {groups.map((g) => (
-          <section key={g.title} className="card" style={{ padding: 14 }}>
-            <h2 className="panel-title mb8" style={{ fontSize: 14 }}>
-              {g.title} <span className="muted small">({g.items.length})</span>
+          <section
+            key={g.title}
+            className={'card today-group' + (g.title === '已逾期' ? ' is-overdue' : '')}
+          >
+            <h2 className="group-label panel-title" style={{ fontSize: 14 }}>
+              {g.title === '已逾期' && <span aria-hidden style={{ color: 'var(--seal)' }}>●</span>}
+              {g.title} <span className="count-badge num">{g.items.length}</span>
             </h2>
             <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {g.items.map((a) => (
-                <li key={a.id} className="row" style={{ padding: '9px 4px', borderBottom: '1px solid #f0f3f7', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <li key={a.id} className="today-item">
                   <div className="grow">
                     <div className="row" style={{ gap: 8 }}>
                       {a.company_name && (
                         <button
-                          className="btn btn-ghost small"
-                          style={{ minHeight: 0, padding: '2px 8px', fontWeight: 600 }}
+                          className="linklike"
                           onClick={() => a.application_id && nav(`/apps/${a.application_id}`)}
                         >
                           {a.company_name}
@@ -118,22 +137,25 @@ export function TodayPage() {
                       )}
                       {a.status && <StatusChip status={a.status} />}
                     </div>
-                    <div style={{ marginTop: 4 }}>{a.title}</div>
-                    <div className="small muted">
-                      截止 {fmtDate(a.due_ts ?? a.due_date)}
+                    <div style={{ marginTop: 3 }}>{a.title}</div>
+                    <div className="small" style={{ marginTop: 3 }}>
+                      {(a.due_ts ?? a.due_date) && new Date(a.due_ts ?? a.due_date!).getTime() < overdueBefore ? (
+                        <span className="stamp is-overdue">逾期 · {fmtDate(a.due_ts ?? a.due_date)}</span>
+                      ) : (
+                        <span className="stamp">截止 {fmtDate(a.due_ts ?? a.due_date)}</span>
+                      )}
                     </div>
                   </div>
                   {a.id < 0 ? (
                     <button
-                      className="btn btn-ghost small"
+                      className="btn btn-ghost btn-small"
                       onClick={() => a.application_id && nav(`/apps/${a.application_id}`)}
                     >
                       更新
                     </button>
                   ) : (
                     <button
-                      className="btn btn-primary small"
-                      style={{ minHeight: 34 }}
+                      className="btn btn-primary btn-small"
                       disabled={doneMut.isPending}
                       onClick={() => doneMut.mutate(a.id)}
                     >

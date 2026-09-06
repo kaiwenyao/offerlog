@@ -15,7 +15,8 @@ export function AnalyticsPage() {
   const [mode, setMode] = useState<'current' | 'history'>('current')
   const summaryQ = useQuery({
     queryKey: ['analytics', 'summary'],
-    queryFn: () => api.get<{ metrics: Metrics }>('/api/v1/analytics/summary').then((r) => ({ metrics: r.metrics })),
+    // POST — the analytics routes accept POST (consistent with /sankey)
+    queryFn: () => api.post<{ metrics: Metrics }>('/api/v1/analytics/summary', {}).then((r) => ({ metrics: r.metrics })),
   })
   const sankeyQ = useQuery({
     queryKey: ['analytics', 'sankey', mode],
@@ -26,8 +27,11 @@ export function AnalyticsPage() {
 
   return (
     <div>
-      <div className="row" style={{ justifyContent: 'space-between' }}>
-        <h1 className="display" style={{ fontSize: 24 }}>统计分析</h1>
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">Insights</div>
+          <h1 className="display">统计分析</h1>
+        </div>
       </div>
       <Summary metrics={summaryQ.data?.metrics} />
       <SankeyPanel mode={mode} setMode={setMode} data={sankeyQ.data} loading={sankeyQ.isLoading} />
@@ -120,11 +124,11 @@ function SankeyPanel({
         </div>
       </div>
       {mode === 'current' ? (
-        <p className="small muted">
+        <p className="small muted mt8">
           全部机会 → 是否已投递 → 当前状态。当前快照，不声称展示历史顺序或转化率。下钻数量与列表一致。
         </p>
       ) : (
-        <p className="small muted">
+        <p className="small muted mt8">
           从每条申请的有效事件重建真实路径；节点 = (步骤, 状态)；终点 = 截至当前状态；超过 12 步折叠。导入记录显示“导入起点 → 已知当前状态”。
         </p>
       )}
@@ -147,25 +151,54 @@ function SankeyPanel({
   )
 }
 
+// Node colors follow the app palette: ink for the cohort root, pine for the
+// submitted branch, and the status chip colors for terminal states.
+const SANKEY_COLORS: Record<string, string> = {
+  all: '#1c2a33',
+  submitted: '#0d6b5a',
+  not_submitted: '#9aa8ac',
+  saved: '#52626a',
+  preparing: '#31519e',
+  applied: '#0d6b5a',
+  screening: '#0d6b5a',
+  assessment: '#0d6b5a',
+  interviewing: '#31519e',
+  offer: '#8a6414',
+  accepted: '#0d6b5a',
+  rejected: '#c2452d',
+  withdrawn: '#6d4f93',
+  closed: '#64747a',
+}
+
+function sankeyColor(name: string): string {
+  const suffix = name.includes('_') ? name.slice(name.indexOf('_') + 1) : name
+  return SANKEY_COLORS[suffix] ?? '#9aa8ac'
+}
+
 function buildOption(d: SankeyData) {
   return {
     tooltip: { trigger: 'item', triggerOn: 'mousemove' },
     series: [
       {
         type: 'sankey',
-        data: d.nodes.map((n) => ({ name: n.name, label: { formatter: () => n.label ?? n.name } })),
+        data: d.nodes.map((n) => ({
+          name: n.name,
+          label: { formatter: () => n.label ?? n.name },
+          itemStyle: { color: sankeyColor(n.name), borderRadius: 2 },
+        })),
         links: d.links.map((l) => ({ source: l.source, target: l.target, value: l.value })),
         emphasis: { focus: 'adjacency' },
-        lineStyle: { color: 'gradient', curveness: 0.5 },
+        lineStyle: { color: 'gradient', curveness: 0.5, opacity: 0.35 },
         label: {
           formatter: (p: { name: string }) => {
             const nd = d.nodes.find((n) => n.name === p.name)
             return nd?.label ?? p.name
           },
           fontSize: 11,
+          color: '#46565e',
         },
         nodeAlign: 'justify',
-        nodeWidth: 14,
+        nodeWidth: 12,
         nodeGap: 10,
       },
     ],
@@ -206,7 +239,7 @@ function SankeyTable({ data }: { data?: SankeyData }) {
 function Channels() {
   const q = useQuery({
     queryKey: ['analytics', 'channels'],
-    queryFn: () => api.get<{ metrics: Metrics }>('/api/v1/analytics/summary').then((r) => r.metrics),
+    queryFn: () => api.post<{ metrics: Metrics }>('/api/v1/analytics/summary', {}).then((r) => r.metrics),
   })
   const rows: ChannelRow[] = q.data?.by_channel ?? []
   if (rows.length === 0) return null

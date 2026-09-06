@@ -5,6 +5,7 @@ import { api, ApiError, fmtDate } from '../../lib/api'
 import type { AppRow, SavedView } from '../../lib/types'
 import { statusMeta } from '../../lib/status'
 import { StatusChip, Spinner, EmptyHint, Modal } from '../../components/ui'
+import { Icon } from '../../components/Icon'
 import { Drawer } from './drawer'
 
 interface FilterCond {
@@ -137,26 +138,13 @@ export function DatabasePage() {
     onError: (e) => setCErr(e instanceof ApiError ? e.message : '创建失败'),
   })
 
-  const layoutTabs = (
-    <div className="row" role="tablist" aria-label="视图布局">
-      {(['table', 'board', 'list'] as const).map((l) => (
-        <button
-          key={l}
-          role="tab"
-          aria-selected={layout === l}
-          className={'btn btn-ghost small ' + (layout === l ? 'active-layout' : '')}
-          onClick={() => setLayout(l)}
-        >
-          {l === 'table' ? '表格' : l === 'board' ? '看板' : '列表'}
-        </button>
-      ))}
-    </div>
-  )
-
   return (
     <div>
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
-        <h1 className="display" style={{ fontSize: 24, margin: 0 }}>求职数据库</h1>
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">Pipeline</div>
+          <h1 className="display">求职数据库</h1>
+        </div>
         <button className="btn btn-primary" onClick={() => setShowCreate(true)}>＋ 新增岗位</button>
       </div>
 
@@ -164,7 +152,7 @@ export function DatabasePage() {
         {[...BUILTIN, ...(viewsQ.data?.items ?? [])].map((v) => (
           <button
             key={v.id}
-            className={'btn btn-ghost small ' + (viewId === v.id ? 'active-layout' : '')}
+            className={'btn btn-ghost btn-small ' + (viewId === v.id ? 'active-layout' : '')}
             onClick={() => {
               setViewId(v.id)
               setPage(1)
@@ -179,18 +167,34 @@ export function DatabasePage() {
 
       <div className="row mb8" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
         <div className="row grow">
-          <input
-            className="input"
-            style={{ maxWidth: 280 }}
-            placeholder="搜索岗位 / 公司…"
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value)
-              setPage(1)
-            }}
-            aria-label="搜索"
-          />
-          {layoutTabs}
+          <div className="search-box grow" style={{ maxWidth: 300 }}>
+            <Icon name="search" size={15} />
+            <input
+              className="input"
+              placeholder="搜索岗位 / 公司…"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value)
+                setPage(1)
+              }}
+              aria-label="搜索"
+            />
+          </div>
+          <div className="row" role="tablist" aria-label="视图布局">
+            {(['table', 'board', 'list'] as const).map((l) => (
+              <button
+                key={l}
+                role="tab"
+                aria-selected={layout === l}
+                aria-label={l === 'table' ? '表格视图' : l === 'board' ? '看板视图' : '列表视图'}
+                title={l === 'table' ? '表格' : l === 'board' ? '看板' : '列表'}
+                className={'btn btn-ghost btn-small icon-btn ' + (layout === l ? 'active-layout' : '')}
+                onClick={() => setLayout(l)}
+              >
+                <Icon name={l} size={15} />
+              </button>
+            ))}
+          </div>
         </div>
         <div className="row">
           <button
@@ -198,7 +202,7 @@ export function DatabasePage() {
             onClick={() => setTrashMode((v) => !v)}
             aria-pressed={trashMode}
           >
-            🗑 回收站
+            <Icon name="trash" size={14} /> 回收站
           </button>
           <span className="small muted num">
             共 {showCount} 条{appliedCount > 0 ? `，已应用 ${appliedCount} 个条件` : ''}
@@ -239,7 +243,7 @@ export function DatabasePage() {
               <section key={g.status} className="board-col" aria-label={m.label}>
                 <h3>
                   <span>
-                    <span aria-hidden>{m.icon}</span> {m.label}
+                    <span className="col-dot" aria-hidden /> {m.label}
                   </span>
                   <span className="num">{g.items.length}</span>
                 </h3>
@@ -257,7 +261,7 @@ export function DatabasePage() {
       ) : layout === 'list' ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(appsQ.data?.items ?? []).map((a) => (
-            <button key={a.id} className="card" style={{ padding: 12, textAlign: 'left', cursor: 'pointer' }} onClick={() => setSelApp(a.id)}>
+            <button key={a.id} className="card list-card" onClick={() => setSelApp(a.id)}>
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <strong>
                   {a.company_name} · {a.position}
@@ -274,7 +278,7 @@ export function DatabasePage() {
       ) : (
         <div className="card tbl-wrap">
           {selRows.size > 0 && (
-            <div className="row" style={{ padding: '8px 10px', borderBottom: '1px solid #e5eaf0', background: '#f4f7fd', gap: 10 }}>
+            <div className="row bulk-bar">
               <b className="small">已选 {selRows.size} 条</b>
               <input className="input" style={{ maxWidth: 150, minHeight: 30 }} placeholder="加标签" value={bulkTag} onChange={(e) => setBulkTag(e.target.value)} />
               <select className="select" style={{ maxWidth: 110, minHeight: 30 }} value={bulkPriority} onChange={(e) => setBulkPriority(e.target.value)}>
@@ -332,7 +336,15 @@ export function DatabasePage() {
                   <td className="muted small" onClick={(e) => e.stopPropagation()}>
                     <InlineNextAction app={a} onDone={() => qc.invalidateQueries({ queryKey: ['apps'] })} />
                   </td>
-                  <td className="muted small num">{fmtDate(a.next_action_due_at ?? a.deadline)}</td>
+                  <td className="small num">
+                    {fmtDate(a.next_action_due_at ?? a.deadline) !== '—' ? (
+                      <span className={'stamp' + (a.next_action_due_at && new Date(a.next_action_due_at).getTime() < new Date().setHours(0, 0, 0, 0) && !['accepted', 'rejected', 'withdrawn', 'closed'].includes(a.status) ? ' is-overdue' : '')}>
+                        {fmtDate(a.next_action_due_at ?? a.deadline)}
+                      </span>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
                   {trashMode && (
                     <td onClick={(e) => e.stopPropagation()}>
                       <button className="btn btn-ghost btn-small" onClick={() => restoreMut.mutate(a.id)}>
@@ -438,7 +450,7 @@ function InlineNextAction({ app, onDone }: { app: AppRow; onDone: () => void }) 
     return (
       <button
         className="btn btn-ghost btn-small"
-        style={{ minHeight: 24, padding: '0 6px', border: 'none', color: app.next_action ? undefined : '#aab4c2' }}
+        style={{ minHeight: 24, padding: '0 6px', border: 'none', color: app.next_action ? undefined : 'var(--faint)' }}
         title="点击编辑下一步"
         onClick={() => {
           setVal(app.next_action)

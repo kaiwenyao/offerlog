@@ -6,6 +6,7 @@ import { api, ApiError, fmtBytes, fmtDate, fmtDateTime } from '../../lib/api'
 import type { ActionItem, AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
 import { STATUSES, statusMeta, NEXT_STEP_SUGGESTION, ENDED } from '../../lib/status'
 import { StatusChip, Spinner, Modal } from '../../components/ui'
+import { Icon } from '../../components/Icon'
 import { StageTrail } from '../../components/StageTrail'
 
 // AppDetailContent renders the full detail panel content; used inside the
@@ -68,25 +69,27 @@ export function AppDetailContent({ appId, onClose, embedded }: { appId: number; 
       <div className="row">
         {!embedded && <Link className="btn btn-ghost btn-small" to={`/apps/${app.id}`}>完整详情 ↗</Link>}
         {!embedded && <RowMenu appId={app.id} app={app} onChanged={() => { qc.invalidateQueries(); onClose() }} />}
-        <button className="btn btn-ghost btn-small" onClick={onClose} aria-label="关闭">✕</button>
+        <button className="btn btn-ghost btn-small" onClick={onClose} aria-label="关闭">
+          <Icon name="close" size={15} />
+        </button>
       </div>
     </>
   )
   const body = (
     <div className="drawer-body">
           <StageTrail current={app.status} path={path} />
-          <div className="row mt8" style={{ gap: 12, flexWrap: 'wrap' }}>
-            {app.location && <span className="small muted">📍 {app.location}</span>}
-            {app.remote_policy && <span className="small muted">{app.remote_policy}</span>}
-            {app.employment_type && <span className="small muted">{app.employment_type}</span>}
+          <div className="row mt8" style={{ gap: 10, flexWrap: 'wrap' }}>
+            {app.location && <span className="small muted">{app.location}</span>}
+            {app.remote_policy && <span className="tag">{app.remote_policy}</span>}
+            {app.employment_type && <span className="tag">{app.employment_type}</span>}
             {app.salary_max != null && (
               <span className="small muted num">
-                💰 {app.salary_min ?? '—'}–{app.salary_max} {app.salary_currency}
+                {app.salary_min ?? '—'}–{app.salary_max} {app.salary_currency}
               </span>
             )}
-            {app.deadline && <span className="small muted">截止 {fmtDate(app.deadline)}</span>}
-            {app.submitted_at && <span className="small muted">投递 {fmtDate(app.submitted_at)}</span>}
-            {app.first_response_at && <span className="small muted">首次回复 {fmtDate(app.first_response_at)}</span>}
+            {app.deadline && <span className="stamp">截止 {fmtDate(app.deadline)}</span>}
+            {app.submitted_at && <span className="stamp">投递 {fmtDate(app.submitted_at)}</span>}
+            {app.first_response_at && <span className="stamp">回复 {fmtDate(app.first_response_at)}</span>}
           </div>
           {app.job_url && (
             <div className="mt8">
@@ -100,9 +103,15 @@ export function AppDetailContent({ appId, onClose, embedded }: { appId: number; 
             </div>
           )}
 
-          <div className="row mt16" role="tablist">
+          <div className="tab-row" role="tablist">
             {(['overview', 'files', 'timeline'] as const).map((t) => (
-              <button key={t} role="tab" aria-selected={tab === t} className={'btn btn-ghost btn-small ' + (tab === t ? 'active-layout' : '')} onClick={() => setTab(t)}>
+              <button
+                key={t}
+                role="tab"
+                aria-selected={tab === t}
+                className="tab"
+                onClick={() => setTab(t)}
+              >
                 {t === 'overview' ? '概览' : t === 'files' ? `附件 (${files.length})` : '时间线'}
               </button>
             ))}
@@ -180,21 +189,23 @@ function RowMenu({ appId, app, onChanged }: { appId: number; app: AppRow; onChan
   void qc
   return (
     <div style={{ position: 'relative' }}>
-      <button className="btn btn-ghost btn-small" aria-label="更多操作" onClick={() => setOpen((v) => !v)}>⋯</button>
+      <button className="btn btn-ghost btn-small" aria-label="更多操作" onClick={() => setOpen((v) => !v)}>
+        <Icon name="dots" size={16} />
+      </button>
       {open && (
         <>
           <div style={{ position: 'fixed', inset: 0 }} onClick={() => setOpen(false)} />
-          <div className="card" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 60, minWidth: 150, padding: 6 }}>
+          <div className="card" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 60, minWidth: 160, padding: 6, boxShadow: 'var(--shadow-overlay)' }}>
             {err && <p role="alert" className="err small">{err}</p>}
             {!app.archived ? (
-              <button className="menu-item" onClick={() => act(() => api.post(`/api/v1/applications/${appId}/archive`))}>🗄 归档</button>
+              <button className="menu-item" onClick={() => act(() => api.post(`/api/v1/applications/${appId}/archive`))}><Icon name="archive" size={15} /> 归档</button>
             ) : (
-              <button className="menu-item" onClick={() => act(() => api.post(`/api/v1/applications/${appId}/unarchive`))}>📂 取消归档</button>
+              <button className="menu-item" onClick={() => act(() => api.post(`/api/v1/applications/${appId}/unarchive`))}><Icon name="archive" size={15} /> 取消归档</button>
             )}
             {!app.deleted ? (
-              <button className="menu-item danger" onClick={() => act(() => api.del(`/api/v1/applications/${appId}`))}>🗑 移到回收站</button>
+              <button className="menu-item danger" onClick={() => act(() => api.del(`/api/v1/applications/${appId}`))}><Icon name="trash" size={15} /> 移到回收站</button>
             ) : (
-              <button className="menu-item" onClick={() => act(() => api.post(`/api/v1/applications/${appId}/restore`))}>♻️ 恢复</button>
+              <button className="menu-item" onClick={() => act(() => api.post(`/api/v1/applications/${appId}/restore`))}><Icon name="restore" size={15} /> 恢复</button>
             )}
           </div>
         </>
@@ -497,12 +508,12 @@ function TimelineTab({
     <div className="mt16">
       {err && <p role="alert" className="err">{err}</p>}
       <p className="small muted">当前状态：{statusMeta(status).label}。每次真实变化都有审计记录。</p>
-      <ol style={{ listStyle: 'none', padding: 0, position: 'relative' }}>
+      <ol className="timeline" style={{ listStyle: 'none', padding: 0, margin: '12px 0 0' }}>
         {events.map((e) => (
-          <li key={e.id} style={{ padding: '8px 0 8px 20px', borderLeft: '2px solid #e5eaf0', marginLeft: 8 }}>
+          <li key={e.id} className="timeline-item">
             <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
               {e.event_type === 'created' && <b>创建记录</b>}
-              {e.event_type === 'correction' && <b>✏️ 纠正</b>}
+              {e.event_type === 'correction' && <b className="row" style={{ gap: 4 }}><Icon name="edit" size={14} /> 纠正</b>}
               {e.event_type === 'status_change' && (
                 <span className="row" style={{ gap: 6 }}>
                   {e.from_status && <StatusChip status={e.from_status} />}
@@ -510,7 +521,7 @@ function TimelineTab({
                   {e.to_status && <StatusChip status={e.to_status} />}
                 </span>
               )}
-              <span className="small muted">{fmtDateTime(e.occurred_at)}</span>
+              <span className="small muted mono">{fmtDateTime(e.occurred_at)}</span>
             </div>
             {e.note && <div className="small">{e.note.replace(/^\|idem:.*/, '')}</div>}
             {e.reason && <div className="small muted">原因：{e.reason}</div>}
