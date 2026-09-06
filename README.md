@@ -28,6 +28,19 @@ cd backend && go run ./cmd/api        # :8080（API + 前端静态）
 # 浏览器打开 http://localhost:8080
 ```
 
+## 本地部署（一条命令，Docker）
+
+```bash
+make local-up                         # 构建 + 启动 postgres/api/worker，自动建号
+# 浏览器打开 http://localhost:8080    # 默认账号 me@example.com / testpass12345
+make local-down                       # 停止（保留数据卷）
+make local-clean                      # 停止并删除数据卷
+```
+
+说明：本地部署不走 Caddy/TLS（api 直接服务 SPA），postgres 暴露在 `127.0.0.1:55432` 便于排查；
+账号与 `scripts/smoke.cjs`、`scripts/e2e.cjs` 的默认凭据一致，起完即可直接跑验收。
+可用环境变量覆盖：`LOCAL_ADMIN_EMAIL` / `LOCAL_ADMIN_PASSWORD` / `APP_TIMEZONE` / `CSRF_SECRET` 等。
+
 ## 部署（Docker Compose + Caddy HTTPS）
 
 ```bash

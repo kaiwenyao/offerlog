@@ -12,6 +12,14 @@ const { chromium } = require('playwright');
   await page.waitForSelector('text=今日待办', { timeout: 8000 });
   // database
   await page.click('a:has-text("求职数据库")');
+  await page.waitForSelector('text=求职数据库', { timeout: 8000 });
+  // fresh deployment: create a row through the UI so the smoke has data to act on
+  if ((await page.locator('table.tbl tbody tr').count()) === 0) {
+    await page.click('button:has-text("＋ 新增岗位")');
+    await page.fill('#cf-company', 'Smoke-Corp-' + Date.now());
+    await page.fill('#cf-pos', '冒烟岗位');
+    await page.click('button:has-text("创建")');
+  }
   await page.waitForSelector('table.tbl tbody tr', { timeout: 8000 });
   // pick a non-ended application (update button enabled)
   const rowCount = await page.locator('table.tbl tbody tr').count();

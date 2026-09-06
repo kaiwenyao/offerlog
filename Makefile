@@ -1,5 +1,5 @@
 # OfferLogs monorepo Makefile
-.PHONY: all dev api worker test lint build frontend-backend compose-up compose-down migrate-create backrestore docker-build smoke e2e help
+.PHONY: all dev api worker test lint build frontend-backend compose-up compose-down local-up local-down local-logs local-clean migrate-create backrestore docker-build smoke e2e help
 SHELL := /bin/bash
 
 help:
@@ -12,6 +12,7 @@ help:
 	@echo "  frontend       build the React app into frontend/dist"
 	@echo "  build          full backend + frontend build"
 	@echo "  compose-up     start the self-contained deployment (Docker Compose)"
+	@echo "  local-up       one-command local deployment on :8080 (Docker, no TLS)"
 	@echo "  smoke / e2e    Playwright acceptance"
 	@echo "  fmt / lint     gofmt + vet + tsc"
 
@@ -42,6 +43,22 @@ compose-up:
 
 compose-down:
 	docker compose -f deploy/compose.yaml down
+
+# one-command local deployment: SPA+API on http://localhost:8080 (no Caddy),
+# auto-creates the first account (me@example.com / testpass12345 by default,
+# override with LOCAL_ADMIN_EMAIL / LOCAL_ADMIN_PASSWORD)
+local-up:
+	docker compose -f deploy/compose.local.yaml up -d --build
+	@echo "OfferLogs: http://localhost:8080  (login: $${LOCAL_ADMIN_EMAIL:-me@example.com})"
+
+local-down:
+	docker compose -f deploy/compose.local.yaml down
+
+local-logs:
+	docker compose -f deploy/compose.local.yaml logs -f api worker
+
+local-clean:
+	docker compose -f deploy/compose.local.yaml down -v --remove-orphans
 
 smoke:
 	cd scripts && node smoke.cjs
