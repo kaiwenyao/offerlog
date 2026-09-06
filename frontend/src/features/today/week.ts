@@ -28,10 +28,10 @@ export function groupActions(actions: TodoItem[]): TodoGroup[] {
   const today = startOfDay()
   const weekEnd = today + 7 * DAY_MS
   const groups: TodoGroup[] = [
-    { title: '已逾期', dot: '#d94a5a', items: [] },
-    { title: '今天', dot: '#8b5cf6', items: [] },
-    { title: '未来 7 天', dot: '#4a7fd9', items: [] },
-    { title: '更晚', dot: '#8b8b99', items: [] },
+    { title: '已逾期', dot: 'var(--danger)', items: [] },
+    { title: '今天', dot: 'var(--accent)', items: [] },
+    { title: '未来 7 天', dot: 'var(--info)', items: [] },
+    { title: '更晚', dot: 'var(--neutral)', items: [] },
   ]
   for (const a of actions) {
     const due = dueTime(a)
@@ -54,11 +54,11 @@ export interface WeekDay {
 const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 
 export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; fg: string }> = {
-  info: { bg: '#cfdcf7', fg: '#20365e' },
-  warn: { bg: '#f7e3c4', fg: '#6b4410' },
-  good: { bg: '#c9ecdb', fg: '#1c5340' },
-  acc: { bg: '#e0d4ff', fg: '#3f2a7a' },
-  bad: { bg: '#f7cfd4', fg: '#6e1f28' },
+  info: { bg: 'var(--info-soft)', fg: 'var(--info-strong)' },
+  warn: { bg: 'var(--warning-soft)', fg: 'var(--warning-strong)' },
+  good: { bg: 'var(--positive-soft)', fg: 'var(--positive-strong)' },
+  acc: { bg: 'var(--accent-soft)', fg: 'var(--accent-hover)' },
+  bad: { bg: 'var(--danger-soft)', fg: 'var(--danger-strong)' },
 }
 
 function toneForStatus(status: string, overdue: boolean): WeekDay['items'][number]['tone'] {

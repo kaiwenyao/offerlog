@@ -52,24 +52,22 @@ export function Button({
     primary: {
       background: hover ? 'var(--accent-hover)' : 'var(--accent)',
       color: 'var(--text-on-accent)',
-      boxShadow: press ? 'none' : 'var(--highlight-inner),0 2px 8px rgba(139,92,246,.28)',
+      boxShadow: press ? 'none' : 'var(--shadow-card)',
     },
     secondary: {
-      background: hover ? 'var(--surface-strong)' : 'var(--surface)',
+      background: hover ? 'var(--surface-hover)' : 'var(--surface)',
       color: 'var(--text)',
-      borderColor: 'var(--border-alt)',
-      backdropFilter: 'var(--blur-md)',
-      WebkitBackdropFilter: 'var(--blur-md)',
-      boxShadow: 'var(--highlight-inner)',
+      borderColor: 'var(--border)',
+      boxShadow: 'var(--shadow-card)',
     },
     ghost: {
       background: hover ? 'var(--surface-thin)' : 'transparent',
       color: 'var(--text-muted)',
     },
     danger: {
-      background: hover ? '#c93f4f' : 'var(--danger)',
-      color: '#fff',
-      boxShadow: press ? 'none' : 'var(--highlight-inner),0 2px 8px rgba(217,74,90,.24)',
+      background: hover ? 'var(--danger-hover)' : 'var(--danger)',
+      color: 'var(--text-on-accent)',
+      boxShadow: press ? 'none' : 'var(--shadow-card)',
     },
   }
 
@@ -128,18 +126,16 @@ export function LinkButton({
     primary: {
       background: hover ? 'var(--accent-hover)' : 'var(--accent)',
       color: 'var(--text-on-accent)',
-      boxShadow: 'var(--highlight-inner),0 2px 8px rgba(139,92,246,.28)',
+      boxShadow: 'var(--shadow-card)',
     },
     secondary: {
-      background: hover ? 'var(--surface-strong)' : 'var(--surface)',
+      background: hover ? 'var(--surface-hover)' : 'var(--surface)',
       color: 'var(--text)',
-      borderColor: 'var(--border-alt)',
-      backdropFilter: 'var(--blur-md)',
-      WebkitBackdropFilter: 'var(--blur-md)',
-      boxShadow: 'var(--highlight-inner)',
+      borderColor: 'var(--border)',
+      boxShadow: 'var(--shadow-card)',
     },
     ghost: { background: hover ? 'var(--surface-thin)' : 'transparent', color: 'var(--text-muted)' },
-    danger: { background: hover ? '#c93f4f' : 'var(--danger)', color: '#fff' },
+    danger: { background: hover ? 'var(--danger-hover)' : 'var(--danger)', color: 'var(--text-on-accent)' },
   }
   return (
     <a

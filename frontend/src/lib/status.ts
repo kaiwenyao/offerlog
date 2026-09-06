@@ -1,5 +1,5 @@
 // Status metadata shared across views (keys are the API contract, §2.2).
-// Labels, badge tones and dot colors follow the Glass design for OfferLog.
+// Labels, badge tones and dot colors follow the tech-utility palette.
 import type { Tone } from '../ds'
 
 export interface StatusMeta {
@@ -14,24 +14,24 @@ export interface StatusMeta {
 }
 
 export const STATUSES: StatusMeta[] = [
-  { key: 'saved', label: '待投递', icon: '🗂️', category: 'preparing', tone: 'neutral', dot: '#8b8b99' },
-  { key: 'preparing', label: '准备材料', icon: '📝', category: 'preparing', tone: 'neutral', dot: '#6f6f80' },
-  { key: 'applied', label: '已投递', icon: '📤', category: 'in_progress', tone: 'info', dot: '#4a7fd9' },
-  { key: 'screening', label: '初筛沟通', icon: '📞', category: 'in_progress', tone: 'info', dot: '#4a7fd9' },
-  { key: 'assessment', label: '笔试作业', icon: '🧪', category: 'in_progress', tone: 'warning', dot: '#d18a2b' },
-  { key: 'interviewing', label: '面试中', icon: '🎤', category: 'in_progress', tone: 'accent', dot: '#8b5cf6' },
-  { key: 'offer', label: '收到 Offer', icon: '🎉', category: 'decision', tone: 'positive', dot: '#3aa675' },
-  { key: 'accepted', label: '已接受', icon: '✅', category: 'ended', tone: 'positive', dot: '#3aa675' },
-  { key: 'rejected', label: '被拒绝', icon: '🚫', category: 'ended', tone: 'danger', dot: '#d94a5a' },
-  { key: 'withdrawn', label: '已撤回', icon: '↩️', category: 'ended', tone: 'neutral', dot: '#8b8b99' },
-  { key: 'closed', label: '岗位关闭', icon: '🔒', category: 'ended', tone: 'neutral', dot: '#8b8b99' },
+  { key: 'saved', label: '待投递', icon: '🗂️', category: 'preparing', tone: 'neutral', dot: 'var(--neutral)' },
+  { key: 'preparing', label: '准备材料', icon: '📝', category: 'preparing', tone: 'neutral', dot: 'var(--text-muted)' },
+  { key: 'applied', label: '已投递', icon: '📤', category: 'in_progress', tone: 'info', dot: 'var(--info)' },
+  { key: 'screening', label: '初筛沟通', icon: '📞', category: 'in_progress', tone: 'info', dot: 'var(--info)' },
+  { key: 'assessment', label: '笔试作业', icon: '🧪', category: 'in_progress', tone: 'warning', dot: 'var(--warning)' },
+  { key: 'interviewing', label: '面试中', icon: '🎤', category: 'in_progress', tone: 'accent', dot: 'var(--accent)' },
+  { key: 'offer', label: '收到 Offer', icon: '🎉', category: 'decision', tone: 'positive', dot: 'var(--positive)' },
+  { key: 'accepted', label: '已接受', icon: '✅', category: 'ended', tone: 'positive', dot: 'var(--positive)' },
+  { key: 'rejected', label: '被拒绝', icon: '🚫', category: 'ended', tone: 'danger', dot: 'var(--danger)' },
+  { key: 'withdrawn', label: '已撤回', icon: '↩️', category: 'ended', tone: 'neutral', dot: 'var(--neutral)' },
+  { key: 'closed', label: '岗位关闭', icon: '🔒', category: 'ended', tone: 'neutral', dot: 'var(--neutral)' },
 ]
 
 const byKey = new Map(STATUSES.map((s) => [s.key, s]))
 
 export function statusMeta(key: string): StatusMeta {
   return (
-    byKey.get(key) ?? { key, label: key, icon: '❓', category: 'preparing', tone: 'neutral', dot: '#8b8b99' }
+    byKey.get(key) ?? { key, label: key, icon: '❓', category: 'preparing', tone: 'neutral', dot: 'var(--neutral)' }
   )
 }
 

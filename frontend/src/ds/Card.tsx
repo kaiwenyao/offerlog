@@ -6,22 +6,16 @@ const VARIANTS: Record<CardVariant, CSSProperties> = {
   glass: {
     background: 'var(--surface-card)',
     border: '1px solid var(--border)',
-    backdropFilter: 'var(--blur-lg)',
-    WebkitBackdropFilter: 'var(--blur-lg)',
-    boxShadow: 'var(--glass-card)',
+    boxShadow: 'var(--shadow-card)',
   },
   strong: {
     background: 'var(--surface-strong)',
     border: '1px solid var(--border)',
-    backdropFilter: 'var(--blur-lg)',
-    WebkitBackdropFilter: 'var(--blur-lg)',
-    boxShadow: 'var(--glass-card)',
+    boxShadow: 'var(--shadow-card)',
   },
   outline: {
     background: 'var(--surface-thin)',
     border: '1px solid var(--border-alt)',
-    backdropFilter: 'var(--blur-sm)',
-    WebkitBackdropFilter: 'var(--blur-sm)',
   },
 }
 
@@ -53,7 +47,7 @@ export function Card({
         padding,
         ...v,
         transform: interactive && hover ? 'translateY(-2px)' : 'none',
-        boxShadow: interactive && hover ? 'var(--highlight-inner),var(--shadow-pop)' : v.boxShadow,
+        boxShadow: interactive && hover ? 'var(--shadow-pop)' : v.boxShadow,
         transition: 'transform var(--dur-base) var(--ease-glass),box-shadow var(--dur-base) var(--ease-glass)',
         cursor: interactive ? 'pointer' : undefined,
         ...style,
@@ -65,7 +59,7 @@ export function Card({
   )
 }
 
-/** Section heading used on every glass panel in the design. */
+/** Section heading used on every panel. */
 export function PanelTitle({ children, style, ...rest }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div

@@ -177,10 +177,8 @@ function WeekStrip({
                 minHeight: 112,
                 padding: 8,
                 borderRadius: 12,
-                background: d.isToday ? 'rgba(139,92,246,.1)' : 'var(--surface-thin)',
-                // Hairline rather than the design's white border: stacked on the
-                // .85 app panel a white edge disappears and the grid stops reading.
-                border: '1px solid ' + (d.isToday ? 'rgba(139,92,246,.35)' : 'var(--border-alt)'),
+                background: d.isToday ? 'var(--accent-soft)' : 'var(--surface-thin)',
+                border: '1px solid ' + (d.isToday ? 'var(--accent-border)' : 'var(--border-alt)'),
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 6,

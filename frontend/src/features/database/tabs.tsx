@@ -11,13 +11,13 @@ import { ActionForm, InterviewForm, NoteForm } from './forms'
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
 
 const EXT_TINT: Record<string, string> = {
-  PDF: '#f7cfd4',
-  DOC: '#cfdcf7',
-  TXT: '#e0d4ff',
-  MD: '#e0d4ff',
-  PNG: '#c9ecdb',
-  JPG: '#c9ecdb',
-  ZIP: '#f7e3c4',
+  PDF: 'var(--danger-soft)',
+  DOC: 'var(--info-soft)',
+  TXT: 'var(--surface-thin)',
+  MD: 'var(--surface-thin)',
+  PNG: 'var(--positive-soft)',
+  JPG: 'var(--positive-soft)',
+  ZIP: 'var(--warning-soft)',
 }
 
 export function fileExt(name: string): string {
@@ -36,7 +36,7 @@ export function FileTile({ name, size = 24 }: { name: string; size?: number }) {
         height: size,
         flex: '0 0 auto',
         borderRadius: 7,
-        background: EXT_TINT[ext] ?? 'rgba(15,15,20,.06)',
+        background: EXT_TINT[ext] ?? 'var(--surface-thin)',
         display: 'grid',
         placeItems: 'center',
         fontSize: 10,

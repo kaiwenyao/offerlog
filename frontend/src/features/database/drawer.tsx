@@ -202,7 +202,7 @@ export function AppDetailContent({
 
   if (embedded) {
     return (
-      <div className="drawer" style={{ position: 'static', width: '100%', border: 0, boxShadow: 'none', background: 'transparent', backdropFilter: 'none' }}>
+      <div className="drawer" style={{ position: 'static', width: '100%', border: 0, boxShadow: 'none', background: 'transparent' }}>
         <div className="drawer-head" style={{ paddingLeft: 0, paddingRight: 0 }}>
           {head}
         </div>

@@ -3,12 +3,12 @@ import type { CSSProperties, ReactNode } from 'react'
 export type Tone = 'neutral' | 'accent' | 'positive' | 'warning' | 'danger' | 'info'
 
 const TONES: Record<Tone, [string, string]> = {
-  neutral: ['rgba(15,15,20,.06)', 'var(--text-muted)'],
-  accent: ['rgba(139,92,246,.14)', '#6d31d9'],
-  positive: ['var(--positive-soft)', '#1f7d53'],
-  warning: ['var(--warning-soft)', '#8a5510'],
-  danger: ['var(--danger-soft)', '#a82f3d'],
-  info: ['var(--info-soft)', '#2f5cb0'],
+  neutral: ['var(--surface-thin)', 'var(--text-muted)'],
+  accent: ['var(--accent-soft)', 'var(--accent-hover)'],
+  positive: ['var(--positive-soft)', 'var(--positive-strong)'],
+  warning: ['var(--warning-soft)', 'var(--warning-strong)'],
+  danger: ['var(--danger-soft)', 'var(--danger-strong)'],
+  info: ['var(--info-soft)', 'var(--info-strong)'],
 }
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
@@ -68,11 +68,9 @@ export function Tag({ selected = false, onRemove, onClick, style, children, ...r
         height: 28,
         padding: '0 var(--space-3)',
         borderRadius: 'var(--radius-pill)',
-        background: selected ? 'rgba(139,92,246,.16)' : 'var(--surface)',
-        color: selected ? '#6d31d9' : 'var(--text)',
-        border: '1px solid ' + (selected ? 'rgba(139,92,246,.28)' : 'var(--border)'),
-        backdropFilter: 'var(--blur-sm)',
-        WebkitBackdropFilter: 'var(--blur-sm)',
+        background: selected ? 'var(--accent-soft)' : 'var(--surface)',
+        color: selected ? 'var(--accent-hover)' : 'var(--text)',
+        border: '1px solid ' + (selected ? 'var(--accent-border)' : 'var(--border)'),
         font: 'var(--type-caption)',
         cursor: onClick ? 'pointer' : 'default',
         transition: 'var(--transition-control)',

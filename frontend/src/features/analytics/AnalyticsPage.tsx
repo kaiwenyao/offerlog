@@ -8,21 +8,29 @@ import { Num, PageSpinner, Spinner } from '../../components/ui'
 
 type SankeyMode = 'current' | 'history'
 
-/** Sankey palette: blue keeps flowing, grey drops out, green is an Offer. */
-const FLOW_BLUE = '#4a7fd9'
-const DROPPED = '#c6c6d2'
-const GOOD = '#3aa675'
+/** Sankey palette: blue keeps flowing, grey drops out, green is an Offer.
+    Values are design tokens; canvas rendering resolves them via resolve(). */
+const FLOW_BLUE = 'var(--info)'
+const DROPPED = 'oklch(82% 0.012 240)'
+const GOOD = 'var(--positive)'
+
+/** echarts paints to canvas, where var() does not resolve — read the token. */
+function resolve(color: string): string {
+  if (!color.startsWith('var(')) return color
+  const v = getComputedStyle(document.documentElement).getPropertyValue(color.slice(4, -1)).trim()
+  return v || color
+}
 
 const NODE_COLORS: Record<string, string> = {
-  all: '#8b5cf6',
+  all: 'var(--accent)',
   submitted: FLOW_BLUE,
   not_submitted: DROPPED,
-  saved: '#8b8b99',
-  preparing: '#6f6f80',
+  saved: 'var(--neutral)',
+  preparing: 'var(--text-muted)',
   applied: FLOW_BLUE,
   screening: FLOW_BLUE,
-  assessment: '#d18a2b',
-  interviewing: '#8b5cf6',
+  assessment: 'var(--warning)',
+  interviewing: 'var(--accent)',
   offer: GOOD,
   accepted: GOOD,
   rejected: DROPPED,
@@ -234,7 +242,7 @@ function buildOption(d: SankeyData): echarts.EChartsOption {
         type: 'sankey',
         data: d.nodes.map((n) => ({
           name: n.name,
-          itemStyle: { color: nodeColor(n.name), borderWidth: 0, borderRadius: 5 },
+          itemStyle: { color: resolve(nodeColor(n.name)), borderWidth: 0, borderRadius: 5 },
         })),
         links: d.links.map((l) => ({ source: l.source, target: l.target, value: l.value })),
         emphasis: { focus: 'adjacency' },
@@ -242,7 +250,7 @@ function buildOption(d: SankeyData): echarts.EChartsOption {
         label: {
           formatter: (p: { name: string }) => d.nodes.find((n) => n.name === p.name)?.label ?? p.name,
           fontSize: 12,
-          color: '#0f0f14',
+          color: resolve('var(--text)'),
           fontWeight: 500,
         },
         nodeAlign: 'justify',
@@ -341,7 +349,7 @@ function OutcomePanel({ metrics }: { metrics: Metrics }) {
   const split = [
     { label: '已接受', value: accepted, color: GOOD },
     { label: '婉拒 / 结束', value: rejected, color: DROPPED },
-    { label: '待答复', value: pending, color: '#d18a2b' },
+    { label: '待答复', value: pending, color: 'var(--warning)' },
   ]
 
   return (
@@ -357,7 +365,7 @@ function OutcomePanel({ metrics }: { metrics: Metrics }) {
           borderRadius: 6,
           overflow: 'hidden',
           boxShadow: 'var(--highlight-inner)',
-          background: 'rgba(15,15,20,.06)',
+          background: 'var(--surface-thin)',
         }}
       >
         {total > 0 &&

@@ -96,8 +96,7 @@ export function Icon({ name, size = 18, strokeWidth = 1.75, color = 'currentColo
 }
 
 /**
- * The OfferLog mark: a violet gradient square with the design's inner
- * highlight. Replaces the old wax-seal mark.
+ * The OfferLog mark: a flat accent square with a subtle inner highlight.
  */
 export function SealMark({ size = 26 }: { size?: number }) {
   return (
@@ -108,22 +107,21 @@ export function SealMark({ size = 26 }: { size?: number }) {
         height: size,
         flex: '0 0 auto',
         borderRadius: Math.round(size * 0.35),
-        background: 'linear-gradient(135deg,#8b5cf6,#c4b5fd)',
-        boxShadow: 'var(--highlight-inner)',
+        background: 'linear-gradient(135deg, var(--accent), var(--accent-hover))',
         display: 'block',
       }}
     />
   )
 }
 
-/** Deterministic pastel wash used for company avatars across the app. */
+/** Deterministic neutral wash used for company avatars across the app. */
 const WASH = [
-  'linear-gradient(135deg,#ffd7ec,#d8c8ff)',
-  'linear-gradient(135deg,#c9dcff,#ffd7ec)',
-  'linear-gradient(135deg,#d8c8ff,#c9dcff)',
-  'linear-gradient(135deg,#ffd7ec,#c9dcff)',
-  'linear-gradient(135deg,#c9dcff,#d8c8ff)',
-  'linear-gradient(135deg,#d8c8ff,#ffd7ec)',
+  'linear-gradient(135deg, oklch(95% 0.03 145), oklch(91% 0.04 145))',
+  'linear-gradient(135deg, oklch(95% 0.012 250), oklch(91% 0.014 250))',
+  'linear-gradient(135deg, oklch(94% 0.03 155), oklch(91% 0.02 240))',
+  'linear-gradient(135deg, oklch(95% 0.012 240), oklch(91% 0.03 145))',
+  'linear-gradient(135deg, oklch(95% 0.025 145), oklch(92% 0.014 250))',
+  'linear-gradient(135deg, oklch(95% 0.014 250), oklch(91% 0.03 155))',
 ]
 
 export function washFor(seed: string | number): string {
@@ -145,7 +143,7 @@ export function CompanyMark({ name, size = 22, seed }: { name: string; size?: nu
         flex: '0 0 auto',
         borderRadius: Math.round(size * 0.32),
         background: washFor(seed ?? name),
-        boxShadow: 'var(--highlight-inner)',
+        border: '1px solid var(--border-alt)',
         fontSize: Math.max(10, Math.round(size * 0.5)),
         fontWeight: 500,
         display: 'grid',

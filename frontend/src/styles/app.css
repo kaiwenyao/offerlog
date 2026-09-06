@@ -1,7 +1,7 @@
 @import './tokens.css';
 
 /* ==========================================================================
-   App shell — one glass panel filling the viewport, sidebar + content column.
+   App shell — one flat panel filling the viewport, sidebar + content column.
    ========================================================================== */
 
 #root {
@@ -27,9 +27,7 @@
   border-radius: var(--radius-panel);
   background: var(--surface-strong);
   border: 1px solid var(--border);
-  backdrop-filter: var(--blur-lg);
-  -webkit-backdrop-filter: var(--blur-lg);
-  box-shadow: var(--glass-card);
+  box-shadow: var(--shadow-card);
 }
 
 /* ---- sidebar ---- */
@@ -100,15 +98,14 @@
 }
 
 .nav-item:hover {
-  background: var(--surface);
+  background: var(--surface-thin);
   color: var(--text);
   text-decoration: none;
 }
 
 .nav-item.active {
-  background: var(--surface-strong);
+  background: var(--surface-hover);
   color: var(--text);
-  box-shadow: var(--highlight-inner);
 }
 
 .nav-item .nav-count {
@@ -141,7 +138,7 @@
 
 .saved-view:hover,
 .saved-view.active {
-  background: var(--surface);
+  background: var(--surface-thin);
   color: var(--text);
 }
 
@@ -160,8 +157,7 @@
   height: 28px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: linear-gradient(135deg, #c9dcff, #d8c8ff);
-  box-shadow: var(--highlight-inner);
+  background: linear-gradient(135deg, var(--accent-soft), var(--accent-border));
 }
 
 .ellipsis {
@@ -208,7 +204,6 @@
   border-radius: var(--radius-control);
   background: var(--surface);
   border: 1px solid var(--border-alt);
-  box-shadow: var(--highlight-inner);
 }
 
 .topbar-search input {
@@ -252,7 +247,7 @@
 }
 
 .menu-btn:hover {
-  background: var(--surface);
+  background: var(--surface-thin);
 }
 
 /* ==========================================================================
@@ -327,7 +322,7 @@
   align-items: center;
   gap: var(--space-3);
   padding: 9px var(--space-4);
-  border-bottom: 1px solid rgba(15, 15, 20, .05);
+  border-bottom: 1px solid var(--border-alt);
   text-align: left;
   transition: background var(--dur-fast) var(--ease-glass);
 }
@@ -341,7 +336,7 @@
 }
 
 .panel-row.clickable:hover {
-  background: rgba(255, 255, 255, .5);
+  background: var(--surface-hover);
 }
 
 button.panel-row {
@@ -352,12 +347,12 @@ button.panel-row {
   align-items: center;
   gap: var(--space-3);
   padding: 9px var(--space-4);
-  border-bottom: 1px solid rgba(15, 15, 20, .05);
+  border-bottom: 1px solid var(--border-alt);
   cursor: pointer;
 }
 
 button.panel-row:hover {
-  background: rgba(255, 255, 255, .5);
+  background: var(--surface-hover);
 }
 
 /* ---- data table ---- */
@@ -383,18 +378,16 @@ button.panel-row:hover {
   top: 0;
   z-index: 2;
   background: var(--surface-strong);
-  backdrop-filter: var(--blur-md);
-  -webkit-backdrop-filter: var(--blur-md);
 }
 
 .tbl-row {
-  border-bottom: 1px solid rgba(15, 15, 20, .05);
+  border-bottom: 1px solid var(--border-alt);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease-glass);
 }
 
 .tbl-row:hover {
-  background: rgba(255, 255, 255, .55);
+  background: var(--surface-hover);
 }
 
 .pips {
@@ -429,7 +422,7 @@ button.panel-row:hover {
 
 .tbl td {
   padding: 8px var(--space-3);
-  border-bottom: 1px solid rgba(15, 15, 20, .05);
+  border-bottom: 1px solid var(--border-alt);
 }
 
 /* ---- board ---- */
@@ -460,12 +453,12 @@ button.panel-row:hover {
   border-radius: var(--radius-control);
   background: var(--surface-strong);
   border: 1px solid var(--border);
-  box-shadow: var(--highlight-inner), 0 4px 16px rgba(15, 15, 20, .08);
+  box-shadow: var(--shadow-card);
   transition: box-shadow var(--dur-base) var(--ease-glass), transform var(--dur-base) var(--ease-glass);
 }
 
 .board-card:hover {
-  box-shadow: var(--highlight-inner), var(--shadow-pop);
+  box-shadow: var(--shadow-pop);
   transform: translateY(-1px);
 }
 
@@ -475,9 +468,7 @@ button.panel-row:hover {
   position: absolute;
   inset: 0;
   z-index: 40;
-  background: rgba(15, 15, 20, .12);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
+  background: rgba(31, 35, 40, .25);
 }
 
 .drawer {
@@ -490,8 +481,6 @@ button.panel-row:hover {
   display: flex;
   flex-direction: column;
   background: var(--surface-strong);
-  backdrop-filter: var(--blur-xl);
-  -webkit-backdrop-filter: var(--blur-xl);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-pop);
 }
@@ -583,7 +572,7 @@ button.panel-row:hover {
   flex: 1;
   height: 7px;
   border-radius: 4px;
-  background: rgba(15, 15, 20, .06);
+  background: var(--border);
   overflow: hidden;
 }
 
@@ -610,7 +599,7 @@ button.panel-row:hover {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 2px solid rgba(139, 92, 246, .25);
+  border: 2px solid var(--accent-soft);
   border-top-color: var(--accent);
   animation: spin .7s linear infinite;
   vertical-align: middle;
@@ -638,9 +627,7 @@ button.panel-row:hover {
   border-radius: var(--radius-panel);
   background: var(--surface-strong);
   border: 1px solid var(--border);
-  backdrop-filter: var(--blur-lg);
-  -webkit-backdrop-filter: var(--blur-lg);
-  box-shadow: var(--highlight-inner), var(--shadow-pop);
+  box-shadow: var(--shadow-pop);
 }
 
 /* ---- bottom nav (mobile) ---- */
@@ -648,7 +635,7 @@ button.panel-row:hover {
 .bottom-nav {
   display: none;
   padding: 8px 6px calc(12px + env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid rgba(15, 15, 20, .06);
+  border-top: 1px solid var(--border-alt);
   background: var(--surface-strong);
 }
 
@@ -690,7 +677,7 @@ button.panel-row:hover {
 }
 
 .menu-item:hover {
-  background: var(--surface);
+  background: var(--surface-thin);
 }
 
 .menu-item.danger {
@@ -699,7 +686,7 @@ button.panel-row:hover {
 
 /* ==========================================================================
    Responsive: below 900px the sidebar collapses into a sheet and the bottom
-   navigation takes over, matching the design's 390pt mobile artboards.
+   navigation takes over.
    ========================================================================== */
 
 @media (max-width: 900px) {
@@ -720,8 +707,6 @@ button.panel-row:hover {
     left: 0;
     width: 260px;
     background: var(--surface-strong);
-    backdrop-filter: var(--blur-xl);
-    -webkit-backdrop-filter: var(--blur-xl);
     transform: translateX(-100%);
     transition: transform var(--dur-base) var(--ease-glass);
     box-shadow: var(--shadow-pop);
@@ -735,9 +720,7 @@ button.panel-row:hover {
     position: absolute;
     inset: 0;
     z-index: 49;
-    background: rgba(15, 15, 20, .12);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
+    background: rgba(31, 35, 40, .25);
   }
 
   .menu-btn {

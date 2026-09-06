@@ -466,9 +466,9 @@ function ListView({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: number) => vo
     const waiting = rows.filter((r) => r.priority !== 'high' && !['accepted', 'rejected', 'withdrawn', 'closed'].includes(r.status))
     const ended = rows.filter((r) => ['accepted', 'rejected', 'withdrawn', 'closed'].includes(r.status) && r.priority !== 'high')
     return [
-      { title: '高优先级', dot: '#8b5cf6', items: high },
-      { title: '进行中', dot: '#4a7fd9', items: waiting },
-      { title: '已结束', dot: '#8b8b99', items: ended },
+      { title: '高优先级', dot: 'var(--accent)', items: high },
+      { title: '进行中', dot: 'var(--info)', items: waiting },
+      { title: '已结束', dot: 'var(--neutral)', items: ended },
     ].filter((g) => g.items.length > 0)
   }, [rows])
 

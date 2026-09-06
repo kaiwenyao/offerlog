@@ -27,9 +27,9 @@ const NAV: NavEntry[] = [
 
 /** Saved views mirror the design's 已保存视图 list; each seeds the database page. */
 const SAVED_VIEWS: Array<{ label: string; dot: string; view: number; layout: string }> = [
-  { label: '本周面试', dot: '#8b5cf6', view: -3, layout: 'board' },
-  { label: '待跟进', dot: '#d18a2b', view: -1, layout: 'list' },
-  { label: '已归档', dot: '#8b8b99', view: -5, layout: 'table' },
+  { label: '本周面试', dot: 'var(--accent)', view: -3, layout: 'board' },
+  { label: '待跟进', dot: 'var(--warning)', view: -1, layout: 'list' },
+  { label: '已归档', dot: 'var(--neutral)', view: -5, layout: 'table' },
 ]
 
 const PAGE_META: Record<string, { eyebrow: string; title: string }> = {

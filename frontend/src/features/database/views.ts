@@ -82,11 +82,11 @@ export interface BoardBucket {
  * `minmax(210px, 1fr)` grid on a laptop viewport.
  */
 export const BOARD_BUCKETS: BoardBucket[] = [
-  { title: '待投递 / 准备', dot: '#8b8b99', statuses: ['saved', 'preparing'] },
-  { title: '已投递', dot: '#4a7fd9', statuses: ['applied'] },
-  { title: '笔试 / 沟通', dot: '#d18a2b', statuses: ['screening', 'assessment'] },
-  { title: '面试中', dot: '#8b5cf6', statuses: ['interviewing'] },
-  { title: 'Offer / 结果', dot: '#3aa675', statuses: ['offer', 'accepted', 'rejected', 'withdrawn', 'closed'] },
+  { title: '待投递 / 准备', dot: 'var(--neutral)', statuses: ['saved', 'preparing'] },
+  { title: '已投递', dot: 'var(--info)', statuses: ['applied'] },
+  { title: '笔试 / 沟通', dot: 'var(--warning)', statuses: ['screening', 'assessment'] },
+  { title: '面试中', dot: 'var(--accent)', statuses: ['interviewing'] },
+  { title: 'Offer / 结果', dot: 'var(--positive)', statuses: ['offer', 'accepted', 'rejected', 'withdrawn', 'closed'] },
 ]
 
 /**

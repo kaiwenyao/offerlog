@@ -15,12 +15,10 @@ function shellStyle(focus: boolean, invalid: boolean): CSSProperties {
   return {
     background: 'var(--surface-input)',
     borderRadius: 'var(--radius-control)',
-    border: '1px solid ' + (invalid ? 'var(--danger)' : 'var(--border-alt)'),
-    backdropFilter: 'var(--blur-md)',
-    WebkitBackdropFilter: 'var(--blur-md)',
+    border: '1px solid ' + (invalid ? 'var(--danger)' : 'var(--border)'),
     boxShadow: focus
       ? `0 0 0 2px var(--surface-strong),0 0 0 4px ${invalid ? 'var(--danger)' : 'var(--focus-ring)'}`
-      : 'var(--highlight-inner)',
+      : 'none',
     transition: 'var(--transition-control)',
   }
 }
@@ -261,9 +259,8 @@ export function Switch({ label, ariaLabel, checked = false, onChange, disabled =
           borderRadius: 'var(--radius-pill)',
           padding: 3,
           cursor: 'inherit',
-          background: checked ? 'var(--accent)' : 'rgba(15,15,20,.12)',
+          background: checked ? 'var(--accent)' : 'var(--border)',
           border: '1px solid ' + (checked ? 'var(--accent)' : 'var(--border-alt)'),
-          boxShadow: 'var(--highlight-inner)',
           transition: 'background var(--dur-base) var(--ease-glass)',
         }}
       >
@@ -273,8 +270,8 @@ export function Switch({ label, ariaLabel, checked = false, onChange, disabled =
             width: 20,
             height: 20,
             borderRadius: '50%',
-            background: '#fff',
-            boxShadow: '0 1px 3px rgba(15,15,20,.2)',
+            background: 'var(--surface)',
+            boxShadow: 'var(--shadow-card)',
             transform: checked ? 'translateX(18px)' : 'translateX(0)',
             transition: 'transform var(--dur-base) var(--ease-glass)',
           }}
@@ -319,11 +316,8 @@ export function Checkbox({ label, checked = false, onChange, disabled = false, s
           display: 'grid',
           placeItems: 'center',
           background: checked ? 'var(--accent)' : 'var(--surface)',
-          border: '1px solid ' + (checked ? 'var(--accent)' : 'var(--border-alt)'),
-          backdropFilter: 'var(--blur-sm)',
-          WebkitBackdropFilter: 'var(--blur-sm)',
-          boxShadow: 'var(--highlight-inner)',
-          color: '#fff',
+          border: '1px solid ' + (checked ? 'var(--accent)' : 'var(--border)'),
+          color: 'var(--text-on-accent)',
           fontSize: 12,
           lineHeight: 1,
           transition: 'var(--transition-control)',
