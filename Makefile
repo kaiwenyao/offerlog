@@ -46,12 +46,12 @@ compose-up:
 compose-down:
 	docker compose -f deploy/compose.yaml down
 
-# one-command local deployment: SPA+API on http://localhost:8080 (no Caddy),
-# auto-creates the first account (me@example.com / testpass12345 by default,
-# override with LOCAL_ADMIN_EMAIL / LOCAL_ADMIN_PASSWORD)
+# one-command local deployment: SPA+API on http://localhost:8080 (no Caddy).
+# No default initial user: registration is open by default here — sign up on
+# the login page (set REGISTRATION_OPEN=false + api-admin create-user to lock)
 local-up:
 	docker compose -f deploy/compose.local.yaml up -d --build
-	@echo "OfferLog: http://localhost:8080  (login: $${LOCAL_ADMIN_EMAIL:-me@example.com})"
+	@echo "OfferLog: http://localhost:8080  (open the login page and register)"
 
 local-down:
 	docker compose -f deploy/compose.local.yaml down

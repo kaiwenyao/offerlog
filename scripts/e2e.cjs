@@ -12,9 +12,18 @@ const { chromium } = require('playwright');
   const email = process.env.E2E_EMAIL || 'me@example.com';
   const password = process.env.E2E_PASSWORD || 'testpass12345';
   await page.goto(base + '/', { waitUntil: 'networkidle' });
-  await page.fill('input[type=email]', email);
-  await page.fill('input[type=password]', password);
-  await page.click('button:has-text("登录")');
+  // 注册开放（测试栈默认）→ 用唯一邮箱注册一次性账号（重跑免清库）；
+  // 关闭注册时回退到预建账号（E2E_EMAIL/E2E_PASSWORD）登录。
+  const regTab = page.locator('button[role=tab]:has-text("注册")');
+  if (await regTab.count()) {
+    await regTab.click();
+    await page.fill('input[type=email]', email.replace(/^(.+?)@/, `$1.${Date.now()}@`));
+    await page.fill('input[type=password]', password);
+  } else {
+    await page.fill('input[type=email]', email);
+    await page.fill('input[type=password]', password);
+  }
+  await page.click('button[type=submit]');
   await page.waitForSelector('text=今日待办', { timeout: 8000 });
 
   const company = 'E2E-Corp-' + Date.now();

@@ -31,15 +31,16 @@ cd backend && go run ./cmd/api        # :8080（API + 前端静态）
 ## 本地部署（一条命令，Docker）
 
 ```bash
-make local-up                         # 构建 + 启动 postgres/api/worker，自动建号
-# 浏览器打开 http://localhost:8080    # 默认账号 me@example.com / testpass12345
+make local-up                         # 构建 + 启动 postgres/api/worker
+# 浏览器打开 http://localhost:8080    # 首次在登录页「注册」标签直接开号
 make local-down                       # 停止（保留数据卷）
 make local-clean                      # 停止并删除数据卷
 ```
 
 说明：本地部署不走 Caddy/TLS（api 直接服务 SPA），postgres 暴露在 `127.0.0.1:55432` 便于排查；
-账号与 `scripts/smoke.cjs`、`scripts/e2e.cjs` 的默认凭据一致，起完即可直接跑验收。
-可用环境变量覆盖：`LOCAL_ADMIN_EMAIL` / `LOCAL_ADMIN_PASSWORD` / `APP_TIMEZONE` / `CSRF_SECRET` 等。
+本地部署默认开放注册（`REGISTRATION_OPEN=true`），没有默认初始用户 —— 首次使用在登录页注册即可，
+smoke/e2e 验收脚本也会自动注册一次性账号。
+可用环境变量覆盖：`REGISTRATION_OPEN` / `APP_TIMEZONE` / `CSRF_SECRET` 等。
 
 ## 部署（Docker Compose + Caddy HTTPS）
 
@@ -48,8 +49,10 @@ cd deploy && cp .env.example .env     # 填 PUBLIC_HOST / CSRF_SECRET / 数据�
 docker compose up -d --build          # postgres + api + worker + caddy
 # 需要自包含 SeaweedFS 时追加：
 docker compose --profile seaweedfs up -d
-# 初始化账号：
+# 初始化账号（默认闭门部署，REGISTRATION_OPEN 未开启）：
 docker compose exec api /app/api-admin create-user -email admin@x.com -password '...'
+# 或临时开放注册，在登录页自行开号：
+#   .env 里设 REGISTRATION_OPEN=true 后 docker compose up -d
 ```
 
 连已有 S3/SeaweedFS：设置 `OBJECTSTORE_PROVIDER=s3` 与 `S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/S3_BUCKET`。
@@ -70,7 +73,7 @@ E2E_BASE=http://localhost:8081 E2E_EMAIL=... E2E_PASSWORD=... node scripts/e2e.c
 
 ```bash
 make test-integration   # Go 单测+集成测试，golang 容器挂载源码，tmpfs PostgreSQL，即弃
-make e2e-docker         # 起完整应用栈（postgres/api/worker/bootstrap）+ Playwright 容器跑 e2e.cjs
+make e2e-docker         # 起完整应用栈（postgres/api/worker）+ Playwright 容器跑 e2e.cjs
 ```
 
 两套测试各自独立 compose 项目（`deploy/compose.test.yaml`，tmpfs 数据即弃，跑完自动清理）；

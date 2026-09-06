@@ -38,6 +38,11 @@ type App struct {
 	Env        string
 	CSRFSecret string
 	DataDir    string
+
+	// RegistrationOpen gates the public /auth/register endpoint. Personal
+	// instances stay closed by default; accounts come from api-admin
+	// create-user or by flipping REGISTRATION_OPEN.
+	RegistrationOpen bool
 }
 
 type Config struct {
@@ -78,6 +83,14 @@ func getenvInt64(key string, def int64) int64 {
 	return n
 }
 
+func getenvBool(key string, def bool) bool {
+	v := strings.ToLower(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		Database: Database{URL: getenv("DATABASE_URL", "postgres://offerlog:offerlog@localhost:5432/offerlog?sslmode=disable")},
@@ -105,6 +118,8 @@ func Load() (Config, error) {
 			Env:        getenv("APP_ENV", "development"),
 			CSRFSecret: getenv("CSRF_SECRET", ""),
 			DataDir:    getenv("DATA_DIR", "./data"),
+
+			RegistrationOpen: getenvBool("REGISTRATION_OPEN", false),
 		},
 	}
 	if cfg.ObjectStore.Provider == "s3" && (cfg.ObjectStore.AccessKey == "" || cfg.ObjectStore.SecretKey == "" || cfg.ObjectStore.Endpoint == "") {

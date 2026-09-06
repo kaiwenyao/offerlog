@@ -63,6 +63,12 @@ func WriteErr(c *gin.Context, err error) {
 	switch {
 	case errors.As(err, &ek):
 		status, code, msg = ek.Status, ek.Code, ek.Message
+	case errors.Is(err, authservice.ErrEmailTaken):
+		status, code, msg = http.StatusConflict, "email_taken", "该邮箱已被注册"
+	case errors.Is(err, authservice.ErrWeakPassword):
+		status, code, msg = http.StatusBadRequest, "weak_password", "密码长度需在 8-128 位之间"
+	case errors.Is(err, authservice.ErrInvalidSignup):
+		status, code, msg = http.StatusBadRequest, "invalid_signup", "邮箱或显示名格式不正确"
 	case errors.Is(err, authservice.ErrBadLogin):
 		status, code, msg = http.StatusUnauthorized, "invalid_credentials", "邮箱或密码错误"
 	case errors.Is(err, authservice.ErrNoPermission):

@@ -14,9 +14,16 @@ cd deploy
 cp .env.example .env   # 填入域名 / CSRF_SECRET / 数据库口令
 docker compose up -d            # postgres + api + worker + caddy (本地对象存储)
 docker compose --profile seaweedfs up -d   # 需要时一并启动 SeaweedFS
-# 首次初始化账号（在 api 容器内执行，无固定默认密码）
-docker compose exec api /app/api-admin create-user -email admin@x.com -password '...'
 ```
+
+## 账号与注册
+- 默认闭门：`REGISTRATION_OPEN` 未开启时登录页只显示登录，账号用 CLI 建
+  （无固定默认密码）：`docker compose exec api /app/api-admin create-user -email admin@x.com -password '...'`
+- 开放注册：`.env` 设 `REGISTRATION_OPEN=true` 重启 api，登录页出现「注册」标签，
+  自助开号即签会话；密码规则 8-128 位，邮箱唯一。公开配置端点
+  `GET /api/v1/auth/config` 返回 `{"registration_open": bool}` 供前端渲染。
+- 本地部署（compose.local）默认开放注册、不 seed 初始账号；测试栈同样开放，
+  smoke/e2e 每次注册一次性账号（唯一邮箱，重跑免清库）。
 
 连已有 SeaweedFS/S3：设 `OBJECTSTORE_PROVIDER=s3` 与 `S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/S3_BUCKET`，
 不启动 seaweedfs profile；bucket 禁止匿名读写，凭证只进后端。

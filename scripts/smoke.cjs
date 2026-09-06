@@ -6,9 +6,17 @@ const { chromium } = require('playwright');
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('401') && !m.text().includes('404')) errors.push('console: ' + m.text()); });
   await page.goto('http://localhost:8080/', { waitUntil: 'networkidle' });
-  await page.fill('input[type=email]', 'me@example.com');
-  await page.fill('input[type=password]', 'testpass12345');
-  await page.click('button:has-text("登录")');
+  // 注册开放（本地部署默认）→ 注册一次性账号；关闭注册时回退到预建账号登录。
+  const regTab = page.locator('button[role=tab]:has-text("注册")');
+  if (await regTab.count()) {
+    await regTab.click();
+    await page.fill('input[type=email]', `smoke.${Date.now()}@example.com`);
+    await page.fill('input[type=password]', 'testpass12345');
+  } else {
+    await page.fill('input[type=email]', 'me@example.com');
+    await page.fill('input[type=password]', 'testpass12345');
+  }
+  await page.click('button[type=submit]');
   await page.waitForSelector('text=今日待办', { timeout: 8000 });
   // database
   await page.click('a:has-text("求职数据库")');

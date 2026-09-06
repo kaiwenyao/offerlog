@@ -37,6 +37,10 @@
 ## ADR-006 单账号但全量 owner_id
 - 首版关闭注册、单管理员账号；但 users/companies/applications/… 全带 owner_id，
   服务层每条读取都校验归属，为多用户扩展留出无重构路径。
+- 2026-09 更新：开放注册由 `REGISTRATION_OPEN` 控制（默认关闭，cli 建号不变）；
+  打开后 `/auth/register` 自助开号并即签会话，默认初始用户随之移除
+  （compose 不再 bootstrap me@example.com，本地栈默认开放注册）。
+  owner_id 归属校验保证多账号并存时数据隔离。
 
 ## ADR-007 前端架构
 - Vite + React Router + TanStack Query（服务端状态/缓存失效）+ 手写 fetch 客户端

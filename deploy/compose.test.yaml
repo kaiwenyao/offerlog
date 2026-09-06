@@ -10,7 +10,8 @@
 #     指向 postgres 服务；模块/构建缓存放命名卷，二次运行只增量编译。
 #   - e2e：基于 mcr.microsoft.com/playwright 镜像（内含浏览器），只装
 #     scripts 的 npm 依赖；对 compose 内的 api 服务跑 smoke/e2e 脚本。
-#   - bootstrap：与 compose.local 相同的一次性建号（e2e 依赖它完成）。
+#   - 不再有 bootstrap 建号：api 侧 REGISTRATION_OPEN=true，e2e/smoke
+#     自行注册一次性账号（唯一邮箱，重跑无需清库）。
 
 name: offerlog-test
 
@@ -54,6 +55,7 @@ services:
       HTTP_ADDR: :8080
       DATA_DIR: /data
       LOG_LEVEL: warn
+      REGISTRATION_OPEN: "true"
     volumes:
       - objects_test:/data/objects
     ports:
@@ -80,29 +82,6 @@ services:
       - objects_test:/data/objects
     restart: "no"
 
-  bootstrap:
-    build:
-      context: ..
-      dockerfile: deploy/api.Dockerfile
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgres://offerlog:offerlog@postgres:5432/offerlog?sslmode=disable
-      CSRF_SECRET: test-only-secret
-      DATA_DIR: /data
-      E2E_EMAIL: ${E2E_EMAIL:-me@example.com}
-      E2E_PASSWORD: ${E2E_PASSWORD:-testpass12345}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        /app/api-admin create-user \
-          -email "$$E2E_EMAIL" -password "$$E2E_PASSWORD" -name "Test" \
-        && echo "bootstrap: user ready" \
-        || echo "bootstrap: create-user skipped"
-    restart: "no"
-
   integration:
     profiles: ["integration"]
     # 源码在镜像构建期 COPY 进去（见 deploy/integration.Dockerfile）——Jenkins
@@ -118,11 +97,7 @@ services:
       - go_mod:/go/pkg/mod
       - go_build:/root/.cache/go-build
     depends_on:
-      # 不依赖 bootstrap（建号只服务 e2e）：测试 setup 自带 migrate.Up（PR #6，
-      # 幂等 + advisory lock）。也不能依赖它 —— bootstrap 是秒退的一次性容器，
-      # compose 在 bootstrap 启动后还要拉 integration 镜像，等待
-      # service_completed_successfully 会错过其退出状态，报
-      # "integration is missing dependency bootstrap"（CI 节点实测竞态）。
+      # api 启动时自带 migrate.Up（cmd/api main），端口起来即可注册/登录。
       postgres:
         condition: service_healthy
     restart: "no"
@@ -139,8 +114,8 @@ services:
     depends_on:
       api:
         condition: service_started
-      bootstrap:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     restart: "no"
 
 volumes:

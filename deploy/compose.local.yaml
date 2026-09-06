@@ -5,9 +5,9 @@
 # 与 deploy/compose.yaml（生产式：Caddy HTTPS + 端口 80/443）的差异：
 #   - 不起 Caddy：api 直接在 http://localhost:8080 服务 SPA + /api/v1
 #   - postgres 暴露在 127.0.0.1:55432，方便本机 psql/DBeaker 连接排查
-#   - 内置一次性 bootstrap 服务：自动建首个账号（幂等，已存在则跳过）
-#     账号可用 LOCAL_ADMIN_EMAIL / LOCAL_ADMIN_PASSWORD 覆盖（默认与
-#     scripts/smoke.cjs、scripts/e2e.cjs 的凭据一致，便于直接跑验收）。
+#   - 默认开放注册（REGISTRATION_OPEN=true）：首次使用直接在登录页注册账号，
+#    「没有默认初始用户」；要闭门用就设 REGISTRATION_OPEN=false 并用
+#     api-admin create-user 建号（见 docs/runbook.md）。
 # 数据落在命名卷 pgdata_local / objects_local；`make local-clean` 连卷一起清掉。
 
 name: offerlog-local
@@ -47,6 +47,7 @@ services:
       HTTP_ADDR: :8080
       DATA_DIR: /data
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      REGISTRATION_OPEN: ${REGISTRATION_OPEN:-true}
     volumes:
       - objects_local:/data/objects
     ports:
@@ -71,36 +72,6 @@ services:
     volumes:
       - objects_local:/data/objects
     restart: unless-stopped
-
-  # 一次性引导：跑迁移并创建首个账号（容器退出即完成）。
-  # create-user 对已存在账号以非零退出 —— 本地部署视为"跳过"。
-  bootstrap:
-    build:
-      context: ..
-      dockerfile: deploy/api.Dockerfile
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-offerlog}:${POSTGRES_PASSWORD:-offerlog}@postgres:5432/${POSTGRES_DB:-offerlog}?sslmode=disable
-      CSRF_SECRET: ${CSRF_SECRET:-local-only-change-me}
-      DATA_DIR: /data
-      LOCAL_ADMIN_EMAIL: ${LOCAL_ADMIN_EMAIL:-me@example.com}
-      LOCAL_ADMIN_PASSWORD: ${LOCAL_ADMIN_PASSWORD:-testpass12345}
-      LOCAL_ADMIN_NAME: ${LOCAL_ADMIN_NAME:-Owner}
-      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Dublin}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        /app/api-admin create-user \
-          -email "$$LOCAL_ADMIN_EMAIL" \
-          -password "$$LOCAL_ADMIN_PASSWORD" \
-          -name "$$LOCAL_ADMIN_NAME" \
-          -timezone "$$APP_TIMEZONE" \
-        && echo "bootstrap: user ready" \
-        || echo "bootstrap: create-user skipped (already exists or invalid input)"
-    restart: "no"
 
 volumes:
   pgdata_local:
