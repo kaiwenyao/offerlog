@@ -1,0 +1,234 @@
+// OfferLogs backend CI — modeled on eventpulse/backend/Jenkinsfile.
+// Kubernetes cloud agent; the Jenkins kubernetes-plugin injects the jnlp sidecar.
+//   - go:     gofmt gate, go vet, build, and unit tests (everything except the
+//             DB-backed integration suite).
+//   - docker: integration tests run through the repo's own Docker harness
+//             (deploy/compose.test.yaml, profile "integration") — a disposable
+//             tmpfs postgres + the go test suite in containers, exactly like
+//             `make test-integration`. On main, build & push the application
+//             image ghcr.io/<user>/offerlogs-api:<short-sha> from
+//             deploy/api.Dockerfile (the api binary embeds the frontend SPA —
+//             see the Dockerfile — so this one image is the whole deployment).
+//   - gitops: offerlog has no k3s-home manifest repo yet; the image tag is the
+//             commit short SHA, so redeploying is a compose/manifest bump.
+//
+// Cluster assumptions (same as eventpulse): cloud name `kubernetes`, a
+// Docker-enabled node exposing /var/run/docker.sock (not plain containerd).
+pipeline {
+    agent {
+        kubernetes {
+            cloud 'kubernetes'
+            defaultContainer 'go'
+            yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins/label: offerlogs-backend-build
+spec:
+  containers:
+    - name: go
+      image: golang:1.25
+      command:
+        - sleep
+      args:
+        - "9999999"
+      tty: true
+      workingDir: /home/jenkins/agent
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 1Gi
+        limits:
+          cpu: "2000m"
+          memory: 3Gi
+      volumeMounts:
+        # Node-local caches shared by Go jobs (same pattern as the Maven repo
+        # in eventpulse): second builds only recompile what changed.
+        - mountPath: /go/pkg/mod
+          name: go-mod
+        - mountPath: /root/.cache/go-build
+          name: go-build
+    - name: docker
+      # docker:27-cli is Alpine and has /bin/sh; talks to the host-node daemon
+      # through the mounted socket (compose harness builds + runs containers).
+      image: docker:27-cli
+      command:
+        - sleep
+      args:
+        - "9999999"
+      tty: true
+      workingDir: /home/jenkins/agent
+      resources:
+        requests:
+          cpu: "100m"
+          memory: 128Mi
+        limits:
+          cpu: "500m"
+          memory: 256Mi
+      volumeMounts:
+        - mountPath: /var/run/docker.sock
+          name: docker-sock
+    # Keep the plugin's default image/connection args; bound the injected agent.
+    - name: jnlp
+      resources:
+        requests:
+          cpu: "100m"
+          memory: 256Mi
+        limits:
+          cpu: "500m"
+          memory: 512Mi
+  volumes:
+    - name: go-mod
+      hostPath:
+        path: /var/cache/jenkins/go/mod
+        type: DirectoryOrCreate
+    - name: go-build
+      hostPath:
+        path: /var/cache/jenkins/go/build
+        type: DirectoryOrCreate
+    - name: docker-sock
+      hostPath:
+        path: /var/run/docker.sock
+'''
+        }
+    }
+
+    options {
+        skipDefaultCheckout()
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        skipStagesAfterUnstable()
+        // The compose harness uses fixed host-ports-free networks, but serialize
+        // anyway so image publication and docker builds stay ordered per job.
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        CI = 'true'
+        // Unique compose project per build: nothing leaks between builds even
+        // if a stage is cancelled before its teardown runs.
+        COMPOSE = 'docker compose -f deploy/compose.test.yaml'
+    }
+
+    stages {
+        stage('1. Pull Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Backend CI') {
+            when {
+                anyOf {
+                    changeset pattern: 'backend/**'
+                    changeset pattern: 'deploy/**'
+                    changeset pattern: 'frontend/**' // the image embeds the SPA
+                    triggeredBy 'UserIdCause'
+                    // A branch job's first build has no previous build to diff
+                    // against, so the changeset is empty and no pattern above
+                    // matches; run CI on that build instead of skipping it.
+                    expression { currentBuild.previousBuild == null }
+                }
+            }
+            stages {
+                stage('2. Format, Vet, Build, Unit Tests') {
+                    steps {
+                        container('go') {
+                            dir('backend') {
+                                sh '''
+                                set -eu
+                                go version
+                                # gofmt gate: fail with the offending files listed
+                                unformatted=$(gofmt -l .)
+                                if [ -n "$unformatted" ]; then
+                                    echo "gofmt needed on:" >&2; echo "$unformatted" >&2; exit 1
+                                fi
+                                go vet ./...
+                                go build ./...
+                                # Unit tests only; the DB-backed integration suite
+                                # runs in the dockerized harness stage below.
+                                go test $(go list ./... | grep -v /tests/integration) -count=1
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('3. Integration Tests (Docker Harness)') {
+                    steps {
+                        container('docker') {
+                            sh '''
+                            set -eu
+                            # Disposable tmpfs postgres + go test container, wired
+                            # and migrated by the bootstrap service (PR #3 harness).
+                            $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-integration --profile integration run --rm integration
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            container('docker') {
+                                sh '''
+                                $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
+                                '''
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('4. Build & Push Image') {
+            when {
+                branch 'main'
+            }
+            steps {
+                container('docker') {
+                    script {
+                        // Shared with eventpulse / nightdeal: usernamePassword
+                        // `ghcr-token` (GitHub user + classic PAT with
+                        // write:packages). Tag = commit short SHA — immutable,
+                        // no `latest`.
+                        withCredentials([usernamePassword(credentialsId: 'ghcr-token', usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_PASS')]) {
+                            def gitCommit = (env.GIT_COMMIT ?: '').trim()
+                            if (!(gitCommit ==~ /^[0-9a-f]{7,40}$/)) {
+                                error("GIT_COMMIT is missing or invalid (got: ${gitCommit})")
+                            }
+                            env.FULL_IMAGE = "ghcr.io/${env.GHCR_USER.toLowerCase()}/offerlogs-api:${gitCommit.take(7)}"
+                            echo "Pushing ${env.FULL_IMAGE}"
+                            sh 'echo "$GHCR_PASS" | docker login ghcr.io -u "$GHCR_USER" --password-stdin'
+                            sh '''
+                            # Build context is the repo root: the Dockerfile
+                            # builds the SPA first, then the Go binaries, and
+                            # the final image serves both (compose deployment).
+                            docker build -f deploy/api.Dockerfile -t "$FULL_IMAGE" .
+                            docker push "$FULL_IMAGE"
+                            '''
+                            sh 'docker logout ghcr.io'
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Safety net: if the build was killed between run and teardown,
+            // remove this build's compose project and any leftover volumes.
+            script {
+                try {
+                    container('docker') {
+                        sh '''
+                        $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
+                        '''
+                    }
+                } catch (err) {
+                    echo("compose cleanup skipped: ${err}")
+                }
+            }
+            cleanWs()
+        }
+    }
+}
