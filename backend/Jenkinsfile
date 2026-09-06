@@ -9,8 +9,10 @@
 //             image ghcr.io/<user>/offerlog-api:<short-sha> from
 //             deploy/api.Dockerfile (the api binary embeds the frontend SPA —
 //             see the Dockerfile — so this one image is the whole deployment).
-//   - gitops: offerlog has no k3s-home manifest repo yet; the image tag is the
-//             commit short SHA, so redeploying is a compose/manifest bump.
+//   - gitops: on main, after the image push, bump the offerlog-api image line
+//             in k3s-home/main (apps/offerlog/api-deployment.yaml +
+//             worker-deployment.yaml — both Deployments share this one image)
+//             via scripts/update-k3s-home.sh, same flow as eventpulse.
 //
 // Cluster assumptions (same as eventpulse): cloud name `kubernetes`, a
 // Docker-enabled node exposing /var/run/docker.sock (not plain containerd).
@@ -69,6 +71,23 @@ spec:
       volumeMounts:
         - mountPath: /var/run/docker.sock
           name: docker-sock
+    - name: gitops
+      # Same Git tooling and credentials as eventpulse; no Docker socket needed.
+      image: alpine:3.22
+      command:
+        - sh
+        - -c
+      args:
+        - apk add --no-cache git ca-certificates && sleep 9999999
+      tty: true
+      workingDir: /home/jenkins/agent
+      resources:
+        requests:
+          cpu: "100m"
+          memory: 128Mi
+        limits:
+          cpu: "500m"
+          memory: 256Mi
     # Keep the plugin's default image/connection args; bound the injected agent.
     - name: jnlp
       resources:
@@ -136,9 +155,18 @@ spec:
                     steps {
                         container('go') {
                             dir('backend') {
-                                sh '''
-                                set -eu
-                                go version
+                            sh '''
+                            set -eu
+                            # The workspace was checked out by the jnlp sidecar
+                            # (uid 1000) while this container runs as root: git's
+                            # dubious-ownership check rejects the repo, and go's
+                            # default VCS stamping makes every `go build` die with
+                            # "error obtaining VCS status: exit status 128". Trust
+                            # the repo in this ephemeral build container, so the
+                            # default stamping stays intact (`go version -m` on a
+                            # built binary still shows the commit).
+                            git config --global --add safe.directory '*'
+                            go version
                                 # gofmt gate: fail with the offending files listed
                                 unformatted=$(gofmt -l .)
                                 if [ -n "$unformatted" ]; then
@@ -207,6 +235,23 @@ spec:
                             '''
                             sh 'docker logout ghcr.io'
                         }
+                    }
+                }
+            }
+        }
+
+        stage('5. Update k3s-home') {
+            when {
+                branch 'main'
+            }
+            steps {
+                container('gitops') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'k3s-home-write',
+                        usernameVariable: 'GITOPS_USER',
+                        passwordVariable: 'GITOPS_TOKEN'
+                    )]) {
+                        sh 'sh scripts/update-k3s-home.sh backend'
                     }
                 }
             }

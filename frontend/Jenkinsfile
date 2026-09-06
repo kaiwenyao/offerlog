@@ -9,8 +9,11 @@
 //             ghcr.io/<user>/offerlog-web:<short-sha> from deploy/web.Dockerfile.
 //             (The default deployment serves the SPA from the api image built
 //             by backend/Jenkinsfile; the web image is for split-tier setups.)
-//   - gitops: offerlog has no k3s-home manifest repo yet; the image tag is the
-//             commit short SHA, so redeploying is a compose/manifest bump.
+//   - gitops: none here. k3s-home/apps/offerlog deploys only the api image
+//             (which serves the SPA); that manifest bump happens in
+//             backend/Jenkinsfile's gitops stage. The optional static-only web
+//             image below is referenced by no k3s-home manifest, so there is
+//             nothing to bump for it.
 //
 // Cluster assumptions (same as eventpulse): cloud name `kubernetes` and a
 // Docker-enabled node exposing /var/run/docker.sock.

@@ -5,8 +5,9 @@
 #
 # 设计：
 #   - postgres 用 tmpfs —— 数据即弃、跑得快；每次 run 都是干净状态。
-#   - integration：golang 容器挂载 backend/ 源码，TEST_DATABASE_URL 指向
-#     postgres 服务；模块/构建缓存放命名卷，二次运行只增量编译。
+#   - integration：源码由 deploy/integration.Dockerfile COPY 进镜像（不 bind
+#     mount —— Jenkins 经宿主 socket 跑 compose 时挂不到工作区），TEST_DATABASE_URL
+#     指向 postgres 服务；模块/构建缓存放命名卷，二次运行只增量编译。
 #   - e2e：基于 mcr.microsoft.com/playwright 镜像（内含浏览器），只装
 #     scripts 的 npm 依赖；对 compose 内的 api 服务跑 smoke/e2e 脚本。
 #   - bootstrap：与 compose.local 相同的一次性建号（e2e 依赖它完成）。
@@ -24,9 +25,16 @@ services:
       - /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U offerlog -d offerlog"]
-      interval: 3s
+      # 稳态 10s。3s 间隔在 CI 并发时会把 docker exec 堆成死亡螺旋：健康检查
+      # 一旦耗时超过间隔（节点掉线时实测 45s），未返回的检查就无限累积，压垮
+      # dockerd 与 kubelet 共用的那个 containerd —— kubelet 的 PLEG 随之超时，
+      # 节点 NodeNotReady，Pod（含 Jenkins 控制器自身）被 taint 驱逐。
+      # start_interval 让启动阶段仍按 1s 快速探测，不牺牲栈就绪速度。
+      interval: 10s
       timeout: 3s
       retries: 20
+      start_period: 30s
+      start_interval: 1s
     restart: "no"
 
   api:
@@ -97,22 +105,26 @@ services:
 
   integration:
     profiles: ["integration"]
-    image: golang:1.25-alpine
-    working_dir: /src/backend
-    command: sh -c "go test ./... -count=1"
+    # 源码在镜像构建期 COPY 进去（见 deploy/integration.Dockerfile）——Jenkins
+    # 的 k8s agent 经宿主节点 docker socket 跑 compose，bind mount 的 Pod
+    # 工作区路径在宿主机上不存在，会静默挂成空目录。
+    build:
+      context: ..
+      dockerfile: deploy/integration.Dockerfile
     environment:
       TEST_DATABASE_URL: postgres://offerlog:offerlog@postgres:5432/offerlog?sslmode=disable
       CGO_ENABLED: "0"
     volumes:
-      - ../backend:/src/backend
       - go_mod:/go/pkg/mod
       - go_build:/root/.cache/go-build
     depends_on:
+      # 不依赖 bootstrap（建号只服务 e2e）：测试 setup 自带 migrate.Up（PR #6，
+      # 幂等 + advisory lock）。也不能依赖它 —— bootstrap 是秒退的一次性容器，
+      # compose 在 bootstrap 启动后还要拉 integration 镜像，等待
+      # service_completed_successfully 会错过其退出状态，报
+      # "integration is missing dependency bootstrap"（CI 节点实测竞态）。
       postgres:
         condition: service_healthy
-      # bootstrap runs migrate.Up (via create-user) — tests expect a migrated schema
-      bootstrap:
-        condition: service_completed_successfully
     restart: "no"
 
   e2e:
