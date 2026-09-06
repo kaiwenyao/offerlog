@@ -7,12 +7,18 @@
 //             tmpfs postgres + the go test suite in containers, exactly like
 //             `make test-integration`. On main, build & push the application
 //             image ghcr.io/<user>/offerlog-api:<short-sha> from
-//             deploy/api.Dockerfile (the api binary embeds the frontend SPA —
-//             see the Dockerfile — so this one image is the whole deployment).
+//             deploy/api.Dockerfile. The api binary still embeds the frontend
+//             SPA for the compose single-entry deployment — see the
+//             Dockerfile — but the k8s deployment is split-tier: the cluster
+//             serves the SPA from the separate web image built by
+//             frontend/Jenkinsfile, and frontend/** changes no longer trigger
+//             this job.
 //   - gitops: on main, after the image push, bump the offerlog-api image line
 //             in k3s-home/main (apps/offerlog/api-deployment.yaml +
 //             worker-deployment.yaml — both Deployments share this one image)
-//             via scripts/update-k3s-home.sh, same flow as eventpulse.
+//             via scripts/update-k3s-home.sh, same flow as eventpulse. The
+//             web tier's manifest is bumped by frontend/Jenkinsfile's gitops
+//             stage.
 //
 // Cluster assumptions (same as eventpulse): cloud name `kubernetes`, a
 // Docker-enabled node exposing /var/run/docker.sock (not plain containerd).
@@ -142,7 +148,6 @@ spec:
                 anyOf {
                     changeset pattern: 'backend/**'
                     changeset pattern: 'deploy/**'
-                    changeset pattern: 'frontend/**' // the image embeds the SPA
                     triggeredBy 'UserIdCause'
                     // A branch job's first build has no previous build to diff
                     // against, so the changeset is empty and no pattern above

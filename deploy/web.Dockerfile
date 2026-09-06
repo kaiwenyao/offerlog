@@ -1,9 +1,11 @@
-# Optional static-only web tier: nginx serving the built SPA, proxying /api
-# and /health to the api service (compose) or an upstream (k8s).
-# The DEFAULT deployment does not use this image — deploy/api.Dockerfile
-# serves the SPA from the api binary itself. This image exists for split-tier
-# setups (e.g. scale the web tier independently behind an ingress).
-# Built & pushed by frontend/Jenkinsfile on main.
+# Static frontend tier: nginx serving the built SPA. In the split k8s
+# deployment (k3s-home apps/offerlog) the ingress routes / to this tier's
+# Service (offerlog-web) and /api straight to the api Service, so frontend
+# changes deploy independently of the api image — frontend/Jenkinsfile builds
+# & pushes this image on main and its gitops stage bumps
+# apps/offerlog/web-deployment.yaml. The compose single-entry deployment
+# instead serves the SPA from the api image (deploy/api.Dockerfile); its
+# nginx config (nginx.web.conf) still proxies /api for that mode.
 FROM node:22-alpine AS fe
 WORKDIR /fe
 COPY frontend/package*.json ./
