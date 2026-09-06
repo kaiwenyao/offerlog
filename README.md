@@ -77,6 +77,14 @@ make e2e-docker         # 起完整应用栈（postgres/api/worker/bootstrap）+
 e2e 镜像基于 `mcr.microsoft.com/playwright:v1.59.1-noble`（与 scripts/package.json 锁定版本一致），
 测试栈 api 调试端口暴露在 `127.0.0.1:8082`。
 
+## CI（Jenkins）
+
+参考 eventpulse 的流水线模式（Kubernetes cloud agent 多容器 Pod、changeset 门控、main 分支推镜像）：
+
+- [`backend/Jenkinsfile`](./backend/Jenkinsfile)：gofmt/vet/构建/单测（go 容器）→ Docker 化集成测试（复用 `deploy/compose.test.yaml`，docker 容器）→ main 上构建推送 `ghcr.io/<user>/offerlogs-api:<short-sha>`（api 镜像内嵌 SPA，即整个应用）
+- [`frontend/Jenkinsfile`](./frontend/Jenkinsfile)：npm ci/tsc/vitest/构建（node 容器）→ Docker 化 E2E（同一 harness 的 e2e profile）→ main 上构建推送可选的 `ghcr.io/<user>/offerlogs-web:<short-sha>`（`deploy/web.Dockerfile`，nginx 静态分层镜像；默认部署不使用，SPA 由 api 镜像服务）
+- 每次构建使用独立 compose 项目名（`offerlogs-ci-$BUILD_NUMBER-*`），post 阶段兜底 `down -v` 清理；镜像标签为 commit 短 SHA，不可变、无 latest
+
 ## 主要实现要点（对应计划章节）
 
 - **状态机**（§2.2）：11 状态、跳转校验（进入招聘阶段须有投递时间、accepted 须有 Offer 历史、终态重开须原因）；

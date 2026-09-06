@@ -1,0 +1,233 @@
+// OfferLogs frontend CI — modeled on eventpulse/frontend/Jenkinsfile.
+// Kubernetes cloud agent; the Jenkins kubernetes-plugin injects the jnlp sidecar.
+//   - node:   npm ci, tsc typecheck, Vitest unit tests, production build.
+//   - docker: E2E through the repo's own Docker harness
+//             (deploy/compose.test.yaml, profile "e2e") — a full application
+//             stack (postgres + api + worker + bootstrap) plus a Playwright
+//             runner container, exactly like `make e2e-docker`. On main, build
+//             & push the optional static-only web image
+//             ghcr.io/<user>/offerlogs-web:<short-sha> from deploy/web.Dockerfile.
+//             (The default deployment serves the SPA from the api image built
+//             by backend/Jenkinsfile; the web image is for split-tier setups.)
+//   - gitops: offerlog has no k3s-home manifest repo yet; the image tag is the
+//             commit short SHA, so redeploying is a compose/manifest bump.
+//
+// Cluster assumptions (same as eventpulse): cloud name `kubernetes` and a
+// Docker-enabled node exposing /var/run/docker.sock.
+pipeline {
+    agent {
+        kubernetes {
+            cloud 'kubernetes'
+            defaultContainer 'node'
+            yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins/label: offerlogs-frontend-build
+spec:
+  containers:
+    - name: node
+      image: node:24-slim
+      command:
+        - sleep
+      args:
+        - "9999999"
+      tty: true
+      workingDir: /home/jenkins/agent
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 2Gi
+        limits:
+          cpu: "2000m"
+          memory: 4Gi
+    - name: docker
+      # docker:27-cli is Alpine and has /bin/sh; talks to the host-node daemon
+      # through the mounted socket (compose harness builds + runs containers).
+      image: docker:27-cli
+      command:
+        - sleep
+      args:
+        - "9999999"
+      tty: true
+      workingDir: /home/jenkins/agent
+      resources:
+        requests:
+          cpu: "100m"
+          memory: 128Mi
+        limits:
+          cpu: "500m"
+          memory: 256Mi
+      volumeMounts:
+        - mountPath: /var/run/docker.sock
+          name: docker-sock
+    # Keep the plugin's default image/connection args; bound the injected agent.
+    - name: jnlp
+      resources:
+        requests:
+          cpu: "100m"
+          memory: 256Mi
+        limits:
+          cpu: "500m"
+          memory: 512Mi
+  volumes:
+    - name: docker-sock
+      hostPath:
+        path: /var/run/docker.sock
+'''
+        }
+    }
+
+    options {
+        skipDefaultCheckout()
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        skipStagesAfterUnstable()
+        // Keep the dockerized E2E stack and image publication ordered per job.
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        CI = 'true'
+        COMPOSE = 'docker compose -f deploy/compose.test.yaml'
+    }
+
+    stages {
+        stage('1. Pull Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Frontend CI') {
+            when {
+                anyOf {
+                    changeset pattern: 'frontend/**'
+                    changeset pattern: 'deploy/**'
+                    triggeredBy 'UserIdCause'
+                    // A branch job's first build has no previous build to diff
+                    // against, so the changeset is empty and no pattern above
+                    // matches; run CI on that build instead of skipping it.
+                    expression { currentBuild.previousBuild == null }
+                }
+            }
+            stages {
+                stage('2. Install, Typecheck, Unit Tests') {
+                    steps {
+                        container('node') {
+                            dir('frontend') {
+                                sh '''
+                                set -eu
+                                node --version
+                                npm --version
+                                npm ci
+                                # tsc --noEmit: strict type gate, no emit
+                                npx tsc --noEmit
+                                # Vitest jsdom unit tests (status dictionary,
+                                # formatting helpers) — no backend needed
+                                npm test
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('3. Build') {
+                    steps {
+                        container('node') {
+                            dir('frontend') {
+                                sh '''
+                                # npm run build = tsc -b && vite build (SPA into dist/)
+                                npm run build
+                                '''
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'frontend/dist/**', allowEmptyArchive: false
+                        }
+                    }
+                }
+
+                stage('4. E2E (Docker Harness)') {
+                    steps {
+                        container('docker') {
+                            sh '''
+                            set -eu
+                            # Full application stack + Playwright runner (PR #3
+                            # harness): bootstrap creates the login account the
+                            # e2e script expects, api serves the built SPA.
+                            $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-e2e --profile e2e run --rm e2e
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            container('docker') {
+                                sh '''
+                                $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
+                                '''
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('5. Build & Push Web Image') {
+            when {
+                branch 'main'
+            }
+            steps {
+                container('docker') {
+                    script {
+                        // Shared with eventpulse / nightdeal: usernamePassword
+                        // `ghcr-token` (GitHub user + classic PAT with
+                        // write:packages). Tag = commit short SHA — immutable,
+                        // no `latest`.
+                        withCredentials([usernamePassword(credentialsId: 'ghcr-token', usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_PASS')]) {
+                            def gitCommit = (env.GIT_COMMIT ?: '').trim()
+                            if (!(gitCommit ==~ /^[0-9a-f]{7,40}$/)) {
+                                error("GIT_COMMIT is missing or invalid (got: ${gitCommit})")
+                            }
+                            env.FULL_IMAGE = "ghcr.io/${env.GHCR_USER.toLowerCase()}/offerlogs-web:${gitCommit.take(7)}"
+                            echo "Pushing ${env.FULL_IMAGE}"
+                            sh 'echo "$GHCR_PASS" | docker login ghcr.io -u "$GHCR_USER" --password-stdin'
+                            sh '''
+                            # Optional static-only tier: nginx serving the SPA,
+                            # /api proxied to the api service. The default
+                            # compose deployment does not use this image (the
+                            # api serves the SPA itself); it exists for
+                            # split-tier setups (e.g. k8s ingress + api svc).
+                            docker build -f deploy/web.Dockerfile -t "$FULL_IMAGE" .
+                            docker push "$FULL_IMAGE"
+                            '''
+                            sh 'docker logout ghcr.io'
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Safety net: remove this build's compose project if a later stage
+            // blew up before teardown ran.
+            script {
+                try {
+                    container('docker') {
+                        sh '''
+                        $COMPOSE -p offerlogs-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
+                        '''
+                    }
+                } catch (err) {
+                    echo("compose cleanup skipped: ${err}")
+                }
+            }
+            cleanWs()
+        }
+    }
+}
