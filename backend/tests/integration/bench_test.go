@@ -13,6 +13,7 @@ import (
 	"os"
 
 	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/migrate"
 	"offerlog/backend/internal/views"
 	viewrepo "offerlog/backend/internal/views/repository"
 	vservice "offerlog/backend/internal/views/service"
@@ -29,6 +30,9 @@ func BenchmarkQueries(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer db.Close()
+	if err := migrate.Up(ctx, db.Pool()); err != nil {
+		b.Fatal(err)
+	}
 	owner := createOwnerB(b, db)
 	svc := appservice.New(db, apprepo.New(db))
 
