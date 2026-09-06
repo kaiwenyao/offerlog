@@ -1,36 +1,48 @@
 // Status metadata shared across views (keys are the API contract, §2.2).
+// Labels, badge tones and dot colors follow the Glass design for OfferLog.
+import type { Tone } from '../ds'
+
 export interface StatusMeta {
   key: string
   label: string
   icon: string
   category: 'preparing' | 'in_progress' | 'decision' | 'ended'
-  color: string // css class suffix
+  /** Badge tone from the design system palette. */
+  tone: Tone
+  /** Solid color for dots, stage trails and progress pips. */
+  dot: string
 }
 
 export const STATUSES: StatusMeta[] = [
-  { key: 'saved', label: '待投递', icon: '🗂️', category: 'preparing', color: 'st-saved' },
-  { key: 'preparing', label: '准备材料', icon: '📝', category: 'preparing', color: 'st-preparing' },
-  { key: 'applied', label: '已投递', icon: '📤', category: 'in_progress', color: 'st-applied' },
-  { key: 'screening', label: '初筛/沟通', icon: '📞', category: 'in_progress', color: 'st-screening' },
-  { key: 'assessment', label: '笔试/作业', icon: '🧪', category: 'in_progress', color: 'st-assessment' },
-  { key: 'interviewing', label: '面试中', icon: '🎤', category: 'in_progress', color: 'st-interviewing' },
-  { key: 'offer', label: '收到 Offer', icon: '🎉', category: 'decision', color: 'st-offer' },
-  { key: 'accepted', label: '已接受', icon: '✅', category: 'ended', color: 'st-accepted' },
-  { key: 'rejected', label: '被拒绝', icon: '🚫', category: 'ended', color: 'st-rejected' },
-  { key: 'withdrawn', label: '已撤回', icon: '↩️', category: 'ended', color: 'st-withdrawn' },
-  { key: 'closed', label: '岗位关闭', icon: '🔒', category: 'ended', color: 'st-closed' },
+  { key: 'saved', label: '待投递', icon: '🗂️', category: 'preparing', tone: 'neutral', dot: '#8b8b99' },
+  { key: 'preparing', label: '准备材料', icon: '📝', category: 'preparing', tone: 'neutral', dot: '#6f6f80' },
+  { key: 'applied', label: '已投递', icon: '📤', category: 'in_progress', tone: 'info', dot: '#4a7fd9' },
+  { key: 'screening', label: '初筛沟通', icon: '📞', category: 'in_progress', tone: 'info', dot: '#4a7fd9' },
+  { key: 'assessment', label: '笔试作业', icon: '🧪', category: 'in_progress', tone: 'warning', dot: '#d18a2b' },
+  { key: 'interviewing', label: '面试中', icon: '🎤', category: 'in_progress', tone: 'accent', dot: '#8b5cf6' },
+  { key: 'offer', label: '收到 Offer', icon: '🎉', category: 'decision', tone: 'positive', dot: '#3aa675' },
+  { key: 'accepted', label: '已接受', icon: '✅', category: 'ended', tone: 'positive', dot: '#3aa675' },
+  { key: 'rejected', label: '被拒绝', icon: '🚫', category: 'ended', tone: 'danger', dot: '#d94a5a' },
+  { key: 'withdrawn', label: '已撤回', icon: '↩️', category: 'ended', tone: 'neutral', dot: '#8b8b99' },
+  { key: 'closed', label: '岗位关闭', icon: '🔒', category: 'ended', tone: 'neutral', dot: '#8b8b99' },
 ]
 
 const byKey = new Map(STATUSES.map((s) => [s.key, s]))
 
 export function statusMeta(key: string): StatusMeta {
-  return byKey.get(key) ?? { key, label: key, icon: '❓', category: 'preparing', color: 'st-saved' }
+  return (
+    byKey.get(key) ?? { key, label: key, icon: '❓', category: 'preparing', tone: 'neutral', dot: '#8b8b99' }
+  )
 }
 
-export const PRIORITIES: Record<string, { label: string; cls: string }> = {
-  high: { label: '高', cls: 'priority-high' },
-  medium: { label: '中', cls: 'priority-med' },
-  low: { label: '低', cls: 'priority-low' },
+export const PRIORITIES: Record<string, { label: string; strong: boolean }> = {
+  high: { label: '高', strong: true },
+  medium: { label: '中', strong: false },
+  low: { label: '低', strong: false },
+}
+
+export function priorityLabel(p: string): string {
+  return PRIORITIES[p]?.label ?? '中'
 }
 
 export const CHANNEL_OPTIONS = ['LinkedIn', 'Referral', '官网', '猎头', '内推社区', '其他']
@@ -38,7 +50,7 @@ export const REMOTE_OPTIONS = ['远程', '混合', '到岗', '']
 export const EMPLOYMENT_OPTIONS = ['全职', '实习', '合同', '兼职']
 export const SALARY_CURRENCIES = ['EUR', 'USD', 'GBP', 'CNY', '其他']
 
-// 主流程推进顺序（用于“下一步建议”）
+// 主流程推进顺序（用于“下一步建议”与阶段推进条）
 export const FLOW_ORDER = [
   'saved',
   'preparing',
@@ -49,6 +61,10 @@ export const FLOW_ORDER = [
   'offer',
   'accepted',
 ]
+
+/** The 7 pips rendered in the table's 阶段推进 column (design: r.d1…r.d7). */
+export const FLOW_PIPS = ['saved', 'preparing', 'applied', 'screening', 'assessment', 'interviewing', 'offer']
+
 export const ENDED = new Set(['accepted', 'rejected', 'withdrawn', 'closed'])
 
 export const NEXT_STEP_SUGGESTION: Record<string, string> = {

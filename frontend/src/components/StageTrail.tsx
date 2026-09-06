@@ -1,42 +1,84 @@
 import { FLOW_ORDER, statusMeta } from '../lib/status'
 
 /**
- * 阶段轨迹 (plan §4.1): a fine line connects real stages the application has
- * walked; the current stage is highlighted; unvisited stages are not filled.
- * Only used in detail views, not squeezed into list rows.
+ * 阶段轨迹: a dot per stage the application has actually walked, sized up at
+ * the current stage with the design's focus ring. Unvisited stages stay hollow.
  */
 export function StageTrail({ current, path }: { current: string; path: string[] }) {
-  // order statuses by the canonical flow, but show any visited status in path
-  const meta = new Map<string, string[]>()
   const walked: string[] = []
   const seen = new Set<string>()
-  const ordered = [...FLOW_ORDER]
   for (const p of path) {
-    if (!seen.has(p) && ordered.includes(p)) {
+    if (!seen.has(p) && FLOW_ORDER.includes(p)) {
       seen.add(p)
       walked.push(p)
     }
   }
-  void meta
-  const idx = walked.indexOf(current)
-  // If current is not on the flow order (e.g. withdrawn), still mark it.
-  const showCurrent = ordered.includes(current) ? walked : [...walked, current]
+  const stages = FLOW_ORDER.includes(current) ? walked : [...walked, current]
+  if (stages.length === 0) stages.push(current)
+
+  const idx = stages.indexOf(current)
+  const currentColor = statusMeta(current).dot
+
   return (
     <div className="stage-trail" aria-label="阶段轨迹">
-      {showCurrent.map((st, i) => {
-        const m = statusMeta(st)
+      {stages.map((st, i) => {
+        const reached = idx === -1 ? i < stages.length : i <= idx
         const isCurrent = st === current
-        const passed = idx === -1 ? showCurrent.indexOf(st) < showCurrent.length - 1 : i <= idx && !isCurrent
+        const isLast = i === stages.length - 1
         return (
-          <span key={st} className="stage-trail-part" style={{ display: 'contents' }}>
-            <span className={`stage-node${passed ? ' passed' : ''}${isCurrent ? ' current' : ''}`}>
-              <span className="dot" aria-hidden />
-              <span>{m.label}</span>
+          <span key={st + i} style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+            <span className="stage-node">
+              <span
+                aria-hidden
+                style={{
+                  width: isCurrent ? 12 : 9,
+                  height: isCurrent ? 12 : 9,
+                  borderRadius: '50%',
+                  background: reached ? currentColor : 'rgba(15,15,20,.12)',
+                  boxShadow: isCurrent ? '0 0 0 4px rgba(139,92,246,.18)' : 'none',
+                }}
+              />
+              <span style={{ color: reached ? 'var(--text)' : 'var(--text-muted)' }}>{statusMeta(st).label}</span>
             </span>
-            {i < showCurrent.length - 1 && <span className={`stage-link${passed ? ' passed' : ''}`} aria-hidden />}
+            {!isLast && (
+              <span
+                aria-hidden
+                className="stage-link"
+                style={{ background: i < idx ? currentColor : 'rgba(15,15,20,.1)' }}
+              />
+            )}
           </span>
         )
       })}
     </div>
+  )
+}
+
+/**
+ * Seven compact pips summarising pipeline progress inside a table row
+ * (design: the 阶段推进 column).
+ */
+export function StagePips({ status, pips }: { status: string; pips: string[] }) {
+  const idx = pips.indexOf(status)
+  const color = statusMeta(status).dot
+  return (
+    <span className="pips" aria-label={`阶段推进 ${statusMeta(status).label}`}>
+      {pips.map((p, i) => (
+        <span
+          key={p}
+          className="pip"
+          style={{
+            background:
+              idx === -1
+                ? i < 3
+                  ? color
+                  : 'rgba(15,15,20,.09)'
+                : i <= idx
+                  ? color
+                  : 'rgba(15,15,20,.09)',
+          }}
+        />
+      ))}
+    </span>
   )
 }

@@ -1,21 +1,32 @@
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Spinner } from '../../components/ui'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Button, Card } from '../../ds'
+import { Icon } from '../../components/Icon'
 import { AppDetailContent } from '../database/drawer'
 
-// Full-page detail route (§4.2): shareable deep link. Uses the same detail
-// content component as the side-panel drawer, embedded in the page.
+/**
+ * Full-page detail route (§4.2): a shareable deep link that reuses the same
+ * detail component as the drawer, embedded in a glass panel.
+ */
 export function DetailPage() {
   const { id } = useParams()
   const nav = useNavigate()
   const appId = Number(id)
+
   if (Number.isNaN(appId)) return <p>无效 ID</p>
+
   return (
-    <div>
-      <div className="row mb8" style={{ justifyContent: 'space-between' }}>
-        <button className="btn btn-ghost btn-small" onClick={() => nav(-1)}>← 返回</button>
-        <Link className="btn btn-ghost btn-small" to="/database">去数据库</Link>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Button variant="ghost" size="sm" onClick={() => nav(-1)} iconLeft={<Icon name="back" size={15} />}>
+          返回
+        </Button>
+        <Link to="/database" style={{ fontSize: 13 }}>
+          去数据库 ↗
+        </Link>
       </div>
-      <AppDetailContent appId={appId} onClose={() => nav('/database')} embedded />
+      <Card padding="18px 20px">
+        <AppDetailContent appId={appId} onClose={() => nav('/database')} embedded />
+      </Card>
     </div>
   )
 }
