@@ -4,10 +4,10 @@
 //             DB-backed integration suite).
 //   - docker: integration tests run through the repo's own Docker harness
 //             (deploy/compose.test.yaml, profile "integration") — a disposable
-//             tmpfs postgres + the go test suite in containers, exactly like
-//             `make test-integration`. On main, build & push the application
-//             image ghcr.io/<user>/offerlog-api:<short-sha> from
-//             deploy/api.Dockerfile. The api binary still embeds the frontend
+//             tmpfs postgres + the go test suite in containers. On main,
+//             build & push the application image ghcr.io/<user>/offerlog-api:
+//             <short-sha> from deploy/api.Dockerfile. The api binary still
+//             embeds the frontend
 //             SPA for the compose single-entry deployment — see the
 //             Dockerfile — but the k8s deployment is split-tier: the cluster
 //             serves the SPA from the separate web image built by
