@@ -25,7 +25,12 @@ services:
     volumes:
       - pgdata_local:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-offerlog} -d ${POSTGRES_DB:-offerlog}"]
+      # 必须按 .env 的口令真实走一次 TCP 认证：pg_isready 不做认证，检不出
+      # 「数据卷是用旧的 POSTGRES_* 口令/用户名初始化」的情况（口令只在建卷首次
+      # 生效），那会让 postgres 假健康、api/worker 因认证失败反复崩溃重启。
+      # 注意不能连 127.0.0.1——postgres 镜像的 pg_hba 对回环是 trust（不验口令），
+      # 连容器自身 IP 才会命中 scram-sha-256 规则、真正校验口令。
+      test: ["CMD-SHELL", "PGPASSWORD=\"$$POSTGRES_PASSWORD\" psql -h \"$$HOSTNAME\" -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -c 'SELECT 1' >/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 12

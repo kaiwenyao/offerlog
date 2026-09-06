@@ -21,7 +21,18 @@ help:
 
 up:
 	@test -f .env || { echo "缺少 .env：请先执行  cp .env.example .env  （可按需修改）再 make up"; exit 1; }
-	$(COMPOSE) up -d --build
+	@$(COMPOSE) up -d --build || { \
+		echo ""; \
+		echo "启动失败：若提示 postgres unhealthy，多半是 pgdata_local 数据卷当年是用别的"; \
+		echo "POSTGRES_* 口令/用户名初始化的（口令只在首次建卷时生效，之后改 .env 不影响数据库）。"; \
+		echo "处理：核对 .env 里的 POSTGRES_*，然后 make down 清掉旧卷再 make up（注意：会清空本地数据）。"; \
+		exit 1; }
+	@ok=""; for i in $$(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:8080/health/ready && { ok=1; break; }; sleep 1; done; \
+	if [ -z "$$ok" ]; then \
+		echo "警告：http://localhost:8080/health/ready 30 秒内未就绪，查看日志："; \
+		echo "  docker compose -f deploy/compose.local.yaml logs api"; \
+		exit 1; \
+	fi
 	@echo "OfferLog: http://localhost:8080  (默认开放注册：在登录页「注册」开号)"
 
 down:
