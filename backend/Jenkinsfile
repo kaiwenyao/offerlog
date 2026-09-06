@@ -155,9 +155,18 @@ spec:
                     steps {
                         container('go') {
                             dir('backend') {
-                                sh '''
-                                set -eu
-                                go version
+                            sh '''
+                            set -eu
+                            # The workspace was checked out by the jnlp sidecar
+                            # (uid 1000) while this container runs as root: git's
+                            # dubious-ownership check rejects the repo, and go's
+                            # default VCS stamping makes every `go build` die with
+                            # "error obtaining VCS status: exit status 128". Trust
+                            # the repo in this ephemeral build container, so the
+                            # default stamping stays intact (`go version -m` on a
+                            # built binary still shows the commit).
+                            git config --global --add safe.directory '*'
+                            go version
                                 # gofmt gate: fail with the offending files listed
                                 unformatted=$(gofmt -l .)
                                 if [ -n "$unformatted" ]; then
