@@ -13,6 +13,7 @@ import (
 	apprepo "offerlog/backend/internal/applications/repository"
 	appservice "offerlog/backend/internal/applications/service"
 	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/migrate"
 	"offerlog/backend/internal/transfers"
 	"strings"
 )
@@ -33,6 +34,11 @@ func setup(t *testing.T) (*database.DB, *appservice.Service, *apprepo.Repo, int6
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(db.Close)
+	// CI points TEST_DATABASE_URL at an empty service database; apply the
+	// embedded migrations here (idempotent via schema_migrations).
+	if err := migrate.Up(ctx, db.Pool()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 	repo := apprepo.New(db)
 	svc := appservice.New(db, repo)
 	// create a throwaway owner (single-account product but we still scope)
