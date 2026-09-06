@@ -1,4 +1,4 @@
-# OfferLogs 决策记录
+# OfferLog 决策记录
 
 ## ADR-001 后端框架与数据库访问
 - 采用 Gin（HTTP）+ pgx/pgxpool（PostgreSQL 驱动与连接池）。

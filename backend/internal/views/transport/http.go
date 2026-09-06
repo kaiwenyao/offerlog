@@ -7,10 +7,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"offerlogs/backend/internal/platform/httpx"
-	"offerlogs/backend/internal/views"
-	vrepo "offerlogs/backend/internal/views/repository"
-	vservice "offerlogs/backend/internal/views/service"
+	"offerlog/backend/internal/platform/httpx"
+	"offerlog/backend/internal/views"
+	vrepo "offerlog/backend/internal/views/repository"
+	vservice "offerlog/backend/internal/views/service"
 )
 
 type Handler struct {

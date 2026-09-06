@@ -40,7 +40,7 @@ export function AppLayout() {
       <aside className="sidebar">
         <div className="brand">
           <SealMark size={28} />
-          <span className="display brand-name">OfferLogs</span>
+          <span className="display brand-name">OfferLog</span>
         </div>
         {navList}
         <div className="sidebar-foot">
@@ -54,7 +54,7 @@ export function AppLayout() {
         <button className="menu-btn" aria-label="打开菜单" onClick={() => setMenuOpen((v) => !v)}>
           ☰
         </button>
-        <span className="topbar-title display">OfferLogs</span>
+        <span className="topbar-title display">OfferLog</span>
       </header>
       {menuOpen && (
         <div className="mobile-menu" onClick={() => setMenuOpen(false)}>

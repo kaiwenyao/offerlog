@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	apprepo "offerlogs/backend/internal/applications/repository"
-	appservice "offerlogs/backend/internal/applications/service"
+	apprepo "offerlog/backend/internal/applications/repository"
+	appservice "offerlog/backend/internal/applications/service"
 	"os"
 
-	"offerlogs/backend/internal/platform/database"
-	"offerlogs/backend/internal/views"
-	viewrepo "offerlogs/backend/internal/views/repository"
-	vservice "offerlogs/backend/internal/views/service"
+	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/views"
+	viewrepo "offerlog/backend/internal/views/repository"
+	vservice "offerlog/backend/internal/views/service"
 )
 
 // BenchmarkQueries seeds 2000 rows then samples list/query/analytics latency.
@@ -77,7 +77,7 @@ func pick(i int) string {
 func dbURLB(_ *testing.B) string {
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		url = "postgres://offerlogs:offerlogs@localhost:5433/offerlogs?sslmode=disable"
+		url = "postgres://offerlog:offerlog@localhost:5433/offerlog?sslmode=disable"
 	}
 	return url
 }

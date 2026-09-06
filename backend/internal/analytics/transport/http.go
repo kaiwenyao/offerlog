@@ -9,9 +9,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"offerlogs/backend/internal/analytics"
-	"offerlogs/backend/internal/platform/database"
-	"offerlogs/backend/internal/platform/httpx"
+	"offerlog/backend/internal/analytics"
+	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/httpx"
 )
 
 type Handler struct {

@@ -27,7 +27,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (m: Me) => void }) {
         <div className="login-brand">
           <SealMark size={40} />
           <div>
-            <h1 className="display login-title">OfferLogs</h1>
+            <h1 className="display login-title">OfferLog</h1>
             <p className="login-sub small">个人求职追踪工作台</p>
           </div>
         </div>

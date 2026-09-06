@@ -1,4 +1,4 @@
-# OfferLogs CI (plan §12.5): format, vet, tests, typecheck, build per PR.
+# OfferLog CI (plan §12.5): format, vet, tests, typecheck, build per PR.
 name: ci
 on:
   push:
@@ -11,12 +11,12 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_USER: offerlogs
-          POSTGRES_PASSWORD: offerlogs
-          POSTGRES_DB: offerlogs
+          POSTGRES_USER: offerlog
+          POSTGRES_PASSWORD: offerlog
+          POSTGRES_DB: offerlog
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U offerlogs"
+          --health-cmd "pg_isready -U offerlog"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 12
@@ -34,7 +34,7 @@ jobs:
       - name: unit + integration tests
         working-directory: backend
         env:
-          TEST_DATABASE_URL: postgres://offerlogs:offerlogs@localhost:5432/offerlogs?sslmode=disable
+          TEST_DATABASE_URL: postgres://offerlog:offerlog@localhost:5432/offerlog?sslmode=disable
         run: go test ./...
       - name: build
         working-directory: backend

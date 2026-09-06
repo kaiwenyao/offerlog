@@ -1,22 +1,22 @@
-# Self-contained OfferLogs deployment (plan §11).
+# Self-contained OfferLog deployment (plan §11).
 # Services: caddy (TLS+static), api, worker, postgres, and an optional
 # self-contained SeaweedFS (profile "seaweedfs"). To connect to an existing
 # SeaweedFS/S3 instead, run: docker compose --profile external-s3 up -d
 # with OBJECTSTORE_PROVIDER=s3 and S3_* variables set.
 
-name: offerlogs
+name: offerlog
 
 services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-offerlogs}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-offerlogs}
-      POSTGRES_DB: ${POSTGRES_DB:-offerlogs}
+      POSTGRES_USER: ${POSTGRES_USER:-offerlog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-offerlog}
+      POSTGRES_DB: ${POSTGRES_DB:-offerlog}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-offerlogs} -d ${POSTGRES_DB:-offerlogs}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-offerlog} -d ${POSTGRES_DB:-offerlog}"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -32,12 +32,12 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-offerlogs}:${POSTGRES_PASSWORD:-offerlogs}@postgres:5432/${POSTGRES_DB:-offerlogs}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-offerlog}:${POSTGRES_PASSWORD:-offerlog}@postgres:5432/${POSTGRES_DB:-offerlog}?sslmode=disable
       OBJECTSTORE_PROVIDER: ${OBJECTSTORE_PROVIDER:-local}
       OBJECTSTORE_LOCAL_DIR: /data/objects
       S3_ENDPOINT: ${S3_ENDPOINT:-http://s3gateway:8333}
       S3_REGION: ${S3_REGION:-us-east-1}
-      S3_BUCKET: ${S3_BUCKET:-offerlogs}
+      S3_BUCKET: ${S3_BUCKET:-offerlog}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-}
       APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Dublin}
@@ -62,12 +62,12 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-offerlogs}:${POSTGRES_PASSWORD:-offerlogs}@postgres:5432/${POSTGRES_DB:-offerlogs}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-offerlog}:${POSTGRES_PASSWORD:-offerlog}@postgres:5432/${POSTGRES_DB:-offerlog}?sslmode=disable
       OBJECTSTORE_PROVIDER: ${OBJECTSTORE_PROVIDER:-local}
       OBJECTSTORE_LOCAL_DIR: /data/objects
       S3_ENDPOINT: ${S3_ENDPOINT:-http://s3gateway:8333}
       S3_REGION: ${S3_REGION:-us-east-1}
-      S3_BUCKET: ${S3_BUCKET:-offerlogs}
+      S3_BUCKET: ${S3_BUCKET:-offerlog}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-}
       CSRF_SECRET: ${CSRF_SECRET:-change-me-in-production}

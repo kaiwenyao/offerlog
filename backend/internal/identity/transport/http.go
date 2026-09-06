@@ -5,9 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	idrepo "offerlogs/backend/internal/identity/repository"
-	idservice "offerlogs/backend/internal/identity/service"
-	"offerlogs/backend/internal/platform/httpx"
+	idrepo "offerlog/backend/internal/identity/repository"
+	idservice "offerlog/backend/internal/identity/service"
+	"offerlog/backend/internal/platform/httpx"
 )
 
 type Handler struct {

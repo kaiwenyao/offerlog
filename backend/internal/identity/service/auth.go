@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"offerlogs/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/database"
 )
 
 var (

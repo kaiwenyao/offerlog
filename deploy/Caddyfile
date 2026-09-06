@@ -1,4 +1,4 @@
-# OfferLogs reverse proxy: serves the SPA and /api/v1, terminates HTTPS.
+# OfferLog reverse proxy: serves the SPA and /api/v1, terminates HTTPS.
 # In production replace example.com with your domain and remove the
 # tls internal line or use a real issuer. PUBLIC_HOST is injected via env.
 

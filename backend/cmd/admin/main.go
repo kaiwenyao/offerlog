@@ -14,10 +14,10 @@ import (
 	"log/slog"
 	"os"
 
-	"offerlogs/backend/internal/bootstrap"
-	"offerlogs/backend/internal/platform/config"
-	"offerlogs/backend/internal/platform/migrate"
-	"offerlogs/backend/internal/platform/observability"
+	"offerlog/backend/internal/bootstrap"
+	"offerlog/backend/internal/platform/config"
+	"offerlog/backend/internal/platform/migrate"
+	"offerlog/backend/internal/platform/observability"
 )
 
 func main() {

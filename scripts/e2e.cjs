@@ -91,7 +91,7 @@ const { chromium } = require('playwright');
   await page.waitForTimeout(1800);
   const sk = await page.evaluate(async () => {
     const r = await fetch('/api/v1/analytics/sankey', { method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': localStorage.getItem('offerlogs.csrf') },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': localStorage.getItem('offerlog.csrf') },
       body: JSON.stringify({ mode: 'current' }) });
     return r.json();
   });

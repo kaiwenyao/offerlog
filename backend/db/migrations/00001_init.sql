@@ -1,4 +1,4 @@
--- OfferLogs initial schema.
+-- OfferLog initial schema.
 -- Every business table carries owner_id + timestamps; cross-table references
 -- are validated within the owning user's scope (see service layer).
 

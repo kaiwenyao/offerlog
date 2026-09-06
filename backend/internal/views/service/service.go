@@ -10,9 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"offerlogs/backend/internal/platform/database"
-	"offerlogs/backend/internal/views"
-	"offerlogs/backend/internal/views/repository"
+	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/views"
+	"offerlog/backend/internal/views/repository"
 )
 
 var (

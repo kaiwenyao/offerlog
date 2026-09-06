@@ -2,7 +2,7 @@
 // writes, and unwraps the canonical {code,message} error envelope.
 import type { Me } from './types'
 
-const CSRF_KEY = 'offerlogs.csrf'
+const CSRF_KEY = 'offerlog.csrf'
 
 let csrfToken: string | null = localStorage.getItem(CSRF_KEY)
 
@@ -35,7 +35,7 @@ async function request<T>(method: string, path: string, body?: unknown, isForm =
   })
   if (res.status === 401 && !path.includes('/auth/')) {
     // session expired — kick back to login
-    window.dispatchEvent(new CustomEvent('offerlogs:unauthorized'))
+    window.dispatchEvent(new CustomEvent('offerlog:unauthorized'))
   }
   const text = await res.text()
   if (!res.ok) {

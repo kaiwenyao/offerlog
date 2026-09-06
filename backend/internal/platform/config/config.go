@@ -14,7 +14,7 @@ type Database struct {
 
 type HTTP struct {
 	Addr         string
-	PublicBase   string // e.g. https://offerlogs.example.com
+	PublicBase   string // e.g. https://offerlog.example.com
 	SessionHours int
 }
 
@@ -80,7 +80,7 @@ func getenvInt64(key string, def int64) int64 {
 
 func Load() (Config, error) {
 	cfg := Config{
-		Database: Database{URL: getenv("DATABASE_URL", "postgres://offerlogs:offerlogs@localhost:5432/offerlogs?sslmode=disable")},
+		Database: Database{URL: getenv("DATABASE_URL", "postgres://offerlog:offerlog@localhost:5432/offerlog?sslmode=disable")},
 		HTTP: HTTP{
 			Addr:         getenv("HTTP_ADDR", ":8080"),
 			PublicBase:   strings.TrimRight(getenv("PUBLIC_BASE", "http://localhost:8080"), "/"),
@@ -91,7 +91,7 @@ func Load() (Config, error) {
 			LocalDir:     getenv("OBJECTSTORE_LOCAL_DIR", "./data/objects"),
 			Endpoint:     getenv("S3_ENDPOINT", "http://localhost:8333"),
 			Region:       getenv("S3_REGION", "us-east-1"),
-			Bucket:       getenv("S3_BUCKET", "offerlogs"),
+			Bucket:       getenv("S3_BUCKET", "offerlog"),
 			AccessKey:    getenv("S3_ACCESS_KEY", ""),
 			SecretKey:    getenv("S3_SECRET_KEY", ""),
 			UsePathStyle: true,

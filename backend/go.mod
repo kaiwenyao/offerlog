@@ -1,4 +1,4 @@
-module offerlogs/backend
+module offerlog/backend
 
 go 1.25.0
 

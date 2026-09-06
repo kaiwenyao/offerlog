@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"offerlogs/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/database"
 )
 
 // PropertyDef is a custom property definition row (marshaled as the wire DTO).

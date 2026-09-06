@@ -45,8 +45,8 @@ function SessionGate({ children }: { children: React.ReactNode }) {
   }, [])
   useEffect(() => {
     const h = () => setState('anon')
-    window.addEventListener('offerlogs:unauthorized', h)
-    return () => window.removeEventListener('offerlogs:unauthorized', h)
+    window.addEventListener('offerlog:unauthorized', h)
+    return () => window.removeEventListener('offerlog:unauthorized', h)
   }, [])
   if (state === 'loading') {
     return (

@@ -1,4 +1,4 @@
-# OfferLogs 本地 Docker 部署（一条命令跑通，无 TLS / 无反代）。
+# OfferLog 本地 Docker 部署（一条命令跑通，无 TLS / 无反代）。
 #
 #   make local-up   # 或: docker compose -f deploy/compose.local.yaml up -d --build
 #
@@ -10,21 +10,21 @@
 #     scripts/smoke.cjs、scripts/e2e.cjs 的凭据一致，便于直接跑验收）。
 # 数据落在命名卷 pgdata_local / objects_local；`make local-clean` 连卷一起清掉。
 
-name: offerlogs-local
+name: offerlog-local
 
 services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-offerlogs}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-offerlogs}
-      POSTGRES_DB: ${POSTGRES_DB:-offerlogs}
+      POSTGRES_USER: ${POSTGRES_USER:-offerlog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-offerlog}
+      POSTGRES_DB: ${POSTGRES_DB:-offerlog}
     ports:
       - "127.0.0.1:55432:5432"
     volumes:
       - pgdata_local:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-offerlogs} -d ${POSTGRES_DB:-offerlogs}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-offerlog} -d ${POSTGRES_DB:-offerlog}"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -38,7 +38,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-offerlogs}:${POSTGRES_PASSWORD:-offerlogs}@postgres:5432/${POSTGRES_DB:-offerlogs}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-offerlog}:${POSTGRES_PASSWORD:-offerlog}@postgres:5432/${POSTGRES_DB:-offerlog}?sslmode=disable
       PUBLIC_BASE: ${PUBLIC_BASE:-http://localhost:8080}
       APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Dublin}
       CSRF_SECRET: ${CSRF_SECRET:-local-only-change-me}
@@ -62,7 +62,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-offerlogs}:${POSTGRES_PASSWORD:-offerlogs}@postgres:5432/${POSTGRES_DB:-offerlogs}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-offerlog}:${POSTGRES_PASSWORD:-offerlog}@postgres:5432/${POSTGRES_DB:-offerlog}?sslmode=disable
       OBJECTSTORE_PROVIDER: local
       OBJECTSTORE_LOCAL_DIR: /data/objects
       CSRF_SECRET: ${CSRF_SECRET:-local-only-change-me}
@@ -82,7 +82,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-offerlogs}:${POSTGRES_PASSWORD:-offerlogs}@postgres:5432/${POSTGRES_DB:-offerlogs}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-offerlog}:${POSTGRES_PASSWORD:-offerlog}@postgres:5432/${POSTGRES_DB:-offerlog}?sslmode=disable
       CSRF_SECRET: ${CSRF_SECRET:-local-only-change-me}
       DATA_DIR: /data
       LOCAL_ADMIN_EMAIL: ${LOCAL_ADMIN_EMAIL:-me@example.com}

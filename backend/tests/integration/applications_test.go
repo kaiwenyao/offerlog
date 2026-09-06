@@ -9,18 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"offerlogs/backend/internal/applications/domain"
-	apprepo "offerlogs/backend/internal/applications/repository"
-	appservice "offerlogs/backend/internal/applications/service"
-	"offerlogs/backend/internal/platform/database"
-	"offerlogs/backend/internal/transfers"
+	"offerlog/backend/internal/applications/domain"
+	apprepo "offerlog/backend/internal/applications/repository"
+	appservice "offerlog/backend/internal/applications/service"
+	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/transfers"
 	"strings"
 )
 
 func dbURL(t *testing.T) string {
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		url = "postgres://offerlogs:offerlogs@localhost:5433/offerlogs?sslmode=disable"
+		url = "postgres://offerlog:offerlog@localhost:5433/offerlog?sslmode=disable"
 	}
 	return url
 }

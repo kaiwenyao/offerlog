@@ -7,8 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"offerlogs/backend/internal/platform/httpx"
-	"offerlogs/backend/internal/transfers"
+	"offerlog/backend/internal/platform/httpx"
+	"offerlog/backend/internal/transfers"
 )
 
 type Handler struct {
