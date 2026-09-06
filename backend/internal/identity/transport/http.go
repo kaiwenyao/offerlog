@@ -2,6 +2,8 @@ package transport
 
 import (
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -47,6 +49,7 @@ func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.GET("/config", h.authConfig)
 	g.POST("/logout", h.logout)
 	g.GET("/me", h.me)
+	g.PATCH("/me", h.updateMe)
 }
 
 type loginReq struct {
@@ -155,6 +158,53 @@ func (h *Handler) me(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"id": u.ID, "email": u.Email, "display_name": u.DisplayName,
 		"timezone": u.Timezone, "locale": u.Locale,
+	})
+}
+
+// updateMe persists display name / timezone from the settings page. It runs
+// on the CSRF-protected parent group because a session already exists. Both
+// fields are optional pointers (only present ones change).
+func (h *Handler) updateMe(c *gin.Context) {
+	u := httpx.UserFrom(c)
+	if u == nil {
+		httpx.WriteErr(c, httpx.Unauthorized("未登录"))
+		return
+	}
+	var req struct {
+		DisplayName *string `json:"display_name"`
+		Timezone    *string `json:"timezone"`
+	}
+	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	displayName := u.DisplayName
+	if req.DisplayName != nil {
+		displayName = strings.TrimSpace(*req.DisplayName)
+		if len(displayName) > 80 {
+			httpx.WriteErr(c, httpx.BadRequest("display_name_too_long", "显示名称不能超过 80 个字符"))
+			return
+		}
+	}
+	tz := u.Timezone
+	if req.Timezone != nil {
+		tz = strings.TrimSpace(*req.Timezone)
+		if _, err := time.LoadLocation(tz); err != nil {
+			httpx.WriteErr(c, httpx.BadRequest("invalid_timezone", "无效的时区（需 IANA 名称，如 Europe/Dublin）"))
+			return
+		}
+	}
+	row, err := h.auth.UpdateProfile(c.Request.Context(), u.ID, displayName, tz)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	// Keep the in-context user fresh for the remainder of this request.
+	u.DisplayName = row.DisplayName
+	u.Timezone = row.Timezone
+	c.JSON(http.StatusOK, gin.H{
+		"id": row.ID, "email": row.Email, "display_name": row.DisplayName,
+		"timezone": row.Timezone, "locale": row.Locale,
 	})
 }
 

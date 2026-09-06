@@ -1,6 +1,8 @@
-// Command worker runs background jobs: file cleanup, pending reminders,
+// Command worker runs background jobs: file cleanup, reminder generation and
 // snapshot expiry. It leases work from the jobs table; safe to run several
-// replicas (postgres leases + SKIP LOCKED).
+// replicas (postgres leases + SKIP LOCKED). Unknown job kinds are recorded as
+// failures (never silently succeeded); handlers run under a lease that expires
+// after a crash so another replica can reclaim the job (§4.3).
 package main
 
 import (
@@ -16,6 +18,8 @@ import (
 	"offerlog/backend/internal/platform/jobs"
 	"offerlog/backend/internal/platform/migrate"
 	"offerlog/backend/internal/platform/observability"
+	"offerlog/backend/internal/reminders"
+	"offerlog/backend/internal/worker"
 )
 
 func main() {
@@ -40,6 +44,21 @@ func main() {
 	}
 
 	store := app.Jobs
+	reg := worker.NewRegistry()
+	gen := reminders.New(app.DB)
+
+	// reminder generation runs on a daily schedule; each pass inserts
+	// idempotent in-app notifications per user preference.
+	reg.Register("reminders", func(ctx context.Context, store worker.Store, job *jobs.Job) error {
+		now := time.Now()
+		n, err := gen.Run(ctx, now)
+		if err != nil {
+			return err
+		}
+		slog.Info("reminder pass", "inserted", n)
+		return nil
+	})
+	// file cleanup registered by the worker ticker below (not a queued job yet).
 	// periodic housekeeping ticker
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
@@ -52,6 +71,29 @@ func main() {
 				if n, err := store.CleanupStalePendings(ctx, cfg.ObjectStore.GracePeriod); err == nil && n > 0 {
 					slog.Info("cleaned stale pending files", "count", n)
 				}
+			}
+		}
+	}()
+
+	// Daily enqueue at 08:00 user-local is approximated: the worker enqueues a
+	// reminder pass on boot and after each pass re-enqueues 24h later (a real
+	// scheduler would compute the next 08:00 per user; in-app notifications are
+	// generated for "today" whenever the pass runs).
+	go func() {
+		timer := time.NewTimer(10 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				if err := store.Enqueue(ctx, "reminders", "daily", map[string]any{}, time.Now()); err != nil {
+					slog.Warn("enqueue reminders", "error", err)
+				}
+				// The enqueue is idempotent (unique kind+key on pending rows), so
+				// schedule the next pass after the previous one finishes by simply
+				// re-arming after 24h. The processor loop below drains due jobs.
+				timer.Reset(24 * time.Hour)
 			}
 		}
 	}()
@@ -75,21 +117,8 @@ func main() {
 			}
 			continue
 		}
-		if err := process(ctx, app, store, job); err != nil {
-			slog.Warn("job failed", "kind", job.Kind, "id", job.ID, "error", err)
+		if err := reg.Process(ctx, store, job); err != nil {
+			slog.Warn("job processing error", "kind", job.Kind, "id", job.ID, "error", err)
 		}
 	}
-}
-
-func process(ctx context.Context, app *bootstrap.App, store *jobs.Store, job *jobs.Job) error {
-	// v1 jobs: no long-running tasks are enqueued by normal flows yet (imports
-	// run synchronously). This loop is the foundation for future exports and
-	// async file deletion.
-	switch job.Kind {
-	case "ping":
-		slog.Info("ping job", "id", job.ID)
-	default:
-		slog.Info("unknown job kind", "kind", job.Kind, "id", job.ID)
-	}
-	return store.Succeed(ctx, job.ID)
 }

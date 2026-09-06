@@ -69,4 +69,9 @@ jobs:
       - name: OpenAPI lint
         run: npx --yes @redocly/cli lint api/openapi.yaml --config api/redocly.yaml
       - name: migrations in sync
-        run: cmp backend/db/migrations/00001_init.sql backend/internal/platform/migrate/migrations/00001_init.sql
+        run: |
+          set -e
+          for f in backend/db/migrations/*.sql; do
+            b="backend/internal/platform/migrate/migrations/$(basename "$f")"
+            cmp "$f" "$b" || { echo "migration drift: $f differs from $b"; exit 1; }
+          done

@@ -38,6 +38,7 @@ type Action struct {
 	DoneAt        *time.Time
 	RemindMe      bool
 	RemindAt      *time.Time
+	Priority      string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	CompanyName   string
@@ -146,7 +147,7 @@ func (r *Repo) ListActions(ctx context.Context, appID *int64, ownerID int64, ope
 		where += " AND a.done_at IS NULL"
 	}
 	rows, err := r.db.Pool().Query(ctx, `SELECT a.id, a.application_id, a.owner_id, a.title, a.due_date, a.due_ts,
-		a.done_at, a.remind_me, a.remind_at, a.created_at, a.updated_at,
+		a.done_at, a.remind_me, a.remind_at, a.priority, a.created_at, a.updated_at,
 		COALESCE(ap.company_name,''), COALESCE(ap.position,''), COALESCE(ap.status,'')
 		FROM actions a`+join+` WHERE `+where+` ORDER BY COALESCE(a.due_date, a.due_ts) NULLS LAST, a.id`, args...)
 	if err != nil {
@@ -157,7 +158,7 @@ func (r *Repo) ListActions(ctx context.Context, appID *int64, ownerID int64, ope
 	for rows.Next() {
 		var a Action
 		if err := rows.Scan(&a.ID, &a.ApplicationID, &a.OwnerID, &a.Title, &a.DueDate, &a.DueTs,
-			&a.DoneAt, &a.RemindMe, &a.RemindAt, &a.CreatedAt, &a.UpdatedAt,
+			&a.DoneAt, &a.RemindMe, &a.RemindAt, &a.Priority, &a.CreatedAt, &a.UpdatedAt,
 			&a.CompanyName, &a.Position, &a.Status); err != nil {
 			return nil, err
 		}
@@ -169,9 +170,9 @@ func (r *Repo) ListActions(ctx context.Context, appID *int64, ownerID int64, ope
 func (r *Repo) GetAction(ctx context.Context, ownerID, id int64) (*Action, error) {
 	var a Action
 	err := r.db.Pool().QueryRow(ctx, `SELECT id, application_id, owner_id, title, due_date, due_ts,
-		done_at, remind_me, remind_at, created_at, updated_at FROM actions WHERE id=$1 AND owner_id=$2`, id, ownerID).
+		done_at, remind_me, remind_at, priority, created_at, updated_at FROM actions WHERE id=$1 AND owner_id=$2`, id, ownerID).
 		Scan(&a.ID, &a.ApplicationID, &a.OwnerID, &a.Title, &a.DueDate, &a.DueTs, &a.DoneAt,
-			&a.RemindMe, &a.RemindAt, &a.CreatedAt, &a.UpdatedAt)
+			&a.RemindMe, &a.RemindAt, &a.Priority, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -179,16 +180,24 @@ func (r *Repo) GetAction(ctx context.Context, ownerID, id int64) (*Action, error
 }
 
 func (r *Repo) CreateAction(ctx context.Context, q database.Querier, a *Action) error {
+	prio := a.Priority
+	if prio == "" {
+		prio = "medium"
+	}
 	return q.QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, due_ts,
-		done_at, remind_me, remind_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, created_at`,
-		a.ApplicationID, a.OwnerID, a.Title, a.DueDate, a.DueTs, a.DoneAt, a.RemindMe, a.RemindAt).
+		done_at, remind_me, remind_at, priority) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, created_at`,
+		a.ApplicationID, a.OwnerID, a.Title, a.DueDate, a.DueTs, a.DoneAt, a.RemindMe, a.RemindAt, prio).
 		Scan(&a.ID, &a.CreatedAt)
 }
 
 func (r *Repo) UpdateAction(ctx context.Context, q database.Querier, a *Action) error {
+	prio := a.Priority
+	if prio == "" {
+		prio = "medium"
+	}
 	tag, err := q.Exec(ctx, `UPDATE actions SET title=$1, due_date=$2, due_ts=$3, done_at=$4,
-		remind_me=$5, remind_at=$6, updated_at=now() WHERE id=$7 AND owner_id=$8`,
-		a.Title, a.DueDate, a.DueTs, a.DoneAt, a.RemindMe, a.RemindAt, a.ID, a.OwnerID)
+		remind_me=$5, remind_at=$6, priority=$7, updated_at=now() WHERE id=$8 AND owner_id=$9`,
+		a.Title, a.DueDate, a.DueTs, a.DoneAt, a.RemindMe, a.RemindAt, prio, a.ID, a.OwnerID)
 	if err != nil {
 		return err
 	}
@@ -265,3 +274,63 @@ func (r *Repo) AppOwnedBy(ctx context.Context, q database.Querier, appID, ownerI
 }
 
 var ErrNotFound = errors.New("not found")
+
+// ScheduleLink carries the per-interview scheduling metadata (meeting url,
+// location, contacts, cancellation). Created lazily with an interview when the
+// request carries scheduling fields; updated in place thereafter. This keeps
+// the interviews table's core columns stable while the dashboard/calendar can
+// still exclude cancelled interviews through the join.
+type ScheduleLink struct {
+	ID               int64  `json:"id"`
+	InterviewID      int64  `json:"interview_id"`
+	OwnerID          int64  `json:"owner_id"`
+	MeetingURL       string `json:"meeting_url"`
+	Location         string `json:"location"`
+	ContactName      string `json:"contact_name"`
+	ContactEmail     string `json:"contact_email"`
+	Notes            string `json:"notes"`
+	Cancelled        bool   `json:"cancelled"`
+	CancelledReason  string `json:"cancelled_reason"`
+	OriginalTimezone string `json:"original_timezone"`
+}
+
+// CreateScheduleLink inserts scheduling metadata for an interview.
+func (r *Repo) CreateScheduleLink(ctx context.Context, q database.Querier, s *ScheduleLink) error {
+	return q.QueryRow(ctx, `INSERT INTO schedule_links(interview_id, owner_id, meeting_url, location,
+		contact_name, contact_email, notes, cancelled, cancelled_reason, original_timezone)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+		s.InterviewID, s.OwnerID, s.MeetingURL, s.Location, s.ContactName, s.ContactEmail,
+		s.Notes, s.Cancelled, s.CancelledReason, s.OriginalTimezone).Scan(&s.ID)
+}
+
+// GetScheduleLink reads the scheduling metadata for an interview (nil when
+// none exists).
+func (r *Repo) GetScheduleLink(ctx context.Context, interviewID, ownerID int64) (*ScheduleLink, error) {
+	var s ScheduleLink
+	err := r.db.Pool().QueryRow(ctx, `SELECT id, interview_id, owner_id, meeting_url, location,
+		contact_name, contact_email, notes, cancelled, cancelled_reason, original_timezone
+		FROM schedule_links WHERE interview_id=$1 AND owner_id=$2`, interviewID, ownerID).
+		Scan(&s.ID, &s.InterviewID, &s.OwnerID, &s.MeetingURL, &s.Location, &s.ContactName,
+			&s.ContactEmail, &s.Notes, &s.Cancelled, &s.CancelledReason, &s.OriginalTimezone)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &s, err
+}
+
+// UpsertScheduleLink creates-or-updates scheduling metadata.
+func (r *Repo) UpsertScheduleLink(ctx context.Context, q database.Querier, s *ScheduleLink) error {
+	_, err := q.Exec(ctx, `INSERT INTO schedule_links(interview_id, owner_id, meeting_url, location,
+		contact_name, contact_email, notes, cancelled, cancelled_reason, original_timezone)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (interview_id) DO UPDATE SET
+			meeting_url=EXCLUDED.meeting_url, location=EXCLUDED.location,
+			contact_name=EXCLUDED.contact_name, contact_email=EXCLUDED.contact_email,
+			notes=EXCLUDED.notes, cancelled=EXCLUDED.cancelled,
+			cancelled_reason=EXCLUDED.cancelled_reason,
+			original_timezone=EXCLUDED.original_timezone,
+			updated_at=now()`,
+		s.InterviewID, s.OwnerID, s.MeetingURL, s.Location, s.ContactName, s.ContactEmail,
+		s.Notes, s.Cancelled, s.CancelledReason, s.OriginalTimezone)
+	return err
+}

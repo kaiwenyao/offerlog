@@ -43,17 +43,22 @@ func (s *Store) Enqueue(ctx context.Context, kind, key string, payload any, runA
 	return err
 }
 
-// Claim atomically leases a due job for processing.
+// Claim atomically leases a due job for processing. Jobs left in 'running'
+// with an expired lease (crashed worker) are reclaimed: the lease is the
+// ownership token and expiry is the recovery signal (§4.3).
 func (s *Store) Claim(ctx context.Context, leaseSeconds int) (*Job, error) {
 	var j Job
 	err := s.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `UPDATE jobs SET status='running',
 			lease_until = now() + make_interval(secs => $1),
 			attempts = attempts + 1
-			WHERE id = (SELECT id FROM jobs WHERE status IN ('pending','failed')
+			WHERE id = (SELECT id FROM jobs
+				WHERE attempts < max_attempts
 				AND next_run_at <= now()
-				AND (lease_until IS NULL OR lease_until < now())
-				AND attempts < max_attempts
+				AND (
+					status IN ('pending','failed')
+					OR (status = 'running' AND lease_until IS NOT NULL AND lease_until < now())
+				)
 				ORDER BY next_run_at LIMIT 1 FOR UPDATE SKIP LOCKED)
 			RETURNING id, kind, status, payload, idempotency_key, attempts, max_attempts, next_run_at, last_error`,
 			leaseSeconds).

@@ -42,6 +42,7 @@ type Repo interface {
 	FindUserByEmail(ctx context.Context, email string) (*UserRow, error)
 	FindUserByID(ctx context.Context, id int64) (*UserRow, error)
 	CreateUser(ctx context.Context, u *UserRow) error
+	UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*UserRow, error)
 }
 
 type Store struct {
@@ -229,6 +230,12 @@ func (s *Store) ValidateToken(ctx context.Context, token string) (*UserRow, erro
 	}
 	_, _ = s.db.Pool().Exec(ctx, `UPDATE sessions SET last_seen = now() WHERE token_hash = $1`, th)
 	return &u, nil
+}
+
+// UpdateProfile saves the user's display name + timezone and returns the
+// refreshed row.
+func (s *Store) UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*UserRow, error) {
+	return s.users.UpdateProfile(ctx, id, displayName, timezone)
 }
 
 func (s *Store) Logout(ctx context.Context, token string) error {

@@ -10,6 +10,7 @@ import (
 
 	"offerlog/backend/internal/applications/domain"
 	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/migrate"
 )
 
 func TestSankeyConservationBenchmarkFixture(t *testing.T) {
@@ -19,6 +20,9 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 		t.Skip("no local db:", err)
 	}
 	defer db.Close()
+	if err := migrate.Up(ctx, db.Pool()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 	owner := createBenchUser(t, db)
 	defer cleanupBench(ctx, db, owner)
 
