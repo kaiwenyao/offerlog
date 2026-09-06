@@ -212,10 +212,16 @@ spec:
                     }
                     post {
                         always {
-                            container('docker') {
-                                sh '''
-                                $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
-                                '''
+                            script {
+                                try {
+                                    container('docker') {
+                                        sh '''
+                                        $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
+                                        '''
+                                    }
+                                } catch (err) {
+                                    echo("compose teardown skipped: ${err}")
+                                }
                             }
                         }
                     }
@@ -295,6 +301,10 @@ spec:
         always {
             // Safety net: if the build was killed between run and teardown,
             // remove this build's compose project and any leftover volumes.
+            // An aborted build can reach post with NO agent at all (kubernetes
+            // pod never provisioned or already gone) — every step here then
+            // throws MissingContextVariableException (hudson.FilePath missing).
+            // Guard each one so cleanup can never mask the real build result.
             script {
                 try {
                     container('docker') {
@@ -305,8 +315,12 @@ spec:
                 } catch (err) {
                     echo("compose cleanup skipped: ${err}")
                 }
+                try {
+                    cleanWs()
+                } catch (err) {
+                    echo("workspace cleanup skipped: ${err}")
+                }
             }
-            cleanWs()
         }
     }
 }
