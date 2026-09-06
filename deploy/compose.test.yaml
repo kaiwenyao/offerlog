@@ -25,9 +25,16 @@ services:
       - /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U offerlog -d offerlog"]
-      interval: 3s
+      # 稳态 10s。3s 间隔在 CI 并发时会把 docker exec 堆成死亡螺旋：健康检查
+      # 一旦耗时超过间隔（节点掉线时实测 45s），未返回的检查就无限累积，压垮
+      # dockerd 与 kubelet 共用的那个 containerd —— kubelet 的 PLEG 随之超时，
+      # 节点 NodeNotReady，Pod（含 Jenkins 控制器自身）被 taint 驱逐。
+      # start_interval 让启动阶段仍按 1s 快速探测，不牺牲栈就绪速度。
+      interval: 10s
       timeout: 3s
       retries: 20
+      start_period: 30s
+      start_interval: 1s
     restart: "no"
 
   api:
