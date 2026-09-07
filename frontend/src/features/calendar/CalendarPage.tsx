@@ -9,6 +9,7 @@ import { Dot, EmptyHint, ErrorText, Num, PageSpinner } from '../../components/ui
 import {
   addDays,
   agenda,
+  agendaWindow,
   monthGrid,
   monthStart,
   mondayOf,
@@ -71,15 +72,15 @@ export function CalendarPage() {
   const gridFrom = useMemo(() => (view === 'month' ? monthGridStart(monthFirst) : anchor), [view, anchor, monthFirst])
   const from = useMemo(() => {
     if (view === 'week') return anchor
-    if (view === 'agenda') return addDays(mondayOf(anchor), -90) // include far-overdue actions
+    if (view === 'agenda') return agendaWindow(anchor).from // include far-overdue actions
     return gridFrom
   }, [view, anchor, gridFrom])
 
   const to = useMemo(() => {
     if (view === 'week') return addDays(anchor, 7)
     if (view === 'month') return addDays(gridFrom, 42) // grid window, not monthStart+42
-    return addDays(from, 14)
-  }, [view, anchor, gridFrom, from])
+    return agendaWindow(anchor).to
+  }, [view, anchor, gridFrom])
 
   const q = useQuery({
     queryKey: ['calendar', view, from.toISOString(), to.toISOString()],

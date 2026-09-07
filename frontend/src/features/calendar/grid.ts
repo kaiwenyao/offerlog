@@ -130,6 +130,17 @@ export function agenda(events: CalendarEvent[], now: Date = new Date(), zone?: s
   return groups
 }
 
+/**
+ * Fetch window for the agenda view: overdue actions can be arbitrarily old,
+ * so the fetch spans [−90d, +30d] around the current week — wide enough that
+ * the “已逾期” bucket is not empty for real data, and far enough forward that
+ * upcoming items render too.
+ */
+export function agendaWindow(anchor: Date): { from: Date; to: Date } {
+  const monday = mondayOf(anchor)
+  return { from: addDays(monday, -90), to: addDays(monday, 30) }
+}
+
 /** YYYY-MM-DD of a Date in the browser-local calendar. */
 function dateKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`

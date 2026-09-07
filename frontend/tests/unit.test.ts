@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
 import { fmtBytes, fmtDate, daysBetween, dayToInstant, toDayString, fmtDay } from '../src/lib/api'
 import { buildWeek } from '../src/features/today/week'
-import { agenda, mondayOf, weekColumns } from '../src/features/calendar/grid'
+import { agenda, agendaWindow, mondayOf, weekColumns } from '../src/features/calendar/grid'
 import type { CalendarEvent } from '../src/lib/types'
 
 describe('status dictionary', () => {
@@ -160,5 +160,18 @@ describe('date-only helpers (§P0 timezone semantics)', () => {
   })
   it('fmtDay never shifts a date-only value through Date()', () => {
     expect(fmtDay('2026-09-10')).toBe('2026/09/10')
+  })
+})
+
+describe('calendar agenda window', () => {
+  it('spans −90d..+30d so old overdue and upcoming items are both fetched', () => {
+    const wed = new Date(2026, 8, 9, 12, 0) // 2026-09-09
+    const { from, to } = agendaWindow(wed)
+    // Monday of that week is 2026-09-07; −90d is 2026-06-09, +30d is 2026-10-07.
+    expect(from.getTime()).toBe(new Date(2026, 5, 9).getTime())
+    expect(to.getTime()).toBe(new Date(2026, 9, 7).getTime())
+    // an action overdue 10 days (2026-08-30) falls inside [from, to)
+    const overdue = new Date(2026, 7, 30).getTime()
+    expect(overdue >= from.getTime() && overdue < to.getTime()).toBe(true)
   })
 })
