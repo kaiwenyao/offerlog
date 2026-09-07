@@ -63,6 +63,23 @@ type TodoCounts struct {
 	DueToday int64 `json:"due_today"`
 }
 
+// TodoItem is one row of the unified open list rendered by the dashboard —
+// standalone actions plus legacy derived next_actions — so the rendered list
+// and the badge count are the same data source. DueDay is the user's calendar
+// day (YYYY-MM-DD) when date-only; DueTs is the instant when present.
+type TodoItem struct {
+	ID            int64      `json:"id"`
+	ActionID      *int64     `json:"action_id"` // nil for legacy derived rows
+	ApplicationID int64      `json:"application_id"`
+	Title         string     `json:"title"`
+	CompanyName   string     `json:"company_name"`
+	Position      string     `json:"position"`
+	Status        string     `json:"status"`
+	DueDay        *string    `json:"due_day"`
+	DueTs         *time.Time `json:"due_ts"`
+	Archived      bool       `json:"archived"`
+}
+
 // Week is the user-local half-open week window used by the response.
 type Week struct {
 	Start time.Time `json:"start"`
@@ -92,6 +109,7 @@ type Summary struct {
 	InterviewsWeek     int64               `json:"interviews_week"`      // 本周安排的非取消面试轮次 (active)
 	InterviewsDoneWeek int64               `json:"interviews_done_week"` // 本周已完成轮次 (独立标签)
 	Todos              TodoCounts          `json:"todos"`
+	TodoItems          []TodoItem          `json:"todo_items"` // the unified open list (badge == list)
 	Week               Week                `json:"week"`
 	WeekItems          []WeekItem          `json:"week_items"` // chips for the Mon-Sun strip (server-side)
 	Upcoming           []UpcomingInterview `json:"upcoming"`   // cross-app, actual-time sorted, next N
@@ -119,6 +137,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 		// Non-nil slices so the JSON contract is [] rather than null — the
 		// frontend never has to defend against a missing collection.
 		WeekItems: []WeekItem{}, Upcoming: []UpcomingInterview{}, Recent: []RecentApplication{},
+		TodoItems: []TodoItem{},
 	}
 	s.ScopeNote = "工作清单与周统计排除已归档；归档记录计入总数与归档数。周 = 周一开始的半开区间（用户时区）。本周面试 = 本周安排的非取消轮次；已完成轮次单独标注。"
 
@@ -261,31 +280,61 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 	// Date-only dues are interpreted as the user's local midnight via
 	// `date::timestamp AT TIME ZONE $tz`, matching the week strip and the
 	// reminders generator (session timezone is pinned UTC, never relied on).
-	if err := q.QueryRow(ctx, `WITH open_actions AS (
-			SELECT a.id AS action_id, a.application_id, a.due_date, a.due_ts
+	todoRows, err := q.Query(ctx, `WITH open_actions AS (
+			SELECT a.id AS action_id, a.application_id, a.title, a.due_date, a.due_ts, ap.company_name, ap.position, ap.status
 			FROM actions a JOIN applications ap ON ap.id = a.application_id
 			WHERE a.owner_id=$1 AND a.done_at IS NULL AND ap.deleted_at IS NULL
 		),
 		derived AS (
-			SELECT NULL::bigint AS action_id, ap.id AS application_id,
-			       ap.next_action_due_at::date AS due_date, NULL::timestamptz AS due_ts
+			SELECT NULL::bigint AS action_id, ap.id AS application_id, ap.next_action AS title,
+			       ap.next_action_due_at::date AS due_date, NULL::timestamptz AS due_ts,
+			       ap.company_name, ap.position, ap.status
 			FROM applications ap
 			WHERE ap.owner_id=$1 AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 			  AND trim(ap.next_action) <> ''
 			  AND NOT EXISTS (SELECT 1 FROM open_actions oa WHERE oa.application_id = ap.id)
 		),
 		all_todos AS (
-			SELECT *, CASE WHEN due_ts IS NOT NULL THEN due_ts
-			               WHEN due_date IS NOT NULL THEN due_date::timestamp AT TIME ZONE $2
-			               ELSE NULL END AS due_inst
+			SELECT *,
+			       CASE WHEN due_ts IS NOT NULL THEN due_ts
+			            WHEN due_date IS NOT NULL THEN due_date::timestamp AT TIME ZONE $2
+			            ELSE NULL END AS due_inst
 			FROM (SELECT * FROM open_actions UNION ALL SELECT * FROM derived) t
 		)
-		SELECT count(*),
-			count(*) FILTER (WHERE due_inst IS NOT NULL AND due_inst < $3),
-			count(*) FILTER (WHERE due_inst IS NOT NULL AND due_inst >= $3
-			                 AND due_inst < $4)
-		FROM all_todos`,
-		ownerID, tz, dayStart, dayStart.AddDate(0, 0, 1)).Scan(&s.Todos.Open, &s.Todos.Overdue, &s.Todos.DueToday); err != nil {
+		SELECT action_id, application_id, title, company_name, position, status,
+		       to_char(due_date, 'YYYY-MM-DD'), due_ts, due_inst
+		FROM all_todos
+		ORDER BY due_inst NULLS LAST, application_id, action_id`,
+		ownerID, tz)
+	if err != nil {
+		return nil, err
+	}
+	defer todoRows.Close()
+	for todoRows.Next() {
+		var it TodoItem
+		var actionID *int64
+		var dueDay *string
+		var dueInst *time.Time
+		if err := todoRows.Scan(&actionID, &it.ApplicationID, &it.Title, &it.CompanyName,
+			&it.Position, &it.Status, &dueDay, &it.DueTs, &dueInst); err != nil {
+			return nil, err
+		}
+		it.ActionID = actionID
+		if it.ActionID != nil {
+			it.ID = *it.ActionID
+		} else {
+			it.ID = -it.ApplicationID
+		}
+		it.DueDay = dueDay
+		s.TodoItems = append(s.TodoItems, it)
+		s.Todos.Open++
+		if dueInst != nil && dueInst.Before(dayStart) {
+			s.Todos.Overdue++
+		} else if dueInst != nil && !dueInst.Before(dayStart) && dueInst.Before(dayStart.AddDate(0, 0, 1)) {
+			s.Todos.DueToday++
+		}
+	}
+	if err := todoRows.Err(); err != nil {
 		return nil, err
 	}
 

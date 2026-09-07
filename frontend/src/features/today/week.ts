@@ -1,9 +1,13 @@
 import type { ActionItem, HomeSummary } from '../../lib/types'
+import { dayToInstant, toDayString } from '../../lib/api'
+import { effectiveZone } from '../../lib/tz'
 
 export interface TodoItem extends ActionItem {
   company_name?: string
   position?: string
   status?: string
+  /** Set for standalone actions; absent for legacy derived next_actions. */
+  action_id?: number | null
 }
 
 export interface TodoGroup {
@@ -14,13 +18,26 @@ export interface TodoGroup {
 
 const DAY_MS = 86_400_000
 
+/** Local midnight (ms) of “today” in the user's zone (browser zone fallback). */
 export function startOfDay(d: Date = new Date()): number {
+  const zone = effectiveZone()
+  if (zone) {
+    const ds = toDayString(d.toISOString(), zone)
+    const inst = ds ? dayToInstant(ds, zone) : null
+    if (inst != null) return inst
+  }
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
+/**
+ * Due as an instant: due_ts is already one; date-only due_date is interpreted
+ * as midnight of that calendar day in the user's zone (matching the server).
+ */
 export function dueTime(item: Pick<TodoItem, 'due_ts' | 'due_date'>): number {
-  const iso = item.due_ts ?? item.due_date
-  return iso ? new Date(iso).getTime() : Number.POSITIVE_INFINITY
+  if (item.due_ts) return new Date(item.due_ts).getTime()
+  const day = toDayString(item.due_date, effectiveZone())
+  const inst = day ? dayToInstant(day, effectiveZone()) : null
+  return inst ?? Number.POSITIVE_INFINITY
 }
 
 /** Split open work into the design's 已逾期 / 今天 / 未来 7 天 / 更晚 buckets. */

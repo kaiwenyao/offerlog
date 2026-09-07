@@ -34,18 +34,17 @@ func New(db *database.DB) *Repo { return &Repo{db: db} }
 
 func (r *Repo) Pool() *database.DB { return r.db }
 
-// InsertIdempotent creates a notification unless a *non-dismissed* row with
-// the same (owner_id, kind, application_id, idempotency_key) exists. Returns
-// whether a row was inserted.
+// InsertIdempotent creates a notification unless a row with the same
+// (owner_id, kind, application_id, idempotency_key) already exists — read or
+// dismissed alike. Returns whether a row was inserted.
 //
-// Dismissal (忽略) is the permanent mute of one event occurrence: once the
-// user dismisses, the generator never recreates that notification even while
-// the underlying item stays overdue/eligible — this is what makes the UI
-// “忽略” button meaningful and matches the migration note “dismissable so the
-// same event cannot notify twice”. A row that was only *read* is deliberately
-// eligible to be re-reminded on later passes while the item is still open
-// (read = seen, not resolved); once the item is completed/resolved the
-// reminder query itself stops returning it.
+// Exactly one notification is generated per event occurrence, ever: the key
+// identifies the occurrence (overdue:action, stale:app, interview:round:day),
+// and read (已读) / dismiss (忽略) only change visibility and history. This is
+// the migration note “dismissable so the same event cannot notify twice” and
+// the acceptance “同一事件不重复提醒”. A genuinely new occurrence (rescheduled
+// interview day, an action re-overdue after postpone) uses a new key and
+// notifies afresh — postpone clears prior rows so the new due period re-arms.
 func (r *Repo) InsertIdempotent(ctx context.Context, n *Notification, key string) (bool, error) {
 	var inserted bool
 	err := r.db.Pool().QueryRow(ctx, `WITH ins AS (

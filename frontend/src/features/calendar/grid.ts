@@ -1,7 +1,13 @@
-// Pure helpers for the calendar/agenda view — week/day window math over the
-// user's own timezone via explicit instants, plus grouping events into the
-// Mon-Sun week grid. Kept free of React so it is unit-testable.
+// Pure helpers for the calendar/agenda view — week/day window math plus
+// grouping events into the Mon-Sun week grid. Kept free of React so it is
+// unit-testable.
+//
+// All bucketing of event *instants* into calendar days is done in the signed-in
+// user's timezone (the same zone the server uses for week windows), so a
+// browser elsewhere cannot disagree with the server. The zone is passed in by
+// the caller (default: the browser's own zone).
 import type { CalendarEvent } from '../../lib/types'
+import { toDayString } from '../../lib/api'
 
 export type ViewMode = 'week' | 'month' | 'agenda'
 
@@ -40,17 +46,28 @@ export interface DayCell {
   events: CalendarEvent[]
 }
 
+/**
+ * The calendar-day key (YYYY-MM-DD) an event belongs to, in the user's zone.
+ * All-day events arrive at the user's local midnight so this is exact; point
+ * events use the same zone the server-side windows use.
+ */
+function eventDay(e: CalendarEvent, zone?: string): string | null {
+  if (!e.start) return null
+  return toDayString(e.start, zone)
+}
+
 /** Build the 7 columns of the week view starting at weekStart (Monday). */
-export function weekColumns(events: CalendarEvent[], weekStart: Date): DayCell[] {
+export function weekColumns(events: CalendarEvent[], weekStart: Date, zone?: string): DayCell[] {
   return WEEKDAYS.map((_, i) => {
     const date = addDays(weekStart, i)
-    const dayEvents = events.filter((e) => eventDayIndex(e, weekStart) === i)
+    const key = dateKey(date)
+    const dayEvents = events.filter((e) => eventDay(e, zone) === key)
     return { date, isToday: sameLocalDay(date, new Date()), events: dayEvents }
   })
 }
 
 /** Build a month grid (leading/trailing blanks filled from adjacent weeks). */
-export function monthGrid(events: CalendarEvent[], first: Date): DayCell[][] {
+export function monthGrid(events: CalendarEvent[], first: Date, zone?: string): DayCell[][] {
   const startDow = (first.getDay() + 6) % 7 // Mon=0
   const gridStart = addDays(first, -startDow)
   const weeks: DayCell[][] = []
@@ -58,7 +75,8 @@ export function monthGrid(events: CalendarEvent[], first: Date): DayCell[][] {
     const cols: DayCell[] = []
     for (let i = 0; i < 7; i++) {
       const date = addDays(gridStart, w * 7 + i)
-      const dayEvents = events.filter((e) => sameLocalDay(new Date(e.start ?? e.dueDate ?? ''), date))
+      const key = dateKey(date)
+      const dayEvents = events.filter((e) => eventDay(e, zone) === key)
       cols.push({
         date,
         isToday: sameLocalDay(date, new Date()),
@@ -71,37 +89,50 @@ export function monthGrid(events: CalendarEvent[], first: Date): DayCell[][] {
   return weeks
 }
 
-/** Group events into agenda buckets: 今天 / 未来 7 天 / 之后（排序）。 */
-export function agenda(events: CalendarEvent[], now: Date = new Date()): Array<{ title: string; items: CalendarEvent[] }> {
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const soon = todayStart + 7 * DAY_MS
-  const future: CalendarEvent[] = []
-  const thisWeek: CalendarEvent[] = []
-  const later: CalendarEvent[] = []
+export interface AgendaGroup {
+  title: string
+  items: CalendarEvent[]
+}
+
+/**
+ * Group events into agenda buckets: 已逾期（仅 action，仍在用户本地今天之前）/
+ * 今天 / 未来 7 天 / 之后。逾期待办必须渲染出来，不能收进一个永不展示的桶。
+ */
+export function agenda(events: CalendarEvent[], now: Date = new Date(), zone?: string): AgendaGroup[] {
+  const todayKey = dateKey(now)
+  const soon = addDays(now, 7)
+  const soonKey = dateKey(soon)
+
   const overdue: CalendarEvent[] = []
+  const today: CalendarEvent[] = []
+  const next7: CalendarEvent[] = []
+  const later: CalendarEvent[] = []
   for (const e of events) {
-    const at = new Date(e.start ?? e.dueDate ?? '').getTime()
-    if (e.kind === 'action' && e.start && at < todayStart) overdue.push(e)
-    else if (at < soon) thisWeek.push(e)
-    else future.push(e)
+    const day = eventDay(e, zone)
+    if (!day) {
+      later.push(e) // undated
+      continue
+    }
+    if (e.kind === 'action' && !e.done && day < todayKey) overdue.push(e)
+    else if (day === todayKey) today.push(e)
+    else if (day < soonKey) next7.push(e)
+    else later.push(e)
   }
-  if (overdue.length) later.push(...overdue)
-  const groups: Array<{ title: string; items: CalendarEvent[] }> = []
-  if (thisWeek.length) groups.push({ title: '近期（7 天内）', items: thisWeek })
-  if (future.length) groups.push({ title: '之后', items: future })
+  const sortByDay = (a: CalendarEvent, b: CalendarEvent) =>
+    (a.start ?? '').localeCompare(b.start ?? '')
+  const groups: AgendaGroup[] = []
+  if (overdue.length) {
+    groups.push({ title: '已逾期', items: overdue.sort(sortByDay) })
+  }
+  if (today.length) groups.push({ title: '今天', items: today.sort(sortByDay) })
+  if (next7.length) groups.push({ title: '未来 7 天', items: next7.sort(sortByDay) })
+  if (later.length) groups.push({ title: '之后', items: later.sort(sortByDay) })
   return groups
 }
 
-function eventDayIndex(e: CalendarEvent, weekStart: Date): number {
-  const at = new Date(e.start ?? e.dueDate ?? '')
-  if (isNaN(at.getTime())) return -1
-  const start = weekStart.getTime()
-  const diff = Math.round((localMidnight(at).getTime() - start) / DAY_MS)
-  return diff >= 0 && diff < 7 ? diff : -1
-}
-
-function localMidnight(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
+/** YYYY-MM-DD of a Date in the browser-local calendar. */
+function dateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 export function sameLocalDay(a: Date, b: Date): boolean {

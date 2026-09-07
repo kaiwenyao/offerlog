@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { api, ApiError, fmtDate } from '../../lib/api'
+import { api, ApiError, fmtDate, fmtDay } from '../../lib/api'
 import type { AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
 import { ENDED } from '../../lib/status'
 import { Button, Card, Eyebrow, IconButton, Tabs } from '../../ds'
@@ -150,7 +150,7 @@ export function AppDetailContent({
         )}
         {app.deadline && (
           <span style={{ marginLeft: 'auto' }}>
-            <Num color="var(--text-muted)">截止 {fmtDate(app.deadline)}</Num>
+            <Num color="var(--text-muted)">截止 {fmtDay(app.deadline)}</Num>
           </span>
         )}
       </div>

@@ -21,11 +21,13 @@ export interface AppRow {
   saved_at: string | null
   submitted_at: string | null
   first_response_at: string | null
+  /** calendar day YYYY-MM-DD (DATE column) — render as a day, never new Date() */
   deadline: string | null
   accepted_at: string | null
   rejected_at: string | null
   reason: string
   next_action: string
+  /** calendar day YYYY-MM-DD (DATE column) — render as a day, never new Date() */
   next_action_due_at: string | null
   version: number
   archived: boolean
@@ -78,7 +80,9 @@ export interface ActionItem {
   id: number
   application_id: number | null
   title: string
+  /** calendar day YYYY-MM-DD (DATE column) — render as a day, never new Date() */
   due_date: string | null
+  /** precise instant (TIMESTAMPTZ column) */
   due_ts: string | null
   done_at: string | null
   remind_me: boolean
@@ -208,6 +212,18 @@ export interface HomeSummary {
   interviews_week: number
   interviews_done_week: number
   todos: { open: number; overdue: number; due_today: number }
+  todo_items: Array<{
+    id: number
+    action_id: number | null
+    application_id: number
+    title: string
+    company_name: string
+    position: string
+    status: string
+    /** calendar day YYYY-MM-DD when date-only due */
+    due_day: string | null
+    due_ts: string | null
+  }>
   week: { start: string; end: string }
   week_items: Array<{ day: number; kind: string; who: string; tone: 'info' | 'warn' | 'good' | 'acc' | 'bad' }>
   upcoming: Array<{
@@ -252,6 +268,10 @@ export interface InterviewSchedule {
 }
 
 // CalendarEvent is one cross-application agenda row (/api/v1/calendar).
+// `start` is the event instant (RFC3339). For all-day rows the server emits it
+// at the *user's* local midnight of the calendar day, so the client can bucket
+// it in the user zone consistently; date-only display should go through
+// fmtDay/toDayString (never new Date() on a bare day).
 export interface CalendarEvent {
   id: number
   kind: 'interview' | 'action' | 'deadline' | 'offer_decision'
@@ -260,7 +280,6 @@ export interface CalendarEvent {
   position: string
   title: string
   start: string | null
-  dueDate?: string | null
   timezone: string
   all_day: boolean
   location: string

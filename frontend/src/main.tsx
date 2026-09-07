@@ -12,6 +12,7 @@ import '@fontsource/noto-sans-sc/500.css'
 import '@fontsource/noto-sans-sc/700.css'
 import './styles/app.css'
 import { fetchMe, setCsrf } from './lib/api'
+import { setUserZone } from './lib/tz'
 import type { Me } from './lib/types'
 import { AppLayout } from './app/layout'
 import { PageSpinner } from './components/ui'
@@ -42,6 +43,7 @@ export default function App() {
     fetchMe()
       .then((m) => {
         if (m) {
+          setUserZone(m.timezone)
           setMe(m)
           setState('authed')
         } else {
@@ -59,7 +61,10 @@ export default function App() {
     // session name reflect the new display name/timezone immediately.
     const onProfile = () =>
       fetchMe().then((m) => {
-        if (m) setMe(m)
+        if (m) {
+          setUserZone(m.timezone)
+          setMe(m)
+        }
       })
     window.addEventListener('offerlog:profile-changed', onProfile)
     return () => {
@@ -82,6 +87,7 @@ export default function App() {
     return (
       <LoginPage
         onLoggedIn={(m) => {
+          setUserZone(m.timezone)
           setMe(m)
           setState('authed')
         }}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, ApiError, fmtDate } from '../../lib/api'
+import { api, ApiError, fmtDate, fmtDay } from '../../lib/api'
 import type { AppRow, SavedView } from '../../lib/types'
 import { FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
 import { Button, Card, Input, Select, Tabs, Tag } from '../../ds'
@@ -30,6 +30,12 @@ const LAYOUT_TABS = [
 
 /** Table geometry from the design's 阶段推进 grid, as fixed table columns. */
 const COLS = ['236px', '118px', '116px', 'auto', '92px', '88px', '104px', '56px']
+
+/** YYYY-MM-DD strictly before today (browser-local day). today = ms of local midnight. */
+function isDayBeforeToday(dayStr: string, todayMs: number): boolean {
+  const [y, m, d] = dayStr.split('-').map(Number)
+  return new Date(y, m - 1, d).getTime() < todayMs
+}
 
 export function DatabasePage() {
   const { id: routeApp } = useParams()
@@ -342,10 +348,10 @@ function TableView({
         </thead>
         <tbody>
           {rows.map((a) => {
-            const dueIso = a.next_action_due_at ?? a.deadline
+            const dueDay = a.next_action_due_at ?? a.deadline
             const overdue =
               a.next_action_due_at != null &&
-              new Date(a.next_action_due_at).getTime() < today &&
+              isDayBeforeToday(a.next_action_due_at, today) &&
               !['accepted', 'rejected', 'withdrawn', 'closed'].includes(a.status)
             return (
               <tr key={a.id} className="tbl-row" onClick={() => onOpen(a.id)}>
@@ -385,7 +391,7 @@ function TableView({
                 </td>
                 <td>
                   <Num color={overdue ? 'var(--danger)' : 'var(--text-muted)'}>
-                    {overdue ? `逾期 ${fmtDate(dueIso)}` : fmtDate(dueIso)}
+                    {overdue ? `逾期 ${fmtDay(dueDay)}` : fmtDay(dueDay)}
                   </Num>
                 </td>
                 <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{a.channel || '—'}</td>
@@ -449,7 +455,7 @@ function BoardView({
                 {a.position}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
-                <Num color="var(--text-muted)">{fmtDate(a.next_action_due_at ?? a.deadline)}</Num>
+                <Num color="var(--text-muted)">{fmtDay(a.next_action_due_at ?? a.deadline)}</Num>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{a.channel || '—'}</span>
               </div>
             </button>
@@ -493,7 +499,7 @@ function ListView({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: number) => vo
               <span className="ellipsis" style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 220 }}>
                 {a.next_action}
               </span>
-              <Num color="var(--text-muted)">{fmtDate(a.next_action_due_at ?? a.deadline)}</Num>
+              <Num color="var(--text-muted)">{fmtDay(a.next_action_due_at ?? a.deadline)}</Num>
             </button>
           ))}
         </Card>

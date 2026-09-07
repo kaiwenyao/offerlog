@@ -36,6 +36,9 @@ export function NotificationsBell() {
     queryKey: ['notifications', 'open'],
     queryFn: () => api.get<{ items: Notification[] }>('/api/v1/notifications?open=1'),
     staleTime: 15_000,
+    // The app runs with refetchOnWindowFocus off; poll quietly so a reminder
+    // generated server-side shows up without requiring a manual refresh.
+    refetchInterval: 60_000,
   })
 
   const items = q.data?.items ?? []
@@ -160,6 +163,25 @@ export function NotificationsBell() {
                   </div>
                 ))
               )}
+            </div>
+            <div
+              style={{
+                borderTop: '1px solid var(--border-alt)',
+                padding: '8px 14px',
+                display: 'flex',
+                justifyContent: 'center',
+              }}
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setOpen(false)
+                  nav('/notifications')
+                }}
+              >
+                查看全部通知
+              </Button>
             </div>
           </Card>
         </>

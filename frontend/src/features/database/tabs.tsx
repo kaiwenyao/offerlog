@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, ApiError, fmtBytes, fmtDate, fmtDateTime } from '../../lib/api'
+import { api, ApiError, fmtBytes, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
 import type { ActionItem, AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
 import { NEXT_STEP_SUGGESTION, STATUSES, statusMeta } from '../../lib/status'
 import { Button, Card, Eyebrow, LinkButton, PanelTitle, Select } from '../../ds'
@@ -9,6 +9,13 @@ import { Dot, ErrorText, Modal, Num, Spinner } from '../../components/ui'
 import { ActionForm, InterviewForm, NoteForm } from './forms'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
+
+/** YYYY-MM-DD strictly before today's YYYY-MM-DD (browser-local day). */
+function dayBeforeToday(dayStr: string): boolean {
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  return dayStr < today
+}
 
 const EXT_TINT: Record<string, string> = {
   PDF: 'var(--danger-soft)',
@@ -68,6 +75,7 @@ export function OverviewTab({
   const [showInterview, setShowInterview] = useState(false)
   const [showAction, setShowAction] = useState(false)
   const [showNote, setShowNote] = useState(false)
+  const [actionErr, setActionErr] = useState('')
 
   // Standalone actions for this application — the unified todo source of
   // truth (§5.3). The card below lists open + recently completed so the user
@@ -83,16 +91,20 @@ export function OverviewTab({
   const doneMut = useMutation({
     mutationFn: ({ id, done }: { id: number; done: boolean }) => api.post(`/api/v1/actions/${id}/done`, { done }),
     onSuccess: () => {
+      setActionErr('')
       qc.invalidateQueries({ queryKey: ['actions'] })
       refetchAll()
     },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '操作失败，请重试'),
   })
   const postponeMut = useMutation({
     mutationFn: (id: number) => api.post(`/api/v1/actions/${id}/postpone`, { days: 1 }),
     onSuccess: () => {
+      setActionErr('')
       qc.invalidateQueries({ queryKey: ['actions'] })
       refetchAll()
     },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '延期失败，请重试'),
   })
 
   const facts: Array<[string, string]> = [
@@ -115,6 +127,12 @@ export function OverviewTab({
         ))}
       </div>
 
+      {actionErr && (
+        <div style={{ marginTop: -4 }}>
+          <ErrorText>{actionErr}</ErrorText>
+        </div>
+      )}
+
       <Card padding={0} style={{ overflow: 'hidden' }}>
         <div className="panel-head">
           <PanelTitle>待办 ({openActions.length})</PanelTitle>
@@ -131,14 +149,17 @@ export function OverviewTab({
         ) : (
           <>
             {openActions.map((a) => {
-              const due = a.due_ts ?? a.due_date
-              const overdue = due != null && new Date(due).getTime() < new Date().setHours(0, 0, 0, 0)
+              const dueTs = a.due_ts ? new Date(a.due_ts).getTime() : null
+              const dueDay = a.due_date ? toDayString(a.due_date) : null
+              const todayStart = new Date().setHours(0, 0, 0, 0)
+              const overdue = dueTs != null ? dueTs < todayStart : dueDay != null && dayBeforeToday(dueDay)
+              const shown = dueTs != null ? fmtDateTime(a.due_ts) : dueDay ? fmtDay(a.due_date) : null
               return (
                 <div key={a.id} className="panel-row">
                   <span className="grow">
                     <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{a.title}</span>
                     <span style={{ display: 'block', fontSize: 12, color: overdue ? 'var(--danger)' : 'var(--text-muted)' }}>
-                      {due ? (overdue ? `逾期 ${fmtDate(due)}` : `截止 ${fmtDate(due)}`) : '无截止日期'}
+                      {shown ? (overdue ? `逾期 ${shown}` : `截止 ${shown}`) : '无截止日期'}
                     </span>
                   </span>
                   {overdue && (
@@ -158,7 +179,7 @@ export function OverviewTab({
                 <span className="grow">
                   <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{app.next_action}</span>
                   <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
-                    {app.next_action_due_at ? `截止 ${fmtDate(app.next_action_due_at)}` : ''} · 旧记录（迁移后并入统一待办）
+                    {app.next_action_due_at ? `截止 ${fmtDay(app.next_action_due_at)}` : ''} · 旧记录（迁移后并入统一待办）
                   </span>
                 </span>
               </div>

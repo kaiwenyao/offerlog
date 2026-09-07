@@ -3,7 +3,7 @@
 // Playwright e2e suite.
 import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
-import { fmtBytes, fmtDate, daysBetween } from '../src/lib/api'
+import { fmtBytes, fmtDate, daysBetween, dayToInstant, toDayString, fmtDay } from '../src/lib/api'
 import { buildWeek } from '../src/features/today/week'
 import { agenda, mondayOf, weekColumns } from '../src/features/calendar/grid'
 import type { CalendarEvent } from '../src/lib/types'
@@ -96,34 +96,46 @@ describe('analytics rate display semantics (§4.2)', () => {
 })
 
 describe('calendar grid helpers', () => {
+  const ZONE = 'Europe/Dublin' // deterministic zone for day bucketing
   it('places an interview on the correct Monday-start week column', () => {
-    const wed = new Date(2026, 8, 9, 10, 0) // 2026-09-09 Wed
+    const wed = new Date(2026, 8, 9, 10, 0) // 2026-09-09 Wed (browser-local)
     const mon = mondayOf(wed)
     expect(mon.getDay()).toBe(1)
     const ev: CalendarEvent = {
       id: 1, kind: 'interview', application_id: 1, company_name: 'Acme', position: 'R',
-      title: 'Acme · 一面', start: '2026-09-09T10:00:00Z', timezone: 'Europe/Dublin',
+      title: 'Acme · 一面', start: '2026-09-09T10:00:00Z', timezone: ZONE,
       all_day: false, location: '', meeting_url: '', cancelled: false, done: false,
       round_name: '一面', format: 'video',
     }
-    const cols = weekColumns([ev], mon)
+    const cols = weekColumns([ev], mon, ZONE)
     const col = cols.find((c) => c.date.getDate() === 9)
     expect(col?.events.length).toBe(1)
     expect(cols[0].date.getDay()).toBe(1)
   })
 
-  it('groups events into recent/after agenda buckets', () => {
-    const now = new Date(2026, 8, 7, 12, 0)
-    const in3d = new Date(now.getTime() + 3 * 86400000).toISOString()
-    const in20d = new Date(now.getTime() + 20 * 86400000).toISOString()
+  it('groups events into today / future buckets and surfaces overdue actions', () => {
+    // Fix "now" at a UTC instant; bucketing happens in Europe/Dublin.
+    const nowIso = '2026-09-07T10:00:00Z' // 2026-09-07 11:00 in Dublin
+    const now = new Date(nowIso)
+    const todayNoon = '2026-09-07T12:00:00Z'
+    const in3d = '2026-09-10T12:00:00Z'
+    const in20d = '2026-09-27T12:00:00Z'
+    // an action due yesterday (overdue must surface in its own bucket)
+    const overdue = { ...baseEv, id: 4, kind: 'action' as const, start: '2026-09-05T12:00:00Z' }
     const evs: CalendarEvent[] = [
-      { ...baseEv, id: 1, start: in3d },
-      { ...baseEv, id: 2, start: in20d },
+      { ...baseEv, id: 1, start: todayNoon },
+      { ...baseEv, id: 2, start: in3d },
+      { ...baseEv, id: 3, start: in20d },
+      overdue,
     ]
-    const groups = agenda(evs, now)
-    expect(groups).toHaveLength(2)
-    expect(groups[0].items.map((e) => e.id)).toEqual([1])
-    expect(groups[1].items.map((e) => e.id)).toEqual([2])
+    const groups = agenda(evs, now, ZONE)
+    const titles = groups.map((g) => g.title)
+    // 已逾期 bucket first, then 今天 / 未来 7 天 / 之后
+    expect(groups.find((g) => g.title === '已逾期')?.items.map((e) => e.id)).toEqual([4])
+    expect(groups.find((g) => g.title === '今天')?.items.map((e) => e.id)).toEqual([1])
+    expect(groups.find((g) => g.title === '未来 7 天')?.items.map((e) => e.id)).toEqual([2])
+    expect(groups.find((g) => g.title === '之后')?.items.map((e) => e.id)).toEqual([3])
+    expect(titles[0]).toBe('已逾期')
   })
 })
 const baseEv: CalendarEvent = {
@@ -131,3 +143,22 @@ const baseEv: CalendarEvent = {
   title: '', start: '', timezone: 'UTC', all_day: false, location: '', meeting_url: '',
   cancelled: false, done: false, round_name: '', format: '',
 }
+
+describe('date-only helpers (§P0 timezone semantics)', () => {
+  it('dayToInstant: LA midnight of 2026-09-10 is 07:00Z; Dublin summer is 23:00Z the prior day', () => {
+    const la = dayToInstant('2026-09-10', 'America/Los_Angeles')!
+    expect(new Date(la).toISOString()).toBe('2026-09-10T07:00:00.000Z')
+    const dub = dayToInstant('2026-09-10', 'Europe/Dublin')!
+    expect(new Date(dub).toISOString()).toBe('2026-09-09T23:00:00.000Z')
+  })
+  it('toDayString passes date-only through and converts instants per zone', () => {
+    expect(toDayString('2026-09-10')).toBe('2026-09-10')
+    // Dublin-local midnight instant 2026-09-09T23:00Z == 2026-09-10 in Dublin
+    expect(toDayString('2026-09-09T23:00:00Z', 'Europe/Dublin')).toBe('2026-09-10')
+    // same instant in LA is 09-09
+    expect(toDayString('2026-09-09T23:00:00Z', 'America/Los_Angeles')).toBe('2026-09-09')
+  })
+  it('fmtDay never shifts a date-only value through Date()', () => {
+    expect(fmtDay('2026-09-10')).toBe('2026/09/10')
+  })
+})

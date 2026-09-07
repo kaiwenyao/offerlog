@@ -34,6 +34,7 @@ export function NotificationsPage() {
   const q = useQuery({
     queryKey: ['notifications', scope],
     queryFn: () => api.get<{ items: Notification[] }>(`/api/v1/notifications${scope === 'open' ? '?open=1' : ''}`),
+    refetchInterval: 60_000,
   })
 
   const readAll = useMutation({

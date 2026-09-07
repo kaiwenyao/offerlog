@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { api, ApiError, fmtDate, fmtDateTime } from '../../lib/api'
-import type { ActionItem, HomeSummary } from '../../lib/types'
+import { api, ApiError, fmtDate, fmtDateTime, fmtDay } from '../../lib/api'
+import type { HomeSummary } from '../../lib/types'
 import { statusMeta } from '../../lib/status'
 import { Button, Card, PanelTitle } from '../../ds'
 import { Dot, EmptyHint, ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
-import { buildWeek, CHIP_TONES, dueTime, groupActions, startOfDay, type TodoItem } from './week'
+import { buildWeek, CHIP_TONES, groupActions, startOfDay, type TodoItem } from './week'
 
 const PANEL: React.CSSProperties = { padding: 0, overflow: 'hidden' }
 
@@ -14,9 +14,10 @@ const PANEL: React.CSSProperties = { padding: 0, overflow: 'hidden' }
  * Today dashboard backed by /api/v1/home/summary (server-side full-data
  * aggregates). Counts are never extrapolated from a 200-row page; upcoming
  * interviews are cross-application and sorted by actual scheduled time; the
- * todo count and checklist share one data source (standalone actions +
- * legacy derived next_actions). Error states show a retry entry rather than a
- * misleading "nothing here".
+ * todo badge and the checklist are the SAME data source — summary.todo_items
+ * (standalone actions + legacy derived next_actions), so the rendered list can
+ * never disagree with the sidebar count. Error states show a retry entry
+ * rather than a misleading "nothing here".
  */
 export function TodayPage() {
   const nav = useNavigate()
@@ -24,47 +25,49 @@ export function TodayPage() {
   const [toast, setToast] = useState('')
 
   const summaryQ = useQuery({
-    queryKey: ['home', 'summary'],
+    queryKey: ['home', 'summary', { limit: 5 }],
     queryFn: () => api.get<HomeSummary>('/api/v1/home/summary?limit=5'),
   })
 
-  const actionsQ = useQuery({
-    queryKey: ['actions', 'open'],
-    queryFn: () =>
-      api.get<{ items: Array<ActionItem & { company_name?: string; position?: string; status?: string }> }>(
-        '/api/v1/actions?open=1',
-      ),
-  })
-
   const doneMut = useMutation({
-    mutationFn: (id: number) => api.post(`/api/v1/actions/${id}/done`, { done: true }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['actions'] })
-      qc.invalidateQueries({ queryKey: ['home'] })
-    },
+    mutationFn: ({ id, actionId }: { id: number; actionId: number | null }) =>
+      actionId != null
+        ? api.post(`/api/v1/actions/${actionId}/done`, { done: true })
+        : Promise.reject(new ApiError('derived_todo', '该待办来自岗位记录，请到岗位详情更新', 409)),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['home', 'summary'] }),
     onError: (e: unknown) => setToast(e instanceof ApiError ? e.message : '操作失败'),
   })
 
   const postponeMut = useMutation({
-    mutationFn: (id: number) => api.post(`/api/v1/actions/${id}/postpone`, { days: 1 }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['actions'] })
-      qc.invalidateQueries({ queryKey: ['home'] })
-    },
+    mutationFn: (actionId: number) => api.post(`/api/v1/actions/${actionId}/postpone`, { days: 1 }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['home', 'summary'] }),
     onError: (e: unknown) => setToast(e instanceof ApiError ? e.message : '延期失败'),
   })
 
   const summary = summaryQ.data
 
+  // The checklist renders the same unified rows the badge counts. Server rows
+  // with an action_id are standalone actions (complete/postpone live on
+  // /actions/:id); rows without one are legacy derived from the application's
+  // next_action and can only be edited via the application.
   const groups = useMemo(() => {
-    const items: TodoItem[] = (actionsQ.data?.items ?? []).map((a) => ({
-      ...a,
-      company_name: a.company_name ?? '',
-      position: a.position ?? '',
-      status: a.status ?? '',
+    const items: TodoItem[] = (summary?.todo_items ?? []).map((r) => ({
+      id: r.id,
+      application_id: r.application_id,
+      action_id: r.action_id,
+      title: r.title,
+      due_ts: r.due_ts,
+      due_date: r.due_day,
+      done_at: null,
+      remind_me: false,
+      priority: 'medium',
+      created_at: '',
+      company_name: r.company_name,
+      position: r.position,
+      status: r.status,
     }))
     return groupActions(items)
-  }, [actionsQ.data])
+  }, [summary?.todo_items])
 
   const week = useMemo(() => (summary ? buildWeek(summary) : []), [summary])
 
@@ -108,11 +111,7 @@ export function TodayPage() {
         />
       </div>
 
-      {actionsQ.isError && (
-        <ErrorText>待办清单加载失败，请稍后重试</ErrorText>
-      )}
-
-      {groups.length === 0 && !actionsQ.isError && (
+      {groups.length === 0 && (
         <EmptyHint>
           <p style={{ margin: 0, font: 'var(--type-body-sm)' }}>今天没有待办 🎉</p>
           <p style={{ margin: 0, fontSize: 13 }}>在岗位详情添加“下一步行动”或独立待办，就会出现在这里。</p>
@@ -137,13 +136,12 @@ export function TodayPage() {
                   item={t}
                   busy={doneMut.isPending || postponeMut.isPending}
                   onOpen={() => t.application_id && nav(`/apps/${t.application_id}`)}
-                  onDone={() => doneMut.mutate(t.id)}
-                  onPostpone={() => postponeMut.mutate(t.id)}
+                  onDone={() => doneMut.mutate({ id: t.id, actionId: t.action_id ?? null })}
+                  onPostpone={() => t.action_id != null && postponeMut.mutate(t.action_id)}
                 />
               ))}
             </Card>
           ))}
-          {actionsQ.isLoading && <PageSpinner />}
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -268,7 +266,16 @@ function TodoRow({
   onPostpone: () => void
 }) {
   const due = item.due_ts ?? item.due_date
-  const overdue = due != null && new Date(due).getTime() < startOfDay()
+  const dueTsVal = item.due_ts ? new Date(item.due_ts).getTime() : null
+  const dueDay = item.due_date || null
+  const todayStart = startOfDay()
+  // date-only due_date is a calendar day — compare as day strings, never
+  // through new Date() (which would shift west-of-UTC).
+  const nowDay = new Date()
+  const todayStr = `${nowDay.getFullYear()}-${String(nowDay.getMonth() + 1).padStart(2, '0')}-${String(nowDay.getDate()).padStart(2, '0')}`
+  const overdue =
+    dueTsVal != null ? dueTsVal < todayStart : dueDay != null && dueDay < todayStr
+  const derived = item.action_id == null
   return (
     <div className="panel-row">
       <span className="grow" onClick={onOpen} style={{ cursor: 'pointer' }}>
@@ -286,15 +293,15 @@ function TodoRow({
         <span style={{ display: 'block', fontSize: 13, marginTop: 2 }}>{item.title}</span>
       </span>
       <Num color={overdue ? 'var(--danger)' : 'var(--text-muted)'}>
-        {overdue ? `逾期 ${fmtDate(due)}` : fmtDate(due)}
+        {overdue ? `逾期 ${fmtDay(due)}` : fmtDay(due)}
       </Num>
-      {overdue && (
+      {overdue && !derived && (
         <Button variant="ghost" size="sm" disabled={busy} onClick={onPostpone} title="延期一天">
           延期
         </Button>
       )}
-      <Button variant="secondary" size="sm" disabled={busy} onClick={onDone}>
-        完成
+      <Button variant="secondary" size="sm" disabled={busy} onClick={derived ? onOpen : onDone}>
+        {derived ? '查看' : '完成'}
       </Button>
     </div>
   )

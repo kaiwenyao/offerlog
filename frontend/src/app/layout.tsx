@@ -34,6 +34,11 @@ const SAVED_VIEWS: Array<{ label: string; dot: string; view: number; layout: str
   { label: '已归档', dot: 'var(--neutral)', view: -5, layout: 'table' },
 ]
 
+/** Extra sidebar entries below saved views (reachability for full pages). */
+const SIDEBAR_LINKS: Array<{ to: string; label: string; icon: IconName; countKey?: 'open' }> = [
+  { to: '/notifications', label: '通知中心', icon: 'bell' },
+]
+
 const PAGE_META: Record<string, { eyebrow: string; title: string }> = {
   '/': { eyebrow: 'TODAY', title: '今日待办' },
   '/database': { eyebrow: 'DATABASE', title: '求职数据库' },
@@ -55,7 +60,7 @@ function useSidebarCounts() {
   // unified open-action count, and the 岗位 badge is the real total; neither is
   // derived from a 200-row page.
   const home = useQuery({
-    queryKey: ['home', 'summary'],
+    queryKey: ['home', 'summary', { limit: 1 }],
     queryFn: () => api.get<HomeSummary>('/api/v1/home/summary?limit=1'),
     staleTime: 30_000,
   })
@@ -149,6 +154,18 @@ export function AppLayout({ me }: { me: Me | null }) {
                 </button>
               ))}
             </div>
+            <nav className="nav" aria-label="更多">
+              {SIDEBAR_LINKS.map((l) => (
+                <NavLink
+                  key={l.to}
+                  to={l.to}
+                  className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}
+                >
+                  <Icon name={l.icon} size={16} />
+                  <span className="grow">{l.label}</span>
+                </NavLink>
+              ))}
+            </nav>
           </div>
 
           <div className="sidebar-foot">

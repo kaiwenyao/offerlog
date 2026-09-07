@@ -75,10 +75,13 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
       // list (§5.3). Creating one also mirrors it onto the application's
       // legacy next_action fields so older surfaces (table column, list
       // view) stay in sync; completing/undoing happens on the action row.
-      const dueIso = due ? new Date(`${due}T00:00:00`).toISOString() : null
+      //
+      // due_date is a calendar day: send it as the plain YYYY-MM-DD string
+      // (never a browser-local-midnight instant — that shifts the stored day
+      // for non-UTC users). The backend stores it in a DATE column.
       const created = await api.post<{ id: number }>(`/api/v1/applications/${app.id}/actions`, {
         title,
-        due_date: dueIso,
+        due_date: due || null,
         priority: app.priority,
       })
       // Mirror onto the row (best-effort; the action is authoritative).
@@ -87,7 +90,7 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
         await api.patch(`/api/v1/applications/${app.id}`, {
           version: fresh.version,
           next_action: title || null,
-          next_action_due_at: dueIso,
+          next_action_due_at: due || null,
         })
       } catch {
         /* the standalone action still exists — surface stays consistent via it */

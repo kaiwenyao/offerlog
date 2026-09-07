@@ -154,6 +154,110 @@ export function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
+/** YYYY-MM-DD (a calendar day) or a full ISO instant? */
+const DAY_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Local calendar day (YYYY-MM-DD) for a date-only string *or* an instant.
+ *
+ * A date-only string is a calendar day and must never be routed through
+ * `new Date(...)` (UTC-midnight parses shift the day in west-of-UTC
+ * browsers). An instant is converted to the user's local calendar day.
+ */
+export function toDayString(s: string | null | undefined, zone?: string): string | null {
+  if (!s) return null
+  const trimmed = s.trim()
+  if (DAY_ONLY.test(trimmed)) return trimmed
+  const d = new Date(trimmed)
+  if (isNaN(d.getTime())) return null
+  if (zone) {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(d)
+    } catch {
+      /* fall through to local */
+    }
+  }
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/**
+ * UTC instant of local midnight (00:00) for a calendar-day string in the
+ * given zone. Example: 2026-09-10 in America/Los_Angeles → 2026-09-10T07:00Z;
+ * in Europe/Dublin (summer, UTC+1) → 2026-09-09T23:00Z.
+ *
+ * Implementation: at UTC noon of the target day every real-world zone shows
+ * the same calendar day, so the offset read there is the day's offset; local
+ * midnight = midnight UTC − offset. Returns null for malformed input; without
+ * a zone it falls back to the browser's local midnight.
+ */
+export function dayToInstant(dayStr: string | null | undefined, zone?: string): number | null {
+  if (!dayStr) return null
+  const s = dayStr.trim()
+  if (!DAY_ONLY.test(s)) return null
+  const [y, m, d] = s.split('-').map(Number)
+  if (zone) {
+    try {
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      })
+      const read = (utcMs: number) => {
+        const parts = fmt.formatToParts(utcMs)
+        const map: Record<string, string> = {}
+        for (const p of parts) map[p.type] = p.value
+        const local = Date.UTC(
+          Number(map.year),
+          Number(map.month) - 1,
+          Number(map.day),
+          Number(map.hour),
+          Number(map.minute),
+          Number(map.second),
+        )
+        return local
+      }
+      const noonUtc = Date.UTC(y, m - 1, d, 12, 0, 0)
+      const localAtNoon = read(noonUtc)
+      const offsetMs = localAtNoon - noonUtc
+      return Date.UTC(y, m - 1, d, 0, 0, 0) - offsetMs
+    } catch {
+      /* fall through to browser-local */
+    }
+  }
+  return new Date(y, m - 1, d).getTime()
+}
+
+/**
+ * Render a date-only string (or instant) as a local calendar day without
+ * letting a UTC-midnight parse shift it. Date-only values pass through
+ * untouched; instants are formatted in the given zone (default: browser).
+ */
+export function fmtDay(s: string | null | undefined, zone?: string): string {
+  if (!s) return '—'
+  const trimmed = s.trim()
+  if (DAY_ONLY.test(trimmed)) {
+    const [y, m, d] = trimmed.split('-').map(Number)
+    return `${y}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`
+  }
+  const ds = toDayString(s, zone)
+  if (!ds) return '—'
+  const [y, m, d] = ds.split('-').map(Number)
+  return `${y}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`
+}
+
 export function fmtDate(s: string | null | undefined): string {
   if (!s) return '—'
   const d = new Date(s)

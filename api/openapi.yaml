@@ -28,6 +28,8 @@ components:
         channel: { type: string }
         priority: { type: string, enum: [high, medium, low] }
         tags: { type: array, items: { type: string } }
+        deadline: { type: string, format: date, description: YYYY-MM-DD（按用户时区的日历日，非时间戳） }
+        next_action_due_at: { type: string, format: date, description: YYYY-MM-DD（按用户时区的日历日，非时间戳） }
         version: { type: integer, description: 乐观锁版本 }
         archived: { type: boolean }
         deleted: { type: boolean }
@@ -225,3 +227,8 @@ paths:
           in: query
           required: true
           schema: { type: string, format: date-time }
+  # --- date-only wire semantics ---
+  # DATE-backed columns (actions.due_date, applications.deadline,
+  # applications.next_action_due_at) travel as YYYY-MM-DD strings — never
+  # timestamps — and are stored as the user's calendar day. Instant columns
+  # (due_ts, submitted_at, …) remain RFC3339.

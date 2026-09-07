@@ -211,7 +211,10 @@ function RemindersPanel({ me }: { me: Me | null }) {
     <Card padding="18px">
       <PanelTitle style={{ marginBottom: 6 }}>提醒</PanelTitle>
       <p style={{ margin: '0 0 4px', fontSize: 12, color: 'var(--text-muted)' }}>
-        由服务端在你打开应用时生成站内提醒，不发邮件。关闭某个开关后不再生成新提醒；已生成的提醒保留，可在通知列表里处理或忽略。
+        由服务端在你打开应用时生成站内提醒，不发邮件。关闭某个开关后不再生成
+        对应新提醒；已生成的提醒保留，可在通知中心处理。每个事件（如某个逾期待办、
+        某天的面试提醒）只提醒一次，重复扫描不会再次生成同一提醒；「已读」/「忽略」
+        只改变该提醒的显示状态，不影响这个「一次」承诺。改期或延期后会产生新的提醒。
       </p>
       {err && <ErrorText>{err}</ErrorText>}
       <div style={{ display: 'flex', flexDirection: 'column', marginTop: 8 }}>

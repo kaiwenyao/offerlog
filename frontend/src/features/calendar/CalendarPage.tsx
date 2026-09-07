@@ -3,20 +3,26 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api, fmtDateTime } from '../../lib/api'
 import type { CalendarEvent } from '../../lib/types'
+import { effectiveZone } from '../../lib/tz'
 import { Button, Card, PanelTitle, Tabs } from '../../ds'
 import { Dot, EmptyHint, ErrorText, Num, PageSpinner } from '../../components/ui'
 import {
   addDays,
   agenda,
   monthGrid,
-  mondayOf,
   monthStart,
-  sameLocalDay,
+  mondayOf,
   toISO,
   weekColumns,
   WEEKDAYS,
   type ViewMode,
 } from './grid'
+
+/** Grid start for the month view: the Monday on/before the 1st. */
+function monthGridStart(first: Date): Date {
+  const startDow = (first.getDay() + 6) % 7
+  return addDays(first, -startDow)
+}
 
 function toneOf(e: CalendarEvent): string {
   if (e.cancelled) return 'var(--neutral)'
@@ -53,23 +59,30 @@ function fmtMonth(d: Date): string {
 
 export function CalendarPage() {
   const nav = useNavigate()
+  const zone = effectiveZone()
   const [view, setView] = useState<ViewMode>('week')
   const [anchor, setAnchor] = useState(() => mondayOf())
 
+  // Fetch window is aligned to the *rendered* grid, not the nominal month: the
+  // month view draws leading/trailing spillover cells from adjacent weeks, and
+  // those cells must receive their events. So the month fetch spans
+  // [monthGridStart(first), +42d) — the exact 6×7 window rendered.
+  const monthFirst = useMemo(() => monthStart(anchor), [anchor])
+  const gridFrom = useMemo(() => (view === 'month' ? monthGridStart(monthFirst) : anchor), [view, anchor, monthFirst])
   const from = useMemo(() => {
     if (view === 'week') return anchor
-    if (view === 'month') return monthStart(anchor)
-    return mondayOf(anchor)
-  }, [view, anchor])
+    if (view === 'agenda') return mondayOf(anchor)
+    return gridFrom
+  }, [view, anchor, gridFrom])
 
   const to = useMemo(() => {
     if (view === 'week') return addDays(anchor, 7)
-    if (view === 'month') return addDays(monthStart(anchor), 42)
+    if (view === 'month') return addDays(gridFrom, 42) // grid window, not monthStart+42
     return addDays(from, 14)
-  }, [view, anchor, from])
+  }, [view, anchor, gridFrom, from])
 
   const q = useQuery({
-    queryKey: ['calendar', from.toISOString(), to.toISOString()],
+    queryKey: ['calendar', view, from.toISOString(), to.toISOString()],
     queryFn: () =>
       api.get<{ items: CalendarEvent[] }>(
         `/api/v1/calendar?from=${encodeURIComponent(toISO(from))}&to=${encodeURIComponent(toISO(to))}`,
@@ -79,9 +92,12 @@ export function CalendarPage() {
 
   const events = q.data?.items ?? []
 
-  const weeks = useMemo(() => (view === 'month' ? monthGrid(events, monthStart(anchor)) : []), [view, events, anchor])
-  const days = useMemo(() => (view === 'week' ? weekColumns(events, anchor) : []), [view, events, anchor])
-  const agendaGroups = useMemo(() => (view === 'agenda' ? agenda(events) : []), [view, events])
+  const weeks = useMemo(
+    () => (view === 'month' ? monthGrid(events, monthFirst, zone) : []),
+    [view, events, monthFirst, zone],
+  )
+  const days = useMemo(() => (view === 'week' ? weekColumns(events, anchor, zone) : []), [view, events, anchor, zone])
+  const agendaGroups = useMemo(() => (view === 'agenda' ? agenda(events, new Date(), zone) : []), [view, events, zone])
 
   const navTitle =
     view === 'week'
@@ -275,30 +291,24 @@ function AgendaView({ groups, onOpen }: { groups: Array<{ title: string; items: 
             <PanelTitle>{g.title}</PanelTitle>
             <Num color="var(--text-muted)">{g.items.length}</Num>
           </div>
-          {g.items.map((e) => {
-            const start = e.start ?? e.dueDate
-            return (
-              <button key={`${e.kind}-${e.id}`} className="panel-row" onClick={() => onOpen(e.application_id)}>
-                <Dot color={toneOf(e)} />
-                <span className="grow" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                  <span style={{ fontSize: 14, fontWeight: 500 }}>
-                    {e.company_name || e.title}
-                    <span style={{ color: 'var(--text-muted)', fontSize: 12, fontWeight: 400 }}>
-                      {' '}
-                      · {e.position}
-                    </span>
-                  </span>
-                  <span className="ellipsis" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    {kindLabel(e)} · {start ? fmtDateTime(start) : '无时间'}
-                    {e.location ? ` · ${e.location}` : ''}
+          {g.items.map((e) => (
+            <button key={`${e.kind}-${e.id}`} className="panel-row" onClick={() => onOpen(e.application_id)}>
+              <Dot color={toneOf(e)} />
+              <span className="grow" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>
+                  {e.company_name || e.title}
+                  <span style={{ color: 'var(--text-muted)', fontSize: 12, fontWeight: 400 }}>
+                    {' '}
+                    · {e.position}
                   </span>
                 </span>
-                {sameLocalDay(start ? new Date(start) : new Date(0), new Date()) && (
-                  <span style={{ fontSize: 11, color: 'var(--accent)' }}>今天</span>
-                )}
-              </button>
-            )
-          })}
+                <span className="ellipsis" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {kindLabel(e)} · {e.start ? fmtDateTime(e.start) : '无时间'}
+                  {e.location ? ` · ${e.location}` : ''}
+                </span>
+              </span>
+            </button>
+          ))}
         </Card>
       ))}
     </div>
