@@ -19,8 +19,18 @@ func New(repo *notifications.Repo) *Handler { return &Handler{repo: repo} }
 func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.Use(httpx.RequireUser)
 	g.GET("", h.list)
+	g.POST("/read-all", h.readAll)
 	g.POST("/:id/read", h.read)
 	g.POST("/:id/dismiss", h.dismiss)
+}
+
+func (h *Handler) readAll(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	if err := h.repo.MarkAllRead(c.Request.Context(), user.ID); err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	httpx.Ok(c)
 }
 
 func (h *Handler) list(c *gin.Context) {

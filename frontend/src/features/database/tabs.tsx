@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, fmtBytes, fmtDate, fmtDateTime } from '../../lib/api'
-import type { AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
+import type { ActionItem, AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
 import { NEXT_STEP_SUGGESTION, STATUSES, statusMeta } from '../../lib/status'
 import { Button, Card, Eyebrow, LinkButton, PanelTitle, Select } from '../../ds'
 import { Icon } from '../../components/Icon'
@@ -69,6 +69,32 @@ export function OverviewTab({
   const [showAction, setShowAction] = useState(false)
   const [showNote, setShowNote] = useState(false)
 
+  // Standalone actions for this application — the unified todo source of
+  // truth (§5.3). The card below lists open + recently completed so the user
+  // can undo a completion.
+  const actionsQ = useQuery({
+    queryKey: ['actions', 'app', app.id],
+    queryFn: () => api.get<{ items: ActionItem[] }>(`/api/v1/applications/${app.id}/actions`),
+  })
+  const actions = actionsQ.data?.items ?? []
+  const openActions = actions.filter((a) => !a.done_at)
+  const recentDone = actions.filter((a) => a.done_at).slice(0, 3)
+
+  const doneMut = useMutation({
+    mutationFn: ({ id, done }: { id: number; done: boolean }) => api.post(`/api/v1/actions/${id}/done`, { done }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['actions'] })
+      refetchAll()
+    },
+  })
+  const postponeMut = useMutation({
+    mutationFn: (id: number) => api.post(`/api/v1/actions/${id}/postpone`, { days: 1 }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['actions'] })
+      refetchAll()
+    },
+  })
+
   const facts: Array<[string, string]> = [
     ['状态', statusMeta(app.status).label],
     ['渠道', app.channel || '—'],
@@ -91,27 +117,68 @@ export function OverviewTab({
 
       <Card padding={0} style={{ overflow: 'hidden' }}>
         <div className="panel-head">
-          <PanelTitle>下一步行动</PanelTitle>
+          <PanelTitle>待办 ({openActions.length})</PanelTitle>
           <span style={{ marginLeft: 'auto' }}>
             <Button variant="secondary" size="sm" onClick={() => setShowAction(true)}>
               ＋ 添加
             </Button>
           </span>
         </div>
-        <div style={{ padding: '12px 16px', fontSize: 13 }}>
-          {app.next_action ? (
-            <>
-              {app.next_action}
-              {app.next_action_due_at && (
-                <span style={{ color: 'var(--text-muted)' }}> · 截止 {fmtDate(app.next_action_due_at)}</span>
-              )}
-            </>
-          ) : (
-            <span style={{ color: 'var(--text-muted)' }}>
-              {NEXT_STEP_SUGGESTION[app.status] ?? '填写下一步行动以在今日待办中提醒自己'}
-            </span>
-          )}
-        </div>
+        {openActions.length === 0 && !app.next_action ? (
+          <div style={{ padding: '12px 16px', fontSize: 13, color: 'var(--text-muted)' }}>
+            {NEXT_STEP_SUGGESTION[app.status] ?? '添加一个待办，会出现在首页与统一清单中'}
+          </div>
+        ) : (
+          <>
+            {openActions.map((a) => {
+              const due = a.due_ts ?? a.due_date
+              const overdue = due != null && new Date(due).getTime() < new Date().setHours(0, 0, 0, 0)
+              return (
+                <div key={a.id} className="panel-row">
+                  <span className="grow">
+                    <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{a.title}</span>
+                    <span style={{ display: 'block', fontSize: 12, color: overdue ? 'var(--danger)' : 'var(--text-muted)' }}>
+                      {due ? (overdue ? `逾期 ${fmtDate(due)}` : `截止 ${fmtDate(due)}`) : '无截止日期'}
+                    </span>
+                  </span>
+                  {overdue && (
+                    <Button variant="ghost" size="sm" disabled={postponeMut.isPending} onClick={() => postponeMut.mutate(a.id)}>
+                      延期
+                    </Button>
+                  )}
+                  <Button variant="secondary" size="sm" disabled={doneMut.isPending} onClick={() => doneMut.mutate({ id: a.id, done: true })}>
+                    完成
+                  </Button>
+                </div>
+              )
+            })}
+            {/* legacy next_action without a standalone action still surfaces */}
+            {openActions.length === 0 && app.next_action && (
+              <div className="panel-row">
+                <span className="grow">
+                  <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{app.next_action}</span>
+                  <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
+                    {app.next_action_due_at ? `截止 ${fmtDate(app.next_action_due_at)}` : ''} · 旧记录（迁移后并入统一待办）
+                  </span>
+                </span>
+              </div>
+            )}
+            {recentDone.length > 0 && (
+              <div style={{ borderTop: '1px solid var(--border-alt)', padding: '6px 16px' }}>
+                {recentDone.map((a) => (
+                  <div key={a.id} className="panel-row" style={{ padding: '4px 0' }}>
+                    <span className="grow" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                      ✓ {a.title}
+                    </span>
+                    <Button variant="ghost" size="sm" disabled={doneMut.isPending} onClick={() => doneMut.mutate({ id: a.id, done: false })}>
+                      撤销
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </Card>
 
       <Card padding={0} style={{ overflow: 'hidden' }}>

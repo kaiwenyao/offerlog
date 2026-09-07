@@ -6,6 +6,7 @@ import type { AppRow, FileItem, Me } from '../lib/types'
 import { Icon, SealMark, type IconName } from '../components/Icon'
 import { Button, Eyebrow } from '../ds'
 import { Dot } from '../components/ui'
+import { NotificationsBell } from '../features/notifications/Bell'
 
 interface NavEntry {
   to: string
@@ -195,6 +196,7 @@ export function AppLayout({ me }: { me: Me | null }) {
                 </span>
               </form>
             </div>
+            <NotificationsBell />
           </header>
 
           <main className="content">

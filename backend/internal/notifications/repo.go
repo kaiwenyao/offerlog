@@ -119,5 +119,12 @@ func (r *Repo) DismissByApplication(ctx context.Context, ownerID, appID int64) e
 	return err
 }
 
+// MarkAllRead marks every open notification of the user as read.
+func (r *Repo) MarkAllRead(ctx context.Context, ownerID int64) error {
+	_, err := r.db.Pool().Exec(ctx, `UPDATE notifications SET read_at=COALESCE(read_at, now())
+		WHERE owner_id=$1 AND dismissed_at IS NULL AND read_at IS NULL`, ownerID)
+	return err
+}
+
 // ErrNoRows is re-exported for callers that distinguish absent rows.
 var ErrNoRows = pgx.ErrNoRows

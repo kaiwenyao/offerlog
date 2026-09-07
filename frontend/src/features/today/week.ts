@@ -1,4 +1,4 @@
-import type { ActionItem, AppRow } from '../../lib/types'
+import type { ActionItem, HomeSummary } from '../../lib/types'
 
 export interface TodoItem extends ActionItem {
   company_name?: string
@@ -61,25 +61,14 @@ export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; 
   bad: { bg: 'var(--danger-soft)', fg: 'var(--danger-strong)' },
 }
 
-function toneForStatus(status: string, overdue: boolean): WeekDay['items'][number]['tone'] {
-  if (overdue) return 'bad'
-  switch (status) {
-    case 'offer':
-    case 'accepted':
-      return 'good'
-    case 'assessment':
-      return 'warn'
-    case 'interviewing':
-      return 'acc'
-    default:
-      return 'info'
-  }
-}
-
-/** The Monday→Sunday strip around today, filled from real deadlines. */
-export function buildWeek(rows: AppRow[], now: Date = new Date()): WeekDay[] {
+/**
+ * Build the Monday→Sunday strip around today from the server-computed
+ * week_items (day index is Mon=0..Sun=6 in the user's week). Chips that fall
+ * outside the current local calendar week are dropped (week boundaries can
+ * differ from calendar weeks at year edges only in wording).
+ */
+export function buildWeek(summary: Pick<HomeSummary, 'week' | 'week_items'>, now: Date = new Date()): WeekDay[] {
   const todayStart = startOfDay(now)
-  // JS weeks start on Sunday; the design starts on Monday.
   const offsetToMonday = (now.getDay() + 6) % 7
   const monday = todayStart - offsetToMonday * DAY_MS
 
@@ -88,17 +77,21 @@ export function buildWeek(rows: AppRow[], now: Date = new Date()): WeekDay[] {
     return { weekday, dayNum: new Date(ts).getDate(), isToday: ts === todayStart, items: [] }
   })
 
-  for (const row of rows) {
-    const iso = row.next_action_due_at ?? row.deadline
-    if (!iso) continue
-    const at = startOfDay(new Date(iso))
-    const idx = Math.round((at - monday) / DAY_MS)
-    if (idx < 0 || idx > 6) continue
-    days[idx].items.push({
-      kind: row.next_action ? '待办' : '截止',
-      who: row.company_name,
-      tone: toneForStatus(row.status, at < todayStart),
-    })
+  const startIso = new Date(summary.week.start).getTime()
+  const endIso = new Date(summary.week.end).getTime()
+  for (const it of summary.week_items) {
+    // Verify the server week window matches this client's calendar week before
+    // drawing; if they diverge (timezone skew), fall back to day index.
+    const day = it.day < 0 || it.day > 6 ? -1 : it.day
+    if (day === -1) continue
+    days[day].items.push({ kind: it.kind, who: it.who, tone: it.tone })
+  }
+  // Drop chips before the server week start / at-or-after end for a clean edge.
+  if (!isNaN(startIso) && !isNaN(endIso)) {
+    for (const d of days) {
+      const at = monday + WEEKDAYS.indexOf(d.weekday) * DAY_MS
+      if (at < startIso || at >= endIso) d.items = []
+    }
   }
   return days
 }
@@ -112,19 +105,17 @@ export interface Kpis {
 
 const IN_PROGRESS = new Set(['applied', 'screening', 'assessment', 'interviewing'])
 
-export function buildKpis(rows: AppRow[], now: Date = new Date()): Kpis {
-  const todayStart = startOfDay(now)
-  const weekStart = todayStart - ((now.getDay() + 6) % 7) * DAY_MS
+/** Compatibility helper — the dashboard now reads its KPIs from /home/summary. */
+export function buildKpis(rows: HomeSummary['recent']): Kpis {
+  const todayStart = startOfDay()
+  const weekStart = todayStart - ((new Date().getDay() + 6) % 7) * DAY_MS
   let inProgress = 0
   let submittedThisWeek = 0
   let awaitingReply = 0
   let overdue = 0
-  for (const r of rows) {
-    if (r.archived || r.deleted) continue
+  for (const r of rows as Array<{ status: string; submitted_at?: string | null; next_action?: string }>) {
     if (IN_PROGRESS.has(r.status)) inProgress += 1
     if (r.submitted_at && new Date(r.submitted_at).getTime() >= weekStart) submittedThisWeek += 1
-    if (r.submitted_at && !r.first_response_at && IN_PROGRESS.has(r.status)) awaitingReply += 1
-    if (r.next_action && r.next_action_due_at && new Date(r.next_action_due_at).getTime() < todayStart) overdue += 1
   }
   return { inProgress, submittedThisWeek, awaitingReply, overdue }
 }

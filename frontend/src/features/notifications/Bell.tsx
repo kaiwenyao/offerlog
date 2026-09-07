@@ -1,0 +1,169 @@
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import { api, ApiError, fmtDateTime } from '../../lib/api'
+import type { Notification } from '../../lib/types'
+import { Button, Card } from '../../ds'
+import { Icon } from '../../components/Icon'
+import { ErrorText, Num, Spinner } from '../../components/ui'
+
+const KIND_LABEL: Record<string, string> = {
+  overdue: '逾期待办',
+  interview: '面试提醒',
+  stale: '跟进提醒',
+  weekly: '周报',
+}
+
+function kindTone(kind: string): string {
+  switch (kind) {
+    case 'overdue':
+      return 'var(--danger)'
+    case 'interview':
+      return 'var(--accent)'
+    case 'stale':
+      return 'var(--warning)'
+    default:
+      return 'var(--info)'
+  }
+}
+
+export function NotificationsBell() {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const nav = useNavigate()
+
+  const q = useQuery({
+    queryKey: ['notifications', 'open'],
+    queryFn: () => api.get<{ items: Notification[] }>('/api/v1/notifications?open=1'),
+    staleTime: 15_000,
+  })
+
+  const items = q.data?.items ?? []
+  const unread = items.length
+
+  const dismiss = useMutation({
+    mutationFn: (id: number) => api.post(`/api/v1/notifications/${id}/dismiss`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+    onError: (e: unknown) => console.error(e),
+  })
+  const read = useMutation({
+    mutationFn: (id: number) => api.post(`/api/v1/notifications/${id}/read`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+  })
+
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex', marginLeft: 4 }}>
+      <button
+        type="button"
+        aria-label={`通知（${unread} 条未读）`}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          position: 'relative',
+          all: 'unset',
+          cursor: 'pointer',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 32,
+          height: 32,
+          borderRadius: 8,
+          color: 'var(--text-muted)',
+        }}
+      >
+        <Icon name="bell" size={17} />
+        {unread > 0 && (
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              top: 2,
+              right: 0,
+              minWidth: 16,
+              height: 16,
+              borderRadius: 8,
+              padding: '0 4px',
+              background: 'var(--danger)',
+              color: '#fff',
+              fontSize: 10,
+              fontWeight: 600,
+              display: 'grid',
+              placeItems: 'center',
+            }}
+          >
+            {unread > 9 ? '9+' : unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <>
+          <span style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
+          <Card
+            variant="strong"
+            padding={0}
+            style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', zIndex: 91, width: 360, maxWidth: '90vw' }}
+          >
+            <div className="panel-head" style={{ padding: '10px 14px' }}>
+              <b style={{ fontSize: 14 }}>通知</b>
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>
+                {q.isLoading ? <Spinner size={13} /> : unread === 0 ? '没有未读' : `${unread} 条未读`}
+              </span>
+            </div>
+            <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+              {q.isError ? (
+                <div style={{ padding: 14 }}>
+                  <ErrorText>通知加载失败</ErrorText>
+                </div>
+              ) : items.length === 0 ? (
+                <div style={{ padding: '16px 14px', fontSize: 13, color: 'var(--text-muted)' }}>
+                  没有未读通知。逾期待办、明天面试和投递后未回复会自动出现在这里。
+                </div>
+              ) : (
+                items.map((n) => (
+                  <div key={n.id} className="panel-row" style={{ alignItems: 'flex-start', padding: '10px 14px' }}>
+                    <span
+                      aria-hidden
+                      style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 5, background: kindTone(n.kind), flex: '0 0 auto' }}
+                    />
+                    <span className="grow" style={{ minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>
+                        {n.title}
+                        <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
+                          {KIND_LABEL[n.kind] ?? n.kind}
+                        </span>
+                      </span>
+                      <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.45 }}>
+                        {n.body}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                        {fmtDateTime(n.created_at)}
+                      </span>
+                    </span>
+                    <span style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '0 0 auto' }}>
+                      {n.application_id && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            read.mutate(n.id)
+                            setOpen(false)
+                            nav(`/apps/${n.application_id}`)
+                          }}
+                        >
+                          查看
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="sm" onClick={() => dismiss.mutate(n.id)}>
+                        忽略
+                      </Button>
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+        </>
+      )}
+    </span>
+  )
+}

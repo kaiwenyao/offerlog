@@ -69,6 +69,15 @@ type Week struct {
 	End   time.Time `json:"end"`
 }
 
+// WeekItem is one chip in the current-week strip (kind=投递/回复/面试/截止/待办;
+// who = company/round label; tone = the strip color family).
+type WeekItem struct {
+	Day  int    `json:"day"` // 0=Mon .. 6=Sun (within the week window)
+	Kind string `json:"kind"`
+	Who  string `json:"who"`
+	Tone string `json:"tone"` // info | warn | good | acc | bad
+}
+
 // Summary is the full dashboard payload.
 type Summary struct {
 	Total              int64               `json:"total"`       // active (non-deleted) applications, incl archived
@@ -79,10 +88,12 @@ type Summary struct {
 	Archived           int64               `json:"archived"`
 	SubmittedWeek      int64               `json:"submitted_week"`       // 本周投递 (active)
 	RepliedWeek        int64               `json:"replied_week"`         // 本周首次有效回复 (active)
+	AwaitingReply      int64               `json:"awaiting_reply"`       // 已投递且尚无首次回复 (active, in-progress)
 	InterviewsWeek     int64               `json:"interviews_week"`      // 本周安排的非取消面试轮次 (active)
 	InterviewsDoneWeek int64               `json:"interviews_done_week"` // 本周已完成轮次 (独立标签)
 	Todos              TodoCounts          `json:"todos"`
 	Week               Week                `json:"week"`
+	WeekItems          []WeekItem          `json:"week_items"` // chips for the Mon-Sun strip (server-side)
 	Upcoming           []UpcomingInterview `json:"upcoming"` // cross-app, actual-time sorted, next N
 	Recent             []RecentApplication `json:"recent"`
 	AsOf               time.Time           `json:"as_of"`
@@ -127,12 +138,14 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 		return nil, err
 	}
 
-	// 本周投递 / 本周首次有效回复 (working set).
+	// 本周投递 / 本周首次有效回复 + 待回复存量 (working set).
 	if err := q.QueryRow(ctx, `SELECT
 		count(*) FILTER (WHERE submitted_at >= $2 AND submitted_at < $3),
-		count(*) FILTER (WHERE first_response_at >= $2 AND first_response_at < $3)
+		count(*) FILTER (WHERE first_response_at >= $2 AND first_response_at < $3),
+		count(*) FILTER (WHERE submitted_at IS NOT NULL AND first_response_at IS NULL
+		                 AND status IN ('applied','screening','assessment','interviewing'))
 		FROM applications WHERE owner_id=$1 AND deleted_at IS NULL AND archived_at IS NULL`,
-		ownerID, weekStart, weekEnd).Scan(&s.SubmittedWeek, &s.RepliedWeek); err != nil {
+		ownerID, weekStart, weekEnd).Scan(&s.SubmittedWeek, &s.RepliedWeek, &s.AwaitingReply); err != nil {
 		return nil, err
 	}
 
@@ -151,6 +164,45 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 		ownerID, weekStart, weekEnd).Scan(&s.InterviewsWeek, &s.InterviewsDoneWeek); err != nil {
 		return nil, err
 	}
+
+	// Week strip chips: one row per event-day for submitted_at (投递),
+	// first_response_at (回复), scheduled interviews (面试), action due dates
+	// (待办) and application deadlines (截止), bounded to the active set. Day
+	// index is local-weekday from the user's week start.
+	strip, err := q.Query(ctx, `WITH ev AS (
+		SELECT (EXTRACT(ISODOW FROM a.submitted_at AT TIME ZONE $2)::int) - 1 AS day, '投递' AS kind, a.company_name AS who, 'info' AS tone
+		FROM applications a WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		  AND a.submitted_at >= $3 AND a.submitted_at < $4
+		UNION ALL
+		SELECT (EXTRACT(ISODOW FROM a.first_response_at AT TIME ZONE $2)::int) - 1, '回复', a.company_name, 'good'
+		FROM applications a WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		  AND a.first_response_at >= $3 AND a.first_response_at < $4
+		UNION ALL
+		SELECT (EXTRACT(ISODOW FROM i.scheduled_at AT TIME ZONE $2)::int) - 1, '面试', a.company_name || ' · ' || i.round_name, 'acc'
+		FROM interviews i JOIN applications a ON a.id=i.application_id AND a.owner_id=i.owner_id
+		LEFT JOIN schedule_links sl ON sl.interview_id=i.id AND sl.owner_id=i.owner_id
+		WHERE i.owner_id=$1 AND i.scheduled_at >= $3 AND i.scheduled_at < $4
+		  AND COALESCE(sl.cancelled,FALSE)=FALSE AND a.deleted_at IS NULL
+		UNION ALL
+		SELECT (EXTRACT(ISODOW FROM COALESCE(x.due_ts, x.due_date::timestamptz) AT TIME ZONE $2)::int) - 1,
+		       '待办', COALESCE(ap.company_name,''), CASE WHEN COALESCE(x.due_ts, x.due_date::timestamptz) < $5 THEN 'bad' ELSE 'warn' END
+		FROM actions x LEFT JOIN applications ap ON ap.id=x.application_id AND ap.owner_id=x.owner_id
+		WHERE x.owner_id=$1 AND x.done_at IS NULL AND COALESCE(x.due_ts, x.due_date::timestamptz) >= $3
+		  AND COALESCE(x.due_ts, x.due_date::timestamptz) < $4
+	)
+	SELECT day, kind, who, tone FROM ev ORDER BY day, kind, who`, ownerID, tz, weekStart, weekEnd, dayStart)
+	if err != nil {
+		return nil, err
+	}
+	for strip.Next() {
+		var wi WeekItem
+		if err := strip.Scan(&wi.Day, &wi.Kind, &wi.Who, &wi.Tone); err != nil {
+			strip.Close()
+			return nil, err
+		}
+		s.WeekItems = append(s.WeekItems, wi)
+	}
+	strip.Close()
 
 	// Upcoming interviews: cross-application, actual-time sorted (candidate
 	// set is never clipped by application status or by page size).

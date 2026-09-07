@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
 import { fmtBytes, fmtDate, daysBetween } from '../src/lib/api'
+import { buildWeek } from '../src/features/today/week'
 
 describe('status dictionary', () => {
   it('covers all 11 standard statuses with Chinese labels + icons', () => {
@@ -56,5 +57,23 @@ describe('filter tree helpers (used by saved views)', () => {
     }
     expect(statusForBuiltin(-2)).toEqual(['saved', 'preparing'])
     expect(statusForBuiltin(-4)).toEqual(['offer', 'accepted'])
+  })
+})
+
+describe('server week strip (home summary)', () => {
+  it('places week_items into the correct Mon-Sun day columns', () => {
+    // 2026-08-31 is a Monday.
+    const mon = new Date(2026, 7, 31, 10, 0, 0)
+    const summary = {
+      week: { start: '2026-08-31T00:00:00', end: '2026-09-07T00:00:00' },
+      week_items: [
+        { day: 0, kind: '投递', who: 'Acme', tone: 'info' },
+        { day: 3, kind: '面试', who: 'BigCo · 一面', tone: 'acc' },
+      ],
+    } as never
+    const days = buildWeek(summary, mon)
+    expect(days[0].items.map((i) => i.who)).toContain('Acme')
+    expect(days[3].items.map((i) => i.who)).toContain('BigCo · 一面')
+    expect(days[0].weekday).toBe('周一')
   })
 })

@@ -71,19 +71,28 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
 
   const mut = useMutation({
     mutationFn: async () => {
-      // Save onto the application row (the today dashboard reads next_action)
-      // and create a standalone action for the checklist. Re-read the row first
-      // so a concurrent edit elsewhere does not trigger a 409 conflict.
-      const fresh = await api.get<AppRow>(`/api/v1/applications/${app.id}`)
+      // The standalone action is the source of truth for the unified todo
+      // list (§5.3). Creating one also mirrors it onto the application's
+      // legacy next_action fields so older surfaces (table column, list
+      // view) stay in sync; completing/undoing happens on the action row.
       const dueIso = due ? new Date(`${due}T00:00:00`).toISOString() : null
-      await api.patch(`/api/v1/applications/${app.id}`, {
-        version: fresh.version,
-        next_action: title || null,
-        next_action_due_at: dueIso,
+      const created = await api.post<{ id: number }>(`/api/v1/applications/${app.id}/actions`, {
+        title,
+        due_date: dueIso,
+        priority: app.priority,
       })
-      if (title) {
-        await api.post(`/api/v1/applications/${app.id}/actions`, { title, due_date: dueIso })
+      // Mirror onto the row (best-effort; the action is authoritative).
+      try {
+        const fresh = await api.get<AppRow>(`/api/v1/applications/${app.id}`)
+        await api.patch(`/api/v1/applications/${app.id}`, {
+          version: fresh.version,
+          next_action: title || null,
+          next_action_due_at: dueIso,
+        })
+      } catch {
+        /* the standalone action still exists — surface stays consistent via it */
       }
+      return created
     },
     onSuccess: onDone,
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),

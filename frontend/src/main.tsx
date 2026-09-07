@@ -20,6 +20,7 @@ import { DatabasePage } from './features/database/DatabasePage'
 import { DetailPage } from './features/detail/DetailPage'
 import { FilesPage } from './features/files/FilesPage'
 import { SettingsPage } from './features/settings/SettingsPage'
+import { NotificationsPage } from './features/notifications/Page'
 import { LoginPage } from './features/auth/LoginPage'
 
 const AnalyticsPage = React.lazy(() => import('./features/analytics/AnalyticsPage'))
@@ -53,7 +54,17 @@ export default function App() {
   useEffect(() => {
     const onUnauthorized = () => setState('anon')
     window.addEventListener('offerlog:unauthorized', onUnauthorized)
-    return () => window.removeEventListener('offerlog:unauthorized', onUnauthorized)
+    // After a profile/preferences save, re-read /auth/me so the sidebar and
+    // session name reflect the new display name/timezone immediately.
+    const onProfile = () =>
+      fetchMe().then((m) => {
+        if (m) setMe(m)
+      })
+    window.addEventListener('offerlog:profile-changed', onProfile)
+    return () => {
+      window.removeEventListener('offerlog:unauthorized', onUnauthorized)
+      window.removeEventListener('offerlog:profile-changed', onProfile)
+    }
   }, [])
 
   if (state === 'loading') {
@@ -95,6 +106,7 @@ export default function App() {
               }
             />
             <Route path="/files" element={<FilesPage />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/settings" element={<SettingsPage me={me} />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
