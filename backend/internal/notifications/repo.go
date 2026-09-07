@@ -34,10 +34,18 @@ func New(db *database.DB) *Repo { return &Repo{db: db} }
 
 func (r *Repo) Pool() *database.DB { return r.db }
 
-// InsertIdempotent creates a notification unless one with the same
-// (owner_id, kind, idempotency_key) is still pending; returns whether a row
-// was inserted. The key is application-scoped for overdue/stale/interview
-// kinds so re-running the generator never spams duplicates.
+// InsertIdempotent creates a notification unless a *non-dismissed* row with
+// the same (owner_id, kind, application_id, idempotency_key) exists. Returns
+// whether a row was inserted.
+//
+// Dismissal (忽略) is the permanent mute of one event occurrence: once the
+// user dismisses, the generator never recreates that notification even while
+// the underlying item stays overdue/eligible — this is what makes the UI
+// “忽略” button meaningful and matches the migration note “dismissable so the
+// same event cannot notify twice”. A row that was only *read* is deliberately
+// eligible to be re-reminded on later passes while the item is still open
+// (read = seen, not resolved); once the item is completed/resolved the
+// reminder query itself stops returning it.
 func (r *Repo) InsertIdempotent(ctx context.Context, n *Notification, key string) (bool, error) {
 	var inserted bool
 	err := r.db.Pool().QueryRow(ctx, `WITH ins AS (
@@ -46,12 +54,15 @@ func (r *Repo) InsertIdempotent(ctx context.Context, n *Notification, key string
 		WHERE NOT EXISTS (
 			SELECT 1 FROM notifications
 			WHERE owner_id=$1 AND kind=$2 AND application_id IS NOT DISTINCT FROM $5
-			  AND idempotency_key=$6 AND dismissed_at IS NULL AND read_at IS NULL
+			  AND idempotency_key=$6
 		)
 		RETURNING 1
 	) SELECT EXISTS (SELECT 1 FROM ins)`,
 		n.OwnerID, n.Kind, n.Title, n.Body, n.ApplicationID, key).Scan(&inserted)
-	return inserted, err
+	if err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
 
 // List returns the user's notifications, optionally only open (unread and
@@ -116,6 +127,17 @@ func (r *Repo) Dismiss(ctx context.Context, ownerID, id int64) error {
 func (r *Repo) DismissByApplication(ctx context.Context, ownerID, appID int64) error {
 	_, err := r.db.Pool().Exec(ctx, `UPDATE notifications SET dismissed_at=now()
 		WHERE owner_id=$1 AND application_id=$2 AND dismissed_at IS NULL`, ownerID, appID)
+	return err
+}
+
+// ClearOccurrence removes every notification of an occurrence (matched by
+// kind + idempotency key), dismissed or not. Used when the occurrence is
+// actively changed — e.g. an action is postponed to a new due date — so the
+// next time it becomes overdue it is a fresh occurrence that notifies again
+// (postpone clears the mute instead of carrying it forward).
+func (r *Repo) ClearOccurrence(ctx context.Context, ownerID int64, kind, key string) error {
+	_, err := r.db.Pool().Exec(ctx, `DELETE FROM notifications
+		WHERE owner_id=$1 AND kind=$2 AND idempotency_key=$3`, ownerID, kind, key)
 	return err
 }
 

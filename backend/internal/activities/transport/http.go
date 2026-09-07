@@ -1,20 +1,32 @@
 package transport
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	actrepo "offerlog/backend/internal/activities/repository"
+	notifrepo "offerlog/backend/internal/notifications"
+	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
 )
 
 type Handler struct {
 	repo *actrepo.Repo
+	nots *notifrepo.Repo
 }
 
 func New(repo *actrepo.Repo) *Handler { return &Handler{repo: repo} }
+
+// WithNotifications attaches the in-app notification store so action lifecycle
+// endpoints (done / postpone) can keep reminders in sync with the action.
+func (h *Handler) WithNotifications(n *notifrepo.Repo) *Handler {
+	h.nots = n
+	return h
+}
 
 // Routes mounts the activities sub-resources under an authenticated group.
 // The group must be created with path /applications/:app_id and CSRF already
@@ -218,6 +230,16 @@ type cancelReq struct {
 	Reason string `json:"reason"`
 }
 
+// writeUpsertErr maps the schedule-link repo errors: not-found → 404; any
+// other (genuine DB) error is passed through untouched, never masked as 404.
+func writeUpsertErr(c *gin.Context, err error) {
+	if errors.Is(err, actrepo.ErrNotFound) {
+		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		return
+	}
+	httpx.WriteErr(c, err)
+}
+
 // cancelInterview marks an interview cancelled (改期/取消). The row is kept
 // so history is intact; dashboards and reminders exclude cancelled rounds.
 func (h *Handler) cancelInterview(c *gin.Context) {
@@ -226,6 +248,11 @@ func (h *Handler) cancelInterview(c *gin.Context) {
 	iid, _ := httpx.PathID(c, "interview_id")
 	var req cancelReq
 	_ = httpx.BindJSON(c, &req)
+	// Ownership check first: 404 when the interview is not this user's.
+	if _, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid); err != nil {
+		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		return
+	}
 	sch, err := h.repo.GetScheduleLink(c.Request.Context(), iid, user.ID)
 	if err != nil {
 		httpx.WriteErr(c, err)
@@ -237,16 +264,21 @@ func (h *Handler) cancelInterview(c *gin.Context) {
 	sch.Cancelled = true
 	sch.CancelledReason = req.Reason
 	if err := h.repo.UpsertScheduleLink(c.Request.Context(), h.repo.Pool(), sch); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		writeUpsertErr(c, err)
 		return
 	}
-	_ = appID
 	c.JSON(http.StatusOK, gin.H{"ok": true, "cancelled": true})
 }
 
 func (h *Handler) uncancelInterview(c *gin.Context) {
 	user := httpx.UserFrom(c)
+	appID, _ := h.appID(c)
 	iid, _ := httpx.PathID(c, "interview_id")
+	// Ownership check first: 404 when the interview is not this user's.
+	if _, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid); err != nil {
+		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		return
+	}
 	sch, err := h.repo.GetScheduleLink(c.Request.Context(), iid, user.ID)
 	if err != nil {
 		httpx.WriteErr(c, err)
@@ -258,7 +290,7 @@ func (h *Handler) uncancelInterview(c *gin.Context) {
 	sch.Cancelled = false
 	sch.CancelledReason = ""
 	if err := h.repo.UpsertScheduleLink(c.Request.Context(), h.repo.Pool(), sch); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		writeUpsertErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "cancelled": false})
@@ -270,8 +302,8 @@ type actionDTO struct {
 	ID            int64      `json:"id"`
 	ApplicationID *int64     `json:"application_id"`
 	Title         string     `json:"title"`
-	DueDate       *time.Time `json:"due_date"`
-	DueTs         *time.Time `json:"due_ts"`
+	DueDate       *string    `json:"due_date"` // calendar day YYYY-MM-DD (DATE column)
+	DueTs         *time.Time `json:"due_ts"`   // precise instant (TIMESTAMPTZ column)
 	DoneAt        *time.Time `json:"done_at"`
 	RemindMe      bool       `json:"remind_me"`
 	RemindAt      *time.Time `json:"remind_at"`
@@ -283,12 +315,17 @@ type actionDTO struct {
 }
 
 func actionToDTO(a *actrepo.Action) actionDTO {
-	return actionDTO{
+	d := actionDTO{
 		ID: a.ID, ApplicationID: a.ApplicationID, Title: a.Title,
-		DueDate: a.DueDate, DueTs: a.DueTs, DoneAt: a.DoneAt,
+		DueTs: a.DueTs, DoneAt: a.DoneAt,
 		RemindMe: a.RemindMe, RemindAt: a.RemindAt, Priority: a.Priority, CreatedAt: a.CreatedAt,
 		CompanyName: a.CompanyName, Position: a.Position, Status: a.Status,
 	}
+	if a.DueDate != nil {
+		s := day.Format(*a.DueDate)
+		d.DueDate = &s
+	}
+	return d
 }
 
 func (h *Handler) listActions(c *gin.Context) {
@@ -325,8 +362,13 @@ func (h *Handler) createAction(c *gin.Context) {
 	if appID > 0 {
 		appPtr = &appID
 	}
+	dueDate, err := parseDueDate(req.DueDate)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_due_date", err.Error()))
+		return
+	}
 	a := &actrepo.Action{
-		ApplicationID: appPtr, OwnerID: user.ID, Title: req.Title, DueDate: req.DueDate,
+		ApplicationID: appPtr, OwnerID: user.ID, Title: req.Title, DueDate: dueDate,
 		DueTs: req.DueTs, DoneAt: req.DoneAt, RemindMe: req.RemindMe, RemindAt: req.RemindAt,
 		Priority: req.Priority,
 	}
@@ -337,6 +379,26 @@ func (h *Handler) createAction(c *gin.Context) {
 	c.JSON(http.StatusCreated, actionToDTO(a))
 }
 
+// parseDueDate validates an optional date-only string into a UTC-midnight
+// instant for the DATE column (the calendar day itself is tz-independent).
+func parseDueDate(s *string) (*time.Time, error) {
+	if s == nil {
+		return nil, nil
+	}
+	v := day.Normalize(*s)
+	if v == "" {
+		return nil, nil
+	}
+	if !day.Valid(v) {
+		return nil, fmt.Errorf("日期格式需为 YYYY-MM-DD")
+	}
+	t, err := day.Parse(v)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
 func (h *Handler) updateAction(c *gin.Context) {
 	user := httpx.UserFrom(c)
 	aid, _ := httpx.PathID(c, "action_id")
@@ -345,14 +407,20 @@ func (h *Handler) updateAction(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
+	dueDate, err := parseDueDate(req.DueDate)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_due_date", err.Error()))
+		return
+	}
 	a := &actrepo.Action{
-		ID: aid, OwnerID: user.ID, Title: req.Title, DueDate: req.DueDate, DueTs: req.DueTs,
+		ID: aid, OwnerID: user.ID, Title: req.Title, DueDate: dueDate, DueTs: req.DueTs,
 		DoneAt: req.DoneAt, RemindMe: req.RemindMe, RemindAt: req.RemindAt, Priority: req.Priority,
 	}
 	if err := h.repo.UpdateAction(c.Request.Context(), h.repo.Pool(), a); err != nil {
 		httpx.WriteErr(c, httpx.NotFound("行动项不存在"))
 		return
 	}
+	h.clearOverdueReminder(c, user.ID, aid)
 	c.JSON(http.StatusOK, actionToDTO(a))
 }
 
@@ -384,12 +452,26 @@ func (h *Handler) markDone(c *gin.Context) {
 		httpx.WriteErr(c, httpx.NotFound("行动项不存在"))
 		return
 	}
+	h.clearOverdueReminder(c, user.ID, aid)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "done": done})
 }
 
+// clearOverdueReminder removes the action's overdue notifications so the next
+// generator pass reflects the action's current state exactly once (done → no
+// reminder; reopened while overdue → one fresh reminder).
+func (h *Handler) clearOverdueReminder(c *gin.Context, ownerID, actionID int64) {
+	if h.nots == nil {
+		return
+	}
+	key := fmt.Sprintf("overdue:%d", actionID)
+	if err := h.nots.ClearOccurrence(c.Request.Context(), ownerID, "overdue", key); err != nil {
+		httpx.WriteErr(c, err)
+	}
+}
+
 type postponeReq struct {
-	DueDate *time.Time `json:"due_date"`
-	DueTs   *time.Time `json:"due_ts"`
+	DueDate *string    `json:"due_date"` // calendar day YYYY-MM-DD
+	DueTs   *time.Time `json:"due_ts"`   // precise instant
 	Days    int        `json:"days"`
 }
 
@@ -410,29 +492,49 @@ func (h *Handler) postponeAction(c *gin.Context) {
 	}
 	now := time.Now()
 	if req.Days > 0 {
-		base := now
-		if a.DueTs != nil {
-			base = *a.DueTs
-		} else if a.DueDate != nil {
-			base = *a.DueDate
+		// "延期 N 天" keeps the same due flavor as today: a date-only action
+		// moves N calendar days; an instant action moves N×24h from now when
+		// it has no anchor of its own.
+		if a.DueDate != nil && a.DueTs == nil {
+			nd := a.DueDate.AddDate(0, 0, req.Days)
+			ds := day.Format(nd)
+			req.DueDate = &ds
+		} else {
+			base := now
+			if a.DueTs != nil {
+				base = *a.DueTs
+			}
+			nd := base.AddDate(0, 0, req.Days)
+			req.DueTs = &nd
+			req.DueDate = nil
 		}
-		nd := base.AddDate(0, 0, req.Days)
-		req.DueTs = &nd
-		req.DueDate = nil
-	} else if req.DueDate != nil || req.DueTs != nil {
-		// keep as provided
+	}
+	if req.DueDate != nil || req.DueTs != nil {
+		// explicit new due provided
 	} else {
 		httpx.WriteErr(c, httpx.BadRequest("no_due", "请提供新的截止日期或延期天数"))
 		return
 	}
+	var dueDate *time.Time
+	if req.DueDate != nil {
+		t, err := day.Parse(day.Normalize(*req.DueDate))
+		if err != nil {
+			httpx.WriteErr(c, httpx.BadRequest("bad_due_date", err.Error()))
+			return
+		}
+		dueDate = &t
+	}
 	a.DueTs = req.DueTs
 	if req.DueTs == nil {
-		a.DueDate = req.DueDate
+		a.DueDate = dueDate
+	} else {
+		a.DueDate = nil
 	}
 	if err := h.repo.UpdateAction(c.Request.Context(), h.repo.Pool(), a); err != nil {
 		httpx.WriteErr(c, httpx.NotFound("行动项不存在"))
 		return
 	}
+	h.clearOverdueReminder(c, user.ID, aid)
 	c.JSON(http.StatusOK, actionToDTO(a))
 }
 

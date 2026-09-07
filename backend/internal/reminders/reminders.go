@@ -1,10 +1,15 @@
 // Package reminders scans the current user's data on a schedule and inserts
 // in-app notifications (plan §5.1). Generation respects the user's preference
-// switches (when a reminder type is off no new rows of that type are created),
-// and dedupes by idempotency key so repeated scans never notify twice about
-// the same event. Existing notifications keep their own lifecycle (read /
-// dismiss) when a switch is turned off — the UI copy explains that turning a
-// switch off stops *new* reminders but does not delete already-created ones.
+// switches (when a reminder type is off no new rows of that type are created).
+//
+// Exactly one notification is created per event occurrence — deduplicated by
+// idempotency key backed by a unique index — so repeated scans never notify
+// twice about the same event, and read (已读) or dismiss (忽略) only change
+// visibility, never re-create the row (ignoring a reminder mutes that
+// occurrence permanently). New occurrences (a rescheduled interview day, a
+// re-overdue action after postpone, a changed stale threshold) use new keys
+// and therefore notify afresh. When a preference is turned off no new rows of
+// that type are generated; already-created rows keep their lifecycle.
 package reminders
 
 import (
@@ -101,15 +106,18 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 	_ = weekStart
 	inserted := 0
 
-	// 1) 逾期待办：open actions whose due date/ts falls before today's start.
+	// 1) 逾期待办：open actions whose due falls before today's start. A
+	// date-only due_date is the user's calendar day → compared as the user's
+	// local midnight (due_date::timestamp AT TIME ZONE $3).
 	if remindOverdue {
 		dayStart, _ := timeutil.TodayBounds(now, loc)
 		rows, err := g.db.Pool().Query(ctx, `SELECT a.id, a.title, COALESCE(ap.company_name,''), ap.id
 			FROM actions a LEFT JOIN applications ap ON ap.id = a.application_id AND ap.owner_id = a.owner_id
 			WHERE a.owner_id=$1 AND a.done_at IS NULL
 			  AND ( (a.due_ts IS NOT NULL AND a.due_ts < $2)
-			     OR (a.due_ts IS NULL AND a.due_date IS NOT NULL AND (a.due_date::timestamptz) < $2) )
-			ORDER BY a.id`, ownerID, dayStart)
+			     OR (a.due_ts IS NULL AND a.due_date IS NOT NULL
+			         AND (a.due_date::timestamp AT TIME ZONE $3) < $2) )
+			ORDER BY a.id`, ownerID, dayStart, loc.String())
 		if err != nil {
 			return inserted, err
 		}

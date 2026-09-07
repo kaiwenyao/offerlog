@@ -117,7 +117,7 @@ func (a *App) Handler() http.Handler {
 
 	// activities under /applications/:id
 	actRepo := actrepo.New(a.DB)
-	actH := acttransport.New(actRepo)
+	actH := acttransport.New(actRepo).WithNotifications(a.Nots)
 	actH.Routes(api.Group("/applications/:id"))
 	// standalone actions list for “今日待办” (all applications)
 	actH.ActionsRoot(api.Group("/actions"))

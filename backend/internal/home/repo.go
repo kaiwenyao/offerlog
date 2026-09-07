@@ -189,11 +189,26 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 		WHERE i.owner_id=$1 AND i.scheduled_at >= $3 AND i.scheduled_at < $4
 		  AND COALESCE(sl.cancelled,FALSE)=FALSE AND a.deleted_at IS NULL
 		UNION ALL
-		SELECT (EXTRACT(ISODOW FROM COALESCE(x.due_ts, x.due_date::timestamptz) AT TIME ZONE $2)::int) - 1,
-		       '待办', COALESCE(ap.company_name,''), CASE WHEN COALESCE(x.due_ts, x.due_date::timestamptz) < $5 THEN 'bad' ELSE 'warn' END
-		FROM actions x LEFT JOIN applications ap ON ap.id=x.application_id AND ap.owner_id=x.owner_id
-		WHERE x.owner_id=$1 AND x.done_at IS NULL AND COALESCE(x.due_ts, x.due_date::timestamptz) >= $3
-		  AND COALESCE(x.due_ts, x.due_date::timestamptz) < $4
+		-- 待办：due_ts is an instant; date-only due_date is the user's calendar day
+		-- and must be read as the *user's local midnight* (due_date::timestamp AT
+		-- TIME ZONE $2), never the session-UTC cast. The same expression drives the
+		-- day index, the overdue tone and the window filter, so a row cannot land
+		-- on two different days across the three places.
+		SELECT day, '待办', who, tone FROM (
+			SELECT (EXTRACT(ISODOW FROM due_inst AT TIME ZONE $2)::int) - 1 AS day,
+			       COALESCE(who_c,'') AS who,
+			       CASE WHEN due_inst < $5 THEN 'bad' ELSE 'warn' END AS tone
+			FROM (
+				SELECT CASE WHEN x.due_ts IS NOT NULL THEN x.due_ts
+				            WHEN x.due_date IS NOT NULL THEN x.due_date::timestamp AT TIME ZONE $2
+				            ELSE NULL END AS due_inst,
+				       ap.company_name AS who_c
+				FROM actions x
+				LEFT JOIN applications ap ON ap.id=x.application_id AND ap.owner_id=x.owner_id
+				WHERE x.owner_id=$1 AND x.done_at IS NULL
+			) t
+			WHERE due_inst IS NOT NULL AND due_inst >= $3 AND due_inst < $4
+		) sub
 	)
 	SELECT day, kind, who, tone FROM ev ORDER BY day, kind, who`, ownerID, tz, weekStart, weekEnd, dayStart)
 	if err != nil {
@@ -243,25 +258,34 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 	// legacy derived todos — applications with a next_action text but no open
 	// standalone action at all — so the dashboard count matches the checklist
 	// and no double-entry exists while legacy rows still surface (§5.3).
+	// Date-only dues are interpreted as the user's local midnight via
+	// `date::timestamp AT TIME ZONE $tz`, matching the week strip and the
+	// reminders generator (session timezone is pinned UTC, never relied on).
 	if err := q.QueryRow(ctx, `WITH open_actions AS (
 			SELECT a.id AS action_id, a.application_id, a.due_date, a.due_ts
 			FROM actions a JOIN applications ap ON ap.id = a.application_id
 			WHERE a.owner_id=$1 AND a.done_at IS NULL AND ap.deleted_at IS NULL
 		),
 		derived AS (
-			SELECT NULL::bigint AS action_id, ap.id AS application_id, ap.next_action_due_at::date AS due_date, NULL::timestamptz AS due_ts
+			SELECT NULL::bigint AS action_id, ap.id AS application_id,
+			       ap.next_action_due_at::date AS due_date, NULL::timestamptz AS due_ts
 			FROM applications ap
 			WHERE ap.owner_id=$1 AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 			  AND trim(ap.next_action) <> ''
 			  AND NOT EXISTS (SELECT 1 FROM open_actions oa WHERE oa.application_id = ap.id)
 		),
-		all_todos AS (SELECT * FROM open_actions UNION ALL SELECT * FROM derived)
+		all_todos AS (
+			SELECT *, CASE WHEN due_ts IS NOT NULL THEN due_ts
+			               WHEN due_date IS NOT NULL THEN due_date::timestamp AT TIME ZONE $2
+			               ELSE NULL END AS due_inst
+			FROM (SELECT * FROM open_actions UNION ALL SELECT * FROM derived) t
+		)
 		SELECT count(*),
-			count(*) FILTER (WHERE COALESCE(all_todos.due_ts, all_todos.due_date::timestamptz) < $2),
-			count(*) FILTER (WHERE COALESCE(all_todos.due_ts, all_todos.due_date::timestamptz) >= $2
-			                 AND COALESCE(all_todos.due_ts, all_todos.due_date::timestamptz) < $3)
+			count(*) FILTER (WHERE due_inst IS NOT NULL AND due_inst < $3),
+			count(*) FILTER (WHERE due_inst IS NOT NULL AND due_inst >= $3
+			                 AND due_inst < $4)
 		FROM all_todos`,
-		ownerID, dayStart, dayStart.AddDate(0, 0, 1)).Scan(&s.Todos.Open, &s.Todos.Overdue, &s.Todos.DueToday); err != nil {
+		ownerID, tz, dayStart, dayStart.AddDate(0, 0, 1)).Scan(&s.Todos.Open, &s.Todos.Overdue, &s.Todos.DueToday); err != nil {
 		return nil, err
 	}
 

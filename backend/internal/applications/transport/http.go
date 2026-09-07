@@ -4,6 +4,7 @@ package transport
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	appdomain "offerlog/backend/internal/applications/domain"
 	apprepo "offerlog/backend/internal/applications/repository"
 	appservice "offerlog/backend/internal/applications/service"
+	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
 )
 
@@ -44,12 +46,12 @@ type appDTO struct {
 	SavedAt         *time.Time      `json:"saved_at"`
 	SubmittedAt     *time.Time      `json:"submitted_at"`
 	FirstResponseAt *time.Time      `json:"first_response_at"`
-	Deadline        *time.Time      `json:"deadline"`
+	Deadline        *string         `json:"deadline"` // calendar day YYYY-MM-DD (DATE column)
 	AcceptedAt      *time.Time      `json:"accepted_at"`
 	RejectedAt      *time.Time      `json:"rejected_at"`
 	Reason          string          `json:"reason"`
 	NextAction      string          `json:"next_action"`
-	NextActionDueAt *time.Time      `json:"next_action_due_at"`
+	NextActionDueAt *string         `json:"next_action_due_at"` // calendar day YYYY-MM-DD (DATE column)
 	Version         int             `json:"version"`
 	Archived        bool            `json:"archived"`
 	Deleted         bool            `json:"deleted"`
@@ -58,19 +60,48 @@ type appDTO struct {
 }
 
 func toDTO(r *apprepo.Row) *appDTO {
-	return &appDTO{
+	d := &appDTO{
 		ID: r.ID, CompanyID: r.CompanyID, CompanyName: r.CompanyName, Position: r.Position,
 		JobURL: r.JobURL, JDSnapshot: r.JDSnapshot, Location: r.Location,
 		RemotePolicy: r.RemotePolicy, EmploymentType: r.EmploymentType,
 		SalaryMin: r.SalaryMin, SalaryMax: r.SalaryMax, SalaryCurrency: r.SalaryCurrency,
 		Channel: r.Channel, Status: r.Status, Priority: r.Priority, Tags: r.Tags,
 		CustomValues: r.CustomValues, Notes: r.Notes, SavedAt: r.SavedAt,
-		SubmittedAt: r.SubmittedAt, FirstResponseAt: r.FirstResponseAt, Deadline: r.Deadline,
+		SubmittedAt: r.SubmittedAt, FirstResponseAt: r.FirstResponseAt,
 		AcceptedAt: r.AcceptedAt, RejectedAt: r.RejectedAt, Reason: r.Reason,
-		NextAction: r.NextAction, NextActionDueAt: r.NextActionDueAt, Version: r.Version,
+		NextAction: r.NextAction, Version: r.Version,
 		Archived: r.ArchivedAt != nil, Deleted: r.DeletedAt != nil,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
+	if r.Deadline != nil {
+		v := day.Format(*r.Deadline)
+		d.Deadline = &v
+	}
+	if r.NextActionDueAt != nil {
+		v := day.Format(*r.NextActionDueAt)
+		d.NextActionDueAt = &v
+	}
+	return d
+}
+
+// parseDayPtr converts an optional date-only wire string into a UTC-midnight
+// time.Time for the DATE column.
+func parseDayPtr(v *string) (*time.Time, error) {
+	if v == nil {
+		return nil, nil
+	}
+	s := day.Normalize(*v)
+	if s == "" {
+		return nil, nil
+	}
+	if !day.Valid(s) {
+		return nil, fmt.Errorf("日期格式需为 YYYY-MM-DD")
+	}
+	t, err := day.Parse(s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // Routes returns a group that must be mounted under /api/v1/applications with
@@ -129,7 +160,7 @@ type createReq struct {
 	Status         string     `json:"status"`
 	Priority       string     `json:"priority"`
 	Tags           []string   `json:"tags"`
-	Deadline       *time.Time `json:"deadline"`
+	Deadline       *string    `json:"deadline"` // YYYY-MM-DD
 	Notes          string     `json:"notes"`
 	SubmittedAt    *time.Time `json:"submitted_at"`
 }
@@ -141,12 +172,17 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 	user := httpx.UserFrom(c)
+	deadline, err := parseDayPtr(req.Deadline)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_deadline", err.Error()))
+		return
+	}
 	in := &appservice.CreateInput{
 		CompanyName: req.CompanyName, Position: req.Position, JobURL: req.JobURL,
 		Location: req.Location, RemotePolicy: req.RemotePolicy, EmploymentType: req.EmploymentType,
 		SalaryMin: req.SalaryMin, SalaryMax: req.SalaryMax, SalaryCurrency: req.SalaryCurrency,
 		Channel: req.Channel, Status: req.Status, Priority: req.Priority, Tags: req.Tags,
-		Deadline: req.Deadline, Notes: req.Notes, SubmittedAt: req.SubmittedAt,
+		Deadline: deadline, Notes: req.Notes, SubmittedAt: req.SubmittedAt,
 	}
 	row, err := h.svc.Create(c.Request.Context(), user.ID, in)
 	if err != nil {
@@ -210,10 +246,10 @@ type patchReq struct {
 	Channel         *string         `json:"channel"`
 	Priority        *string         `json:"priority"`
 	Tags            []string        `json:"tags"`
-	Deadline        *time.Time      `json:"deadline"`
+	Deadline        *string         `json:"deadline"` // YYYY-MM-DD
 	Notes           *string         `json:"notes"`
 	NextAction      *string         `json:"next_action"`
-	NextActionDueAt *time.Time      `json:"next_action_due_at"`
+	NextActionDueAt *string         `json:"next_action_due_at"` // YYYY-MM-DD
 	CustomValues    json.RawMessage `json:"custom_values"`
 }
 
@@ -240,14 +276,26 @@ func (h *Handler) patch(c *gin.Context) {
 	if req.Tags != nil {
 		in.Tags = req.Tags
 	}
+	deadline, err := parseDayPtr(req.Deadline)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_deadline", err.Error()))
+		return
+	}
 	if req.Deadline != nil {
-		in.Deadline = req.Deadline
+		in.Deadline = deadline
+	}
+	naDue, err := parseDayPtr(req.NextActionDueAt)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_next_action_due_at", err.Error()))
+		return
+	}
+	if req.NextActionDueAt != nil {
+		in.NextActionDueAt = naDue
 	}
 	if req.Notes != nil {
 		in.Notes = req.Notes
 	}
 	in.NextAction = req.NextAction
-	in.NextActionDueAt = req.NextActionDueAt
 	if len(req.CustomValues) > 0 && string(req.CustomValues) != "null" {
 		var cv map[string]any
 		if err := json.Unmarshal(req.CustomValues, &cv); err != nil {

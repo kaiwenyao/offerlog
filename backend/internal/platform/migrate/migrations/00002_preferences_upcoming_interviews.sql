@@ -4,9 +4,14 @@
 --     wrote only to localStorage). week_start Sunday=0..Saturday=6; keep the
 --     full set so prefs survive renames and can be shown in UI.
 --   * notifications: in-app reminders (overdue / interview-eve / stale-14d).
---     Generated server-side by the worker; read/unread and dismissable so the
---     same event cannot notify twice. Generic object (application_id) — for a
---     single-account app nothing else links yet; owner_id scoping preserved.
+--     Generated server-side by the worker. One notification per event
+--     occurrence, ever: the (owner_id, kind, application_id, idempotency_key)
+--     unique index below is the hard guarantee, so read OR dismiss never
+--     causes the same occurrence to regenerate on a later scan (read/dismiss
+--     only change visibility). A new occurrence — rescheduled interview day,
+--     postponed/re-overdue action, changed stale threshold — uses a new
+--     idempotency key and therefore notifies afresh. owner_id scoping
+--     preserved.
 --   * schedule_links: per-interview scheduling metadata. Fields are nullable,
 --     ISO-8601 with explicit original timezone; `cancelled` records a
 --     cancellation (改期/取消) without deleting the row so dashboards can
@@ -42,9 +47,12 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS notifications_owner_unread_idx
     ON notifications(owner_id, read_at, dismissed_at, id DESC);
-CREATE INDEX IF NOT EXISTS notifications_idem_idx
-    ON notifications(owner_id, kind, application_id, idempotency_key)
-    WHERE dismissed_at IS NULL AND read_at IS NULL;
+-- Hard one-per-occurrence guarantee. application_id is nullable, so coalesce
+-- to 0 for index purposes; Postgres treats NULLs as distinct in unique
+-- indexes, which would otherwise let duplicate NULL-application rows through.
+CREATE UNIQUE INDEX IF NOT EXISTS notifications_idem_uidx
+    ON notifications(owner_id, kind, COALESCE(application_id, 0), idempotency_key)
+    WHERE idempotency_key <> '';
 
 CREATE TABLE IF NOT EXISTS schedule_links (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -73,10 +81,12 @@ ALTER TABLE actions ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'med
 ALTER TABLE actions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual';
 
 -- Idempotent backfill: every application that still has a legacy next_action
--- and no standalone action at all gets one open action carrying the content
--- and due date, marked source='next_action'. Re-running the migration cannot
--- create duplicates because the INSERT ... SELECT ... WHERE NOT EXISTS guard
--- is per-application.
+-- and *no standalone action of any kind* gets one open action carrying the
+-- content and due date, marked source='next_action'. The guard is the
+-- application's action set being empty (not merely "no next_action-sourced
+-- row"): an application that already has a manual action must not gain a
+-- duplicate migrated row, and a first run that created rows makes the second
+-- run a no-op, so the migration stays idempotent and never duplicates.
 INSERT INTO actions (application_id, owner_id, title, due_date, due_ts, done_at, remind_me, priority, source, created_at, updated_at)
 SELECT ap.id, ap.owner_id,
        left(btrim(ap.next_action), 500),
@@ -87,7 +97,6 @@ WHERE ap.deleted_at IS NULL
   AND NOT EXISTS (
       SELECT 1 FROM actions a
       WHERE a.application_id = ap.id AND a.owner_id = ap.owner_id
-        AND a.source = 'next_action'
   );
 
 -- v1 compatibility view over the reminders shape so the frontend can read

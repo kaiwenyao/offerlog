@@ -322,17 +322,36 @@ func (r *Repo) GetScheduleLink(ctx context.Context, interviewID, ownerID int64) 
 
 // UpsertScheduleLink creates-or-updates scheduling metadata.
 func (r *Repo) UpsertScheduleLink(ctx context.Context, q database.Querier, s *ScheduleLink) error {
-	_, err := q.Exec(ctx, `INSERT INTO schedule_links(interview_id, owner_id, meeting_url, location,
-		contact_name, contact_email, notes, cancelled, cancelled_reason, original_timezone)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (interview_id) DO UPDATE SET
-			meeting_url=EXCLUDED.meeting_url, location=EXCLUDED.location,
-			contact_name=EXCLUDED.contact_name, contact_email=EXCLUDED.contact_email,
-			notes=EXCLUDED.notes, cancelled=EXCLUDED.cancelled,
-			cancelled_reason=EXCLUDED.cancelled_reason,
-			original_timezone=EXCLUDED.original_timezone,
-			updated_at=now()`,
+	// Owner-safe upsert: first try an owner-scoped UPDATE of the existing row;
+	// if none matched (no row yet, or the row belongs to someone else) attempt
+	// the INSERT. The insert's ON CONFLICT (interview_id) then fires only when
+	// another owner already owns the link — DO NOTHING + RowsAffected==0 tells
+	// the caller the row is not theirs, so a foreign upsert fails loudly
+	// instead of silently overwriting or silently no-op'ing.
+	tag, err := q.Exec(ctx, `UPDATE schedule_links SET
+		meeting_url=$3, location=$4, contact_name=$5, contact_email=$6, notes=$7,
+		cancelled=$8, cancelled_reason=$9, original_timezone=$10, updated_at=now()
+		WHERE interview_id=$1 AND owner_id=$2`,
 		s.InterviewID, s.OwnerID, s.MeetingURL, s.Location, s.ContactName, s.ContactEmail,
 		s.Notes, s.Cancelled, s.CancelledReason, s.OriginalTimezone)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	tag2, err := q.Exec(ctx, `INSERT INTO schedule_links(interview_id, owner_id, meeting_url, location,
+		contact_name, contact_email, notes, cancelled, cancelled_reason, original_timezone)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (interview_id) DO NOTHING`,
+		s.InterviewID, s.OwnerID, s.MeetingURL, s.Location, s.ContactName, s.ContactEmail,
+		s.Notes, s.Cancelled, s.CancelledReason, s.OriginalTimezone)
+	if err != nil {
+		return err
+	}
+	if tag2.RowsAffected() == 0 {
+		// The interview's schedule link exists but belongs to another owner.
+		return ErrNotFound
+	}
+	return nil
 }

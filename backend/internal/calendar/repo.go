@@ -86,15 +86,20 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 	}
 	rows.Close()
 
-	// Action due dates (open) with date/ts in the window.
+	// Action due dates (open) with date/ts in the window. due_date is the
+	// user's calendar day — its instant is the user's *local* midnight, so the
+	// single conversion `due_date::timestamp AT TIME ZONE $tz` (naive day →
+	// user-zone instant) is correct; `::timestamptz AT TIME ZONE` would double-
+	// shift it through the session zone and drop the first window day for
+	// west-of-UTC users.
 	arows, err := r.db.Pool().Query(ctx, `SELECT x.id, COALESCE(x.application_id,0), COALESCE(ap.company_name,''), COALESCE(ap.position,''),
 		x.title, x.due_date, x.due_ts, (x.done_at IS NOT NULL), x.priority
 		FROM actions x LEFT JOIN applications ap ON ap.id=x.application_id AND ap.owner_id=x.owner_id
 		WHERE x.owner_id=$1
 		  AND ( (x.due_ts IS NOT NULL AND x.due_ts >= $2 AND x.due_ts < $3)
 		     OR (x.due_ts IS NULL AND x.due_date IS NOT NULL
-		         AND (x.due_date::timestamptz AT TIME ZONE $4) >= $2 AND (x.due_date::timestamptz AT TIME ZONE $4) < $3) )
-		ORDER BY COALESCE(x.due_ts, x.due_date::timestamptz)`, ownerID, from, to, tz)
+		         AND (x.due_date::timestamp AT TIME ZONE $4) >= $2 AND (x.due_date::timestamp AT TIME ZONE $4) < $3) )
+		ORDER BY COALESCE(x.due_ts, x.due_date::timestamp AT TIME ZONE $4)`, ownerID, from, to, tz)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +123,10 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		if dueTs != nil {
 			e.Start = dueTs
 		} else if dueDate != nil {
-			yy, mm, dd := dueDate.In(loc).Date()
+			// pgx decodes the DATE at UTC midnight; the calendar day is the UTC
+			// date part (session is pinned UTC), regardless of any user zone.
+			// The event's instant is that day at the *user's* local midnight.
+			yy, mm, dd := dueDate.UTC().Date()
 			mid := time.Date(yy, mm, dd, 0, 0, 0, 0, loc)
 			e.Start = &mid
 		}
@@ -129,11 +137,12 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 	}
 
 	// Application deadlines (date) and offer-decision windows use the
-	// application's own deadline/status columns.
+	// application's own deadline/status columns. deadline is a calendar day;
+	// its instant is the user's local midnight (single AT TIME ZONE).
 	drows, err := r.db.Pool().Query(ctx, `SELECT a.id, a.company_name, a.position, a.deadline, a.status
 		FROM applications a
 		WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.deadline IS NOT NULL
-		  AND (a.deadline::timestamptz AT TIME ZONE $2) >= $3 AND (a.deadline::timestamptz AT TIME ZONE $2) < $4
+		  AND (a.deadline::timestamp AT TIME ZONE $2) >= $3 AND (a.deadline::timestamp AT TIME ZONE $2) < $4
 		ORDER BY a.deadline`, ownerID, tz, from, to)
 	if err != nil {
 		return nil, err
@@ -152,8 +161,8 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		e.AllDay = true
 		e.Timezone = tz
 		if deadline != nil {
-			// date-only application deadline → local midnight
-			yy, mm, dd := deadline.In(loc).Date()
+			// date-only application deadline → user-local midnight of that day.
+			yy, mm, dd := deadline.UTC().Date()
 			mid := time.Date(yy, mm, dd, 0, 0, 0, 0, loc)
 			e.Start = &mid
 		}

@@ -28,6 +28,15 @@ func New(ctx context.Context, url string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
+	// Pin the session timezone to UTC so `date::timestamptz` casts and DATE
+	// column round-trips are independent of the server/connection default. All
+	// business-day semantics (week windows, due dates) are computed in the
+	// user's timezone explicitly via `AT TIME ZONE` in each query — never by
+	// relying on the session timezone.
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["timezone"] = "UTC"
 	cfg.MaxConns = 20
 	cfg.MinConns = 2
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

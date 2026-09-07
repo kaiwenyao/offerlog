@@ -74,9 +74,10 @@ func toDTO(userID int64, fallbackName, fallbackTZ string, p *prefs.Preferences) 
 		}
 		d.RemindOverdue = p.RemindOverdue
 		d.RemindInterview = p.RemindInterview
-		if p.RemindStaleDays > 0 {
-			d.RemindStaleDays = p.RemindStaleDays
-		}
+		// 0 is a valid stored value meaning “stale reminders off”; do not
+		// collapse it back to the default on read, or the settings dropdown
+		// snaps back to 14 after saving 关闭.
+		d.RemindStaleDays = p.RemindStaleDays
 		d.RemindWeekly = p.RemindWeekly
 		if p.Locale != "" {
 			d.Locale = p.Locale

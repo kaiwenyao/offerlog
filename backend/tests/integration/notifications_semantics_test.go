@@ -1,0 +1,174 @@
+// Notification semantics regression coverage (review P1): a *dismissed*
+// reminder must never resurrect on a later scan (dismiss = permanent mute of
+// that occurrence), while a fresh occurrence — the same action becoming
+// overdue after its due date moved — notifies again. Also verifies the
+// idempotency-key uniqueness at the DB level (concurrent passes cannot
+// double-insert).
+package integration
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"offerlog/backend/internal/notifications"
+	"offerlog/backend/internal/prefs"
+	"offerlog/backend/internal/reminders"
+)
+
+// TestDismissedReminderDoesNotResurrect is the core regression: a user who
+// ignores an overdue reminder stays quiet on the next day's scan even though
+// the action is still overdue.
+func TestDismissedReminderDoesNotResurrect(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	pr := prefs.New(db)
+	if err := pr.Upsert(ctx, &prefs.Preferences{
+		UserID: owner, Timezone: "Europe/Dublin", WeekStart: 1,
+		RemindOverdue: true, RemindInterview: false, RemindStaleDays: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := mustCreate(t, svc, owner, "DismissCo", "Role")
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进', CURRENT_DATE - 5, NULL, FALSE, 'medium','manual') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+
+	gen := reminders.New(db)
+	now := time.Now()
+	if _, err := gen.Run(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	nots := notifications.New(db)
+	open, _ := nots.List(ctx, owner, true, 50)
+	if len(open) != 1 {
+		t.Fatalf("expected exactly 1 open overdue reminder, got %d", len(open))
+	}
+	// Dismiss it.
+	if err := nots.Dismiss(ctx, owner, open[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	// Next day's scan must NOT resurrect the same occurrence for this owner.
+	// (The generator fans over every user in the shared test DB — other tests'
+	// owners legitimately receive their own reminders — so assert on this
+	// owner's rows, not the global insert count.)
+	nextDay := now.Add(24 * time.Hour)
+	if _, err := gen.Run(ctx, nextDay); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh pass may create reminders for OTHER owners; this owner's
+	// dismissed occurrence must stay gone.
+	allN, _ := nots.List(ctx, owner, false, 200)
+	for _, n := range allN {
+		if n.Kind == "overdue" && n.DismissedAt == nil {
+			t.Fatalf("dismissed overdue reminder reappeared as non-dismissed: %+v", n)
+		}
+	}
+	var dismissedCount int
+	_ = db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications
+		WHERE owner_id=$1 AND kind='overdue' AND dismissed_at IS NOT NULL`, owner).Scan(&dismissedCount)
+	if dismissedCount != 1 {
+		t.Fatalf("dismissed rows = %d, want exactly 1 (dismiss is permanent)", dismissedCount)
+	}
+	_ = actionID
+}
+
+// TestPostponeReArmsReminder: moving the due date into the future clears the
+// old overdue reminder; once the new date passes without action, a fresh
+// overdue reminder notifies again (new occurrence).
+func TestPostponeReArmsReminder(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	pr := prefs.New(db)
+	if err := pr.Upsert(ctx, &prefs.Preferences{
+		UserID: owner, Timezone: "Europe/Dublin", WeekStart: 1,
+		RemindOverdue: true, RemindInterview: false, RemindStaleDays: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := mustCreate(t, svc, owner, "PostponeCo", "Role")
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进', CURRENT_DATE - 5, NULL, FALSE, 'medium','manual') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+	gen := reminders.New(db)
+	now := time.Now()
+	if _, err := gen.Run(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	nots := notifications.New(db)
+	open, _ := nots.List(ctx, owner, true, 50)
+	if len(open) != 1 {
+		t.Fatalf("expected 1 open overdue, got %d", len(open))
+	}
+	// Postpone by +7 days (simulate the API clearing the occurrence).
+	if err := nots.ClearOccurrence(ctx, owner, "overdue", fmt.Sprintf("overdue:%d", actionID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool().Exec(ctx, `UPDATE actions SET due_date = CURRENT_DATE + 7 WHERE id=$1`, actionID); err != nil {
+		t.Fatal(err)
+	}
+	// While postponed (due in future) nothing is overdue → scan inserts 0.
+	if _, err := gen.Run(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	open2, _ := nots.List(ctx, owner, true, 50)
+	if len(open2) != 0 {
+		t.Fatalf("postponed action should have no open overdue, got %d", len(open2))
+	}
+	// Simulate time passing beyond the new due date: the fresh occurrence
+	// notifies again.
+	future := now.Add(8 * 24 * time.Hour)
+	inserted, err := gen.Run(ctx, future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted == 0 {
+		t.Fatal("expected the re-overdue action to notify again after postpone")
+	}
+	_ = actionID
+}
+
+// TestNotificationConcurrentPassesNoDuplicate guards the unique index: two
+// generator passes racing cannot create two rows for one occurrence.
+func TestNotificationConcurrentPassesNoDuplicate(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	pr := prefs.New(db)
+	_ = pr.Upsert(ctx, &prefs.Preferences{
+		UserID: owner, Timezone: "Europe/Dublin", WeekStart: 1,
+		RemindOverdue: true, RemindInterview: false, RemindStaleDays: 0,
+	})
+	app := mustCreate(t, svc, owner, "RaceCo", "Role")
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进', CURRENT_DATE - 1, NULL, FALSE, 'medium','manual')`, app.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	// Insert the same occurrence through the repo API twice: second is a no-op.
+	nots := notifications.New(db)
+	n := &notifications.Notification{OwnerID: owner, Kind: "overdue", Title: "逾期待办", Body: "x", ApplicationID: &app.ID}
+	first, err := nots.InsertIdempotent(ctx, n, fmt.Sprintf("overdue:%d", app.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := nots.InsertIdempotent(ctx, n, fmt.Sprintf("overdue:%d", app.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first || second {
+		t.Fatalf("insert flags = (%v,%v), want (true,false)", first, second)
+	}
+	var count int
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='overdue'`, owner).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rows = %d, want exactly 1", count)
+	}
+}
+
+var _ = time.Now

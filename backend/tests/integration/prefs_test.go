@@ -76,3 +76,26 @@ func TestTimezoneValidationRejectsNonIANA(t *testing.T) {
 		t.Fatalf("Europe/Dublin should load: %v", err)
 	}
 }
+
+// Regression (review P1): remind_stale_days=0 ("关闭") must survive a read-back
+// instead of being collapsed to the 14-day default — otherwise the settings
+// dropdown snaps back to 14 after the user saves 关闭.
+func TestStaleDaysZeroRoundTrips(t *testing.T) {
+	db, _, _, owner := setup(t)
+	ctx := context.Background()
+	pr := prefs.New(db)
+	if err := pr.Upsert(ctx, &prefs.Preferences{
+		UserID: owner, DisplayName: "x", Timezone: "UTC",
+		WeekStart: 1, RemindOverdue: true, RemindInterview: true,
+		RemindStaleDays: 0, // 关闭
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := pr.Get(ctx, owner)
+	if err != nil || got == nil {
+		t.Fatalf("read back: %v %v", got, err)
+	}
+	if got.RemindStaleDays != 0 {
+		t.Fatalf("RemindStaleDays = %d, want 0 (关闭 must persist)", got.RemindStaleDays)
+	}
+}
