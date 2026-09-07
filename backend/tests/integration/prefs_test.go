@@ -11,7 +11,9 @@ import (
 
 	idrepo "offerlog/backend/internal/identity/repository"
 	idservice "offerlog/backend/internal/identity/service"
+	"offerlog/backend/internal/notifications"
 	"offerlog/backend/internal/prefs"
+	"offerlog/backend/internal/reminders"
 )
 
 func TestPreferencesPersistAndReadBackAcrossSessions(t *testing.T) {
@@ -97,5 +99,53 @@ func TestStaleDaysZeroRoundTrips(t *testing.T) {
 	}
 	if got.RemindStaleDays != 0 {
 		t.Fatalf("RemindStaleDays = %d, want 0 (关闭 must persist)", got.RemindStaleDays)
+	}
+}
+
+// Regression (round 3, P1): the reminder generator must use users.timezone
+// (single source) — not a stale user_preferences.timezone mirror. We set the
+// users row to Europe/Dublin and the prefs mirror to Asia/Shanghai, then seed
+// an interview at a UTC instant that is “tomorrow” in Dublin but “the day
+// after” in Shanghai; only the Dublin interpretation must fire a reminder.
+func TestReminderTimezoneFollowsUsersRow(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	// prefs mirror says Shanghai; users row says Dublin (e.g. via /auth/me).
+	if err := prefs.New(db).Upsert(ctx, &prefs.Preferences{
+		UserID: owner, Timezone: "Asia/Shanghai", WeekStart: 1,
+		RemindOverdue: false, RemindInterview: true, RemindStaleDays: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool().Exec(ctx, `UPDATE users SET timezone='Europe/Dublin' WHERE id=$1`, owner); err != nil {
+		t.Fatal(err)
+	}
+	app := mustCreate(t, svc, owner, "TZFollow", "Role")
+	// Pick an instant that is 23:30 Dublin on day X (→ interview is tomorrow in
+	// Dublin) but 06:30 Shanghai on day X+1 (→ not “tomorrow” in Shanghai).
+	// 2026-09-10T22:30:00Z = 2026-09-10 23:30 Dublin, 2026-09-11 06:30 Shanghai.
+	at := time.Date(2026, 9, 10, 22, 30, 0, 0, time.UTC)
+	// Run the generator at a "now" such that the interview is tomorrow in
+	// Dublin: generator day = 2026-09-09 (tomorrow = 09-10 in Dublin).
+	genNow := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO interviews(application_id, owner_id, round_name, format, scheduled_at, timezone)
+		VALUES($1,$2,'一面','video',$3,'Europe/Dublin')`, app.ID, owner, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reminders.New(db).Run(ctx, genNow); err != nil {
+		t.Fatal(err)
+	}
+	nots := notifications.New(db)
+	open, _ := nots.List(ctx, owner, true, 50)
+	found := false
+	for _, n := range open {
+		if n.Kind == "interview" {
+			found = true
+		}
+	}
+	// users.timezone = Dublin must drive the generator; if the stale Shanghai
+	// mirror won, the interview would not be “tomorrow” and no reminder fires.
+	if !found {
+		t.Fatal("interview reminder did not fire with users.timezone=Dublin (stale prefs mirror leaked)")
 	}
 }
