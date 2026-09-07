@@ -76,29 +76,36 @@ func (r *Repo) whereClause(req *SnapshotRequest, extra ...string) (string, []any
 }
 
 type Metrics struct {
-	TotalAll        int64            `json:"total_all"`       // not deleted (any status)
-	ToApply         int64            `json:"to_apply"`        // saved/preparing
-	SubmittedCount  int64            `json:"submitted_count"` // distinct submitted_at set (incl ended)
-	InProgress      int64            `json:"in_progress"`     // applied/screening/assessment/interviewing
-	WithResult      int64            `json:"with_result"`     // offer+accepted+rejected+withdrawn+closed
-	ByStatus        map[string]int64 `json:"by_status"`
-	ByChannel       []ChannelRow     `json:"by_channel"`
-	ResponseRate    float64          `json:"response_rate"`  // cohort: responded/submitted
-	InterviewRate   float64          `json:"interview_rate"` // ever reached interviewing
-	OfferRate       float64          `json:"offer_rate"`
-	ResponseMedianH float64          `json:"response_median_hours"` // hours from submit to first response (median, responded only)
-	PendingResponse int64            `json:"pending_response"`      // submitted, no response yet
-	RepliedSample   int64            `json:"replied_sample"`
-	Denominator     int64            `json:"denominator"` // cohort size
-	SmallSample     bool             `json:"small_sample"`
+	TotalAll       int64            `json:"total_all"`       // not deleted (any status)
+	ToApply        int64            `json:"to_apply"`        // saved/preparing
+	SubmittedCount int64            `json:"submitted_count"` // distinct submitted_at set (incl ended)
+	InProgress     int64            `json:"in_progress"`     // applied/screening/assessment/interviewing
+	WithResult     int64            `json:"with_result"`     // offer+accepted+rejected+withdrawn+closed
+	ByStatus       map[string]int64 `json:"by_status"`
+	ByChannel      []ChannelRow     `json:"by_channel"`
+	// Rates carry explicit numerators and a denominator so the UI can show
+	// 0% (denom>0, num=0) vs "— / 暂无样本" (denom=0) without guessing, and a
+	// channel/row with zero submissions never looks like a missing value.
+	ResponseRate     *float64 `json:"response_rate"`  // null when denominator=0
+	InterviewRate    *float64 `json:"interview_rate"` // null when denominator=0
+	OfferRate        *float64 `json:"offer_rate"`     // null when denominator=0
+	Responded        int64    `json:"responded"`      // numerator of response_rate
+	ReachedInterview int64    `json:"reached_interview"`
+	ReceivedOffer    int64    `json:"received_offer"`
+	ResponseMedianH  float64  `json:"response_median_hours"` // hours from submit to first response (median, responded only)
+	PendingResponse  int64    `json:"pending_response"`      // submitted, no response yet
+	RepliedSample    int64    `json:"replied_sample"`
+	Denominator      int64    `json:"denominator"` // cohort size
+	SmallSample      bool     `json:"small_sample"`
 }
 
 type ChannelRow struct {
-	Channel       string  `json:"channel"`
-	Submitted     int64   `json:"submitted"`
-	ResponseRate  float64 `json:"response_rate"`
-	InterviewRate float64 `json:"interview_rate"`
-	OfferRate     float64 `json:"offer_rate"`
+	Channel       string   `json:"channel"`
+	Submitted     int64    `json:"submitted"`
+	Responded     int64    `json:"responded"`
+	ResponseRate  *float64 `json:"response_rate"` // null when submitted=0
+	InterviewRate *float64 `json:"interview_rate"`
+	OfferRate     *float64 `json:"offer_rate"`
 }
 
 // Counts returns key metrics for the scope (default by saved date cohort).
@@ -154,9 +161,17 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 			FROM applications WHERE `+cohortWhere, cohortArgs...).Scan(&resp, &interv, &offer); err != nil {
 			return nil, err
 		}
-		m.ResponseRate = float64(resp) / float64(denominator)
-		m.InterviewRate = float64(interv) / float64(denominator)
-		m.OfferRate = float64(offer) / float64(denominator)
+		// Rates are only meaningful over a non-empty cohort. Zero numerators
+		// with a positive denominator render as 0%, not as a missing dash.
+		rr := float64(resp) / float64(denominator)
+		ir := float64(interv) / float64(denominator)
+		or := float64(offer) / float64(denominator)
+		m.ResponseRate = &rr
+		m.InterviewRate = &ir
+		m.OfferRate = &or
+		m.Responded = resp
+		m.ReachedInterview = interv
+		m.ReceivedOffer = offer
 		m.RepliedSample = resp
 		if resp > 0 {
 			// median hours: submitted_at → first_response_at among responded
@@ -225,10 +240,14 @@ func (r *Repo) ByChannel(ctx context.Context, req *SnapshotRequest) ([]ChannelRo
 		if err := rows.Scan(&c.Channel, &resp, &interv, &offer, &c.Submitted); err != nil {
 			return nil, err
 		}
+		c.Responded = resp
 		if c.Submitted > 0 {
-			c.ResponseRate = float64(resp) / float64(c.Submitted)
-			c.InterviewRate = float64(interv) / float64(c.Submitted)
-			c.OfferRate = float64(offer) / float64(c.Submitted)
+			rr := float64(resp) / float64(c.Submitted)
+			ir := float64(interv) / float64(c.Submitted)
+			or := float64(offer) / float64(c.Submitted)
+			c.ResponseRate = &rr
+			c.InterviewRate = &ir
+			c.OfferRate = &or
 		}
 		out = append(out, c)
 	}

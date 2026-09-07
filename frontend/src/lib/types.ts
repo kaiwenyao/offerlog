@@ -118,9 +118,10 @@ export interface PropertyDef {
 export interface ChannelRow {
   channel: string
   submitted: number
-  response_rate: number
-  interview_rate: number
-  offer_rate: number
+  responded: number
+  response_rate: number | null
+  interview_rate: number | null
+  offer_rate: number | null
 }
 
 export interface Metrics {
@@ -131,9 +132,12 @@ export interface Metrics {
   with_result: number
   by_status: Record<string, number>
   by_channel: ChannelRow[]
-  response_rate: number
-  interview_rate: number
-  offer_rate: number
+  response_rate: number | null
+  interview_rate: number | null
+  offer_rate: number | null
+  responded: number
+  reached_interview: number
+  received_offer: number
   response_median_hours: number
   pending_response: number
   replied_sample: number

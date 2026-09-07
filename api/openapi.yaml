@@ -71,6 +71,16 @@ paths:
     post: { summary: 注销 }
   /auth/me:
     get: { summary: 当前用户 }
+    patch:
+      summary: 更新当前账号显示名/时区（persist 到 users + 会话同步）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: { type: string }
+                timezone: { type: string }
   /applications:
     get:
       summary: 分页列表（status/search/trash/archived 查询参数）
@@ -170,3 +180,36 @@ paths:
     get: {}
   /health/ready:
     get: { summary: 检查 DB 与 schema }
+  /home/summary:
+    get:
+      summary: 首页全量汇总（服务端统计，周窗口为半开区间；含跨岗位近期面试与统一待办计数）
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, maximum: 50 }
+          description: 近期面试条数上限（默认 5）
+  /preferences:
+    get: { summary: 当前账号偏好（显示名/时区/每周起始/提醒开关），默认值未保存时返回缺省 }
+    put:
+      summary: 保存账号偏好（可选字段部分更新；时区需为 IANA 名称）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: { type: string }
+                timezone: { type: string }
+                week_start: { type: integer, minimum: 0, maximum: 6 }
+                remind_overdue: { type: boolean }
+                remind_interview: { type: boolean }
+                remind_stale_days: { type: integer, minimum: 0, maximum: 365 }
+                remind_weekly: { type: boolean }
+  /notifications:
+    get: { summary: 站内提醒列表（open=1 只看未读未忽略） }
+  /notifications/read-all:
+    post: { summary: 全部标为已读 }
+  /notifications/{id}/read:
+    post: { summary: 标记已读 }
+  /notifications/{id}/dismiss:
+    post: { summary: 忽略（不删除，保留历史） }

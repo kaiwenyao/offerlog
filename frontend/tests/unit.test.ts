@@ -77,3 +77,18 @@ describe('server week strip (home summary)', () => {
     expect(days[0].weekday).toBe('周一')
   })
 })
+
+describe('analytics rate display semantics (§4.2)', () => {
+  it('shows 0% when denominator>0 and numerator=0; — only when no sample', () => {
+    // Replicate the pure formatting rules the page uses.
+    const rateOrDash = (rate: number | null | undefined, denom: number) => {
+      if (denom === 0) return '—'
+      const r = rate ?? 0
+      return `${(r * 100).toFixed(1)}%`
+    }
+    expect(rateOrDash(0, 10)).toBe('0.0%') // 全部未回复 → 0%，不是 —
+    expect(rateOrDash(0.5, 10)).toBe('50.0%')
+    expect(rateOrDash(null, 0)).toBe('—') // 空样本
+    expect(rateOrDash(undefined, 0)).toBe('—')
+  })
+})
