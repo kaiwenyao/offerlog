@@ -71,7 +71,7 @@ export function CalendarPage() {
   const gridFrom = useMemo(() => (view === 'month' ? monthGridStart(monthFirst) : anchor), [view, anchor, monthFirst])
   const from = useMemo(() => {
     if (view === 'week') return anchor
-    if (view === 'agenda') return mondayOf(anchor)
+    if (view === 'agenda') return addDays(mondayOf(anchor), -90) // include far-overdue actions
     return gridFrom
   }, [view, anchor, gridFrom])
 

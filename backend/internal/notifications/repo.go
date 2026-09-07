@@ -46,22 +46,27 @@ func (r *Repo) Pool() *database.DB { return r.db }
 // interview day, an action re-overdue after postpone) uses a new key and
 // notifies afresh — postpone clears prior rows so the new due period re-arms.
 func (r *Repo) InsertIdempotent(ctx context.Context, n *Notification, key string) (bool, error) {
-	var inserted bool
-	err := r.db.Pool().QueryRow(ctx, `WITH ins AS (
-		INSERT INTO notifications(owner_id, kind, title, body, application_id, idempotency_key)
-		SELECT $1,$2,$3,$4,$5,$6
-		WHERE NOT EXISTS (
-			SELECT 1 FROM notifications
-			WHERE owner_id=$1 AND kind=$2 AND application_id IS NOT DISTINCT FROM $5
-			  AND idempotency_key=$6
-		)
-		RETURNING 1
-	) SELECT EXISTS (SELECT 1 FROM ins)`,
-		n.OwnerID, n.Kind, n.Title, n.Body, n.ApplicationID, key).Scan(&inserted)
+	if key == "" {
+		return false, errors.New("idempotency key required")
+	}
+	// Direct INSERT relying on the partial UNIQUE index as the hard guard:
+	// ON CONFLICT DO NOTHING makes a concurrent duplicate a clean no-op instead
+	// of a unique-violation error, so a racing generator pass can never fail a
+	// whole reminder scan. Returns whether this call inserted the row.
+	var id int64
+	err := r.db.Pool().QueryRow(ctx, `INSERT INTO notifications(owner_id, kind, title, body, application_id, idempotency_key)
+		VALUES($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (owner_id, kind, COALESCE(application_id, 0), idempotency_key)
+		WHERE idempotency_key <> '' DO NOTHING
+		RETURNING id`,
+		n.OwnerID, n.Kind, n.Title, n.Body, n.ApplicationID, key).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // conflict — the occurrence already has a notification
+	}
 	if err != nil {
 		return false, err
 	}
-	return inserted, nil
+	return true, nil
 }
 
 // List returns the user's notifications, optionally only open (unread and

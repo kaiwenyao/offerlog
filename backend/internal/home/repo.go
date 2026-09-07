@@ -77,7 +77,6 @@ type TodoItem struct {
 	Status        string     `json:"status"`
 	DueDay        *string    `json:"due_day"`
 	DueTs         *time.Time `json:"due_ts"`
-	Archived      bool       `json:"archived"`
 }
 
 // Week is the user-local half-open week window used by the response.
@@ -206,7 +205,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 		FROM interviews i JOIN applications a ON a.id=i.application_id AND a.owner_id=i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id=i.id AND sl.owner_id=i.owner_id
 		WHERE i.owner_id=$1 AND i.scheduled_at >= $3 AND i.scheduled_at < $4
-		  AND COALESCE(sl.cancelled,FALSE)=FALSE AND a.deleted_at IS NULL
+		  AND COALESCE(sl.cancelled,FALSE)=FALSE AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		UNION ALL
 		-- 待办：due_ts is an instant; date-only due_date is the user's calendar day
 		-- and must be read as the *user's local midnight* (due_date::timestamp AT
@@ -224,7 +223,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 				       ap.company_name AS who_c
 				FROM actions x
 				LEFT JOIN applications ap ON ap.id=x.application_id AND ap.owner_id=x.owner_id
-				WHERE x.owner_id=$1 AND x.done_at IS NULL
+				WHERE x.owner_id=$1 AND x.done_at IS NULL AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 			) t
 			WHERE due_inst IS NOT NULL AND due_inst >= $3 AND due_inst < $4
 		) sub
@@ -283,7 +282,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 	todoRows, err := q.Query(ctx, `WITH open_actions AS (
 			SELECT a.id AS action_id, a.application_id, a.title, a.due_date, a.due_ts, ap.company_name, ap.position, ap.status
 			FROM actions a JOIN applications ap ON ap.id = a.application_id
-			WHERE a.owner_id=$1 AND a.done_at IS NULL AND ap.deleted_at IS NULL
+			WHERE a.owner_id=$1 AND a.done_at IS NULL AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 		),
 		derived AS (
 			SELECT NULL::bigint AS action_id, ap.id AS application_id, ap.next_action AS title,

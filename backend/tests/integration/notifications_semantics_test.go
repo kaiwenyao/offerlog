@@ -148,26 +148,34 @@ func TestNotificationConcurrentPassesNoDuplicate(t *testing.T) {
 		VALUES($1,$2,'跟进', CURRENT_DATE - 1, NULL, FALSE, 'medium','manual')`, app.ID, owner); err != nil {
 		t.Fatal(err)
 	}
-	// Insert the same occurrence through the repo API twice: second is a no-op.
+	// Genuinely concurrent inserts of the same occurrence: exactly one row must
+	// win and the loser must be a clean no-op (no unique-violation error), which
+	// is what ON CONFLICT DO NOTHING guarantees for racing generator passes.
 	nots := notifications.New(db)
+	key := fmt.Sprintf("overdue:%d", app.ID)
 	n := &notifications.Notification{OwnerID: owner, Kind: "overdue", Title: "逾期待办", Body: "x", ApplicationID: &app.ID}
-	first, err := nots.InsertIdempotent(ctx, n, fmt.Sprintf("overdue:%d", app.ID))
-	if err != nil {
-		t.Fatal(err)
+	const workers = 8
+	results := make(chan error, workers)
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		go func() {
+			<-start
+			_, err := nots.InsertIdempotent(context.Background(), n, key)
+			results <- err
+		}()
 	}
-	second, err := nots.InsertIdempotent(ctx, n, fmt.Sprintf("overdue:%d", app.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !first || second {
-		t.Fatalf("insert flags = (%v,%v), want (true,false)", first, second)
+	close(start)
+	for i := 0; i < workers; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent insert error: %v (must be a no-op, not a failure)", err)
+		}
 	}
 	var count int
 	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='overdue'`, owner).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
-		t.Fatalf("rows = %d, want exactly 1", count)
+		t.Fatalf("rows = %d, want exactly 1 under concurrency", count)
 	}
 }
 

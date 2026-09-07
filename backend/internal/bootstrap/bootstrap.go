@@ -112,7 +112,7 @@ func (a *App) Handler() http.Handler {
 	authH.Routes(authRoutes)
 
 	// applications
-	appH := apptransport.New(a.appsSvc)
+	appH := apptransport.New(a.appsSvc).WithNotifications(a.Nots)
 	appH.Routes(api.Group("/applications"))
 
 	// activities under /applications/:id

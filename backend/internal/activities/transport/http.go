@@ -431,6 +431,9 @@ func (h *Handler) deleteAction(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
+	// A deleted action must not leave an overdue reminder pointing at a
+	// now-nonexistent item (same lifecycle sync as done/postpone/update).
+	h.clearOverdueReminder(c, user.ID, aid)
 	httpx.Ok(c)
 }
 
@@ -517,12 +520,20 @@ func (h *Handler) postponeAction(c *gin.Context) {
 	}
 	var dueDate *time.Time
 	if req.DueDate != nil {
-		t, err := day.Parse(day.Normalize(*req.DueDate))
-		if err != nil {
-			httpx.WriteErr(c, httpx.BadRequest("bad_due_date", err.Error()))
-			return
+		ds := day.Normalize(*req.DueDate)
+		if ds == "" {
+			// blank date-only value means “clear the date”, mirroring the
+			// create/update parseDueDate behavior — never store year-1.
+			req.DueDate = nil
+			req.DueTs = nil
+		} else {
+			t, err := day.Parse(ds)
+			if err != nil {
+				httpx.WriteErr(c, httpx.BadRequest("bad_due_date", err.Error()))
+				return
+			}
+			dueDate = &t
 		}
-		dueDate = &t
 	}
 	a.DueTs = req.DueTs
 	if req.DueTs == nil {

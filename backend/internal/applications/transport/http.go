@@ -13,15 +13,36 @@ import (
 	appdomain "offerlog/backend/internal/applications/domain"
 	apprepo "offerlog/backend/internal/applications/repository"
 	appservice "offerlog/backend/internal/applications/service"
+	notifrepo "offerlog/backend/internal/notifications"
 	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
 )
 
 type Handler struct {
-	svc *appservice.Service
+	svc  *appservice.Service
+	nots *notifrepo.Repo
 }
 
 func New(svc *appservice.Service) *Handler { return &Handler{svc: svc} }
+
+// WithNotifications attaches the in-app notification store so application
+// lifecycle endpoints (soft delete / archive / first response / ended status)
+// can retire the application's reminders instead of leaving dead links.
+func (h *Handler) WithNotifications(n *notifrepo.Repo) *Handler {
+	h.nots = n
+	return h
+}
+
+// dismissAppReminders retires every open notification that references the
+// application (deleted/archived objects must not keep producing stale alerts).
+func (h *Handler) dismissAppReminders(c *gin.Context, ownerID, appID int64) {
+	if h.nots == nil {
+		return
+	}
+	if err := h.nots.DismissByApplication(c.Request.Context(), ownerID, appID); err != nil {
+		httpx.WriteErr(c, err)
+	}
+}
 
 // appDTO is the wire representation of an application row.
 type appDTO struct {
@@ -319,6 +340,7 @@ func (h *Handler) softDelete(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
+	h.dismissAppReminders(c, user.ID, id)
 	httpx.Ok(c)
 }
 
@@ -339,6 +361,7 @@ func (h *Handler) archive(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
+	h.dismissAppReminders(c, user.ID, id)
 	httpx.Ok(c)
 }
 
@@ -384,6 +407,13 @@ func (h *Handler) transition(c *gin.Context) {
 	if err != nil {
 		httpx.WriteErr(c, mapConflict(err))
 		return
+	}
+	// A first response (stale-follow-up no longer applies) or an ended status
+	// retires the application's open reminders; the UI then won't show alerts
+	// for an application that has moved on. Un-read/dismiss rows are kept for
+	// history but hidden (DismissByApplication marks dismissed_at).
+	if req.FirstResponseAt != nil || appdomain.IsTerminal(req.ToStatus) {
+		h.dismissAppReminders(c, user.ID, id)
 	}
 	c.JSON(http.StatusOK, toDTO(row))
 }
