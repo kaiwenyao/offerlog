@@ -187,19 +187,18 @@ func (r *Repo) List(ctx context.Context, ownerID int64, o ListOptions) ([]*Row, 
 
 // Create inserts an application and returns its id.
 func (r *Repo) Create(ctx context.Context, q database.Querier, a *Row) (int64, error) {
-	var id int64
 	err := q.QueryRow(ctx, `INSERT INTO applications(owner_id, company_id, company_name, position, job_url,
 		jd_snapshot, location, remote_policy, employment_type, salary_min, salary_max, salary_currency,
 		channel, status, priority, tags, custom_values, notes, saved_at, submitted_at, first_response_at,
 		deadline, reason, next_action, next_action_due_at, next_action_due_ts, previous_application_id)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
-		RETURNING id`,
+		RETURNING id, created_at, updated_at`,
 		a.OwnerID, a.CompanyID, a.CompanyName, a.Position, a.JobURL, a.JDSnapshot, a.Location,
 		a.RemotePolicy, a.EmploymentType, a.SalaryMin, a.SalaryMax, a.SalaryCurrency, a.Channel,
 		a.Status, a.Priority, a.Tags, a.CustomValues, a.Notes, a.SavedAt, a.SubmittedAt,
 		a.FirstResponseAt, a.Deadline, a.Reason, a.NextAction, a.NextActionDueAt, a.NextActionDueTs,
-		a.PreviousApplicationID).Scan(&id)
-	return id, err
+		a.PreviousApplicationID).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)
+	return a.ID, err
 }
 
 // UpdateFields updates the mutable core fields with optimistic locking.

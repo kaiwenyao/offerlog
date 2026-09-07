@@ -78,7 +78,10 @@ func main() {
 	// Daily enqueue at 08:00 user-local is approximated: the worker enqueues a
 	// reminder pass on boot and after each pass re-enqueues 24h later (a real
 	// scheduler would compute the next 08:00 per user; in-app notifications are
-	// generated for "today" whenever the pass runs).
+	// generated for "today" whenever the pass runs). The idempotency key is
+	// per-day so a completed pass never blocks the next one (the jobs unique
+	// index is on kind+key and would otherwise make the enqueue a permanent
+	// no-op after the first run).
 	go func() {
 		timer := time.NewTimer(10 * time.Second)
 		defer timer.Stop()
@@ -87,12 +90,10 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-timer.C:
-				if err := store.Enqueue(ctx, "reminders", "daily", map[string]any{}, time.Now()); err != nil {
+				day := time.Now().UTC().Format("2006-01-02")
+				if err := store.Enqueue(ctx, "reminders", "daily:"+day, map[string]any{}, time.Now()); err != nil {
 					slog.Warn("enqueue reminders", "error", err)
 				}
-				// The enqueue is idempotent (unique kind+key on pending rows), so
-				// schedule the next pass after the previous one finishes by simply
-				// re-arming after 24h. The processor loop below drains due jobs.
 				timer.Reset(24 * time.Hour)
 			}
 		}
