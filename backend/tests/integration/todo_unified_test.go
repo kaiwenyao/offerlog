@@ -129,3 +129,48 @@ func TestArchivedAppActionExcludedFromTodos(t *testing.T) {
 		t.Fatalf("after archive todo_items=%d want 0", len(s2.TodoItems))
 	}
 }
+
+// Regression (round 3, P0): completing a migrated (source='next_action') action
+// must NOT resurrect the legacy next_action as an un-completable derived todo.
+// The derived guard excludes any application that has an action row (open or
+// done), mirroring the migration backfill guard.
+func TestCompletedMigratedActionDoesNotResurrectDerived(t *testing.T) {
+	ctx := context.Background()
+	db, svc, _, owner := setup(t)
+	var tz string
+	_ = db.Pool().QueryRow(ctx, `SELECT timezone FROM users WHERE id=$1`, owner).Scan(&tz)
+
+	app := mustCreate(t, svc, owner, "ResurrectCo", "Role")
+	// Backfill-shaped row: legacy next_action + a source='next_action' action.
+	if _, err := db.Pool().Exec(ctx, `UPDATE applications SET next_action='跟进行政流程', next_action_due_at=CURRENT_DATE+1 WHERE id=$1`, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进行政流程', CURRENT_DATE+1, NULL, FALSE, 'medium','next_action') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := home.New(db)
+	s, err := repo.Get(ctx, owner, tz, time.Monday, time.Now(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Todos.Open != 1 || len(s.TodoItems) != 1 {
+		t.Fatalf("before done: open=%d items=%d want 1/1", s.Todos.Open, len(s.TodoItems))
+	}
+	if s.TodoItems[0].ActionID == nil {
+		t.Fatal("migrated action must surface as an action row, not a derived row")
+	}
+	// Complete the migrated action.
+	if _, err := db.Pool().Exec(ctx, `UPDATE actions SET done_at=now() WHERE id=$1`, actionID); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := repo.Get(ctx, owner, tz, time.Monday, time.Now(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Todos.Open != 0 || len(s2.TodoItems) != 0 {
+		t.Fatalf("after done: open=%d items=%d want 0/0 — legacy next_action must NOT resurrect as derived", s2.Todos.Open, len(s2.TodoItems))
+	}
+}

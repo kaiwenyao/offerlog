@@ -296,9 +296,13 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 	}
 
 	// Unified todo counts: open standalone actions (the source of truth) plus
-	// legacy derived todos — applications with a next_action text but no open
-	// standalone action at all — so the dashboard count matches the checklist
-	// and no double-entry exists while legacy rows still surface (§5.3).
+	// legacy derived todos — applications with a next_action text but NO action
+	// row of any kind (open or done). The guard deliberately matches the
+	// migration backfill: once an application has an action row, its legacy
+	// next_action has been adopted and must never resurrect as a derived todo —
+	// even after the user completes the adopted action (a done row still
+	// occupies the guard), otherwise a completed todo would reappear as an
+	// un-completable (action_id=null) row forever.
 	// Date-only dues are interpreted as the user's local midnight via
 	// `date::timestamp AT TIME ZONE $tz`, matching the week strip and the
 	// reminders generator (session timezone is pinned UTC, never relied on).
@@ -314,7 +318,9 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 			FROM applications ap
 			WHERE ap.owner_id=$1 AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 			  AND trim(ap.next_action) <> ''
-			  AND NOT EXISTS (SELECT 1 FROM open_actions oa WHERE oa.application_id = ap.id)
+			  AND NOT EXISTS (
+			      SELECT 1 FROM actions aa WHERE aa.application_id = ap.id AND aa.owner_id = ap.owner_id
+			  )
 		),
 		all_todos AS (
 			SELECT *,

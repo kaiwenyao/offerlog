@@ -1,29 +1,24 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { api, fmtDateTime } from '../../lib/api'
+import { api, dayToInstant, fmtDateTime } from '../../lib/api'
 import type { CalendarEvent } from '../../lib/types'
 import { effectiveZone } from '../../lib/tz'
 import { Button, Card, PanelTitle, Tabs } from '../../ds'
 import { Dot, EmptyHint, ErrorText, Num, PageSpinner } from '../../components/ui'
 import {
-  addDays,
+  addDaysToKey,
   agenda,
   agendaWindow,
+  dayKeyInZone,
   monthGrid,
-  monthStart,
-  mondayOf,
-  toISO,
+  monthKeyOf,
+  mondayKeyOf,
+  todayKeyInZone,
   weekColumns,
   WEEKDAYS,
   type ViewMode,
 } from './grid'
-
-/** Grid start for the month view: the Monday on/before the 1st. */
-function monthGridStart(first: Date): Date {
-  const startDow = (first.getDay() + 6) % 7
-  return addDays(first, -startDow)
-}
 
 function toneOf(e: CalendarEvent): string {
   if (e.cancelled) return 'var(--neutral)'
@@ -53,59 +48,93 @@ function evTime(e: CalendarEvent): string {
   return fmtDateTime(e.start)
 }
 
-/** Month label for the range header. */
-function fmtMonth(d: Date): string {
-  return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`
+/** Display helpers for YYYY-MM-DD keys. */
+function keyDayNum(key: string): number {
+  return Number(key.slice(8, 10))
+}
+function fmtMonthKey(key: string): string {
+  const y = key.slice(0, 4)
+  const m = Number(key.slice(5, 7))
+  return `${y} 年 ${m} 月`
+}
+/** Weekday label index 0=Mon..6=Sun for a day key. */
+function weekdayIdxOf(key: string): number {
+  const t = new Date(`${key}T00:00:00Z`)
+  return (t.getUTCDay() + 6) % 7
 }
 
 export function CalendarPage() {
   const nav = useNavigate()
   const zone = effectiveZone()
   const [view, setView] = useState<ViewMode>('week')
-  const [anchor, setAnchor] = useState(() => mondayOf())
+  // Anchor is a day KEY in the active zone. Week view navigates by Monday
+  // weeks; month view by month keys; agenda by the current week.
+  const [weekKey, setWeekKey] = useState(() => mondayKeyOf(todayKeyInZone(zone)))
+  const [monthKey, setMonthKey] = useState(() => monthKeyOf(todayKeyInZone(zone)))
 
-  // Fetch window is aligned to the *rendered* grid, not the nominal month: the
-  // month view draws leading/trailing spillover cells from adjacent weeks, and
-  // those cells must receive their events. So the month fetch spans
-  // [monthGridStart(first), +42d) — the exact 6×7 window rendered.
-  const monthFirst = useMemo(() => monthStart(anchor), [anchor])
-  const gridFrom = useMemo(() => (view === 'month' ? monthGridStart(monthFirst) : anchor), [view, anchor, monthFirst])
-  const from = useMemo(() => {
-    if (view === 'week') return anchor
-    if (view === 'agenda') return agendaWindow(anchor).from // include far-overdue actions
-    return gridFrom
-  }, [view, anchor, gridFrom])
-
-  const to = useMemo(() => {
-    if (view === 'week') return addDays(anchor, 7)
-    if (view === 'month') return addDays(gridFrom, 42) // grid window, not monthStart+42
-    return agendaWindow(anchor).to
-  }, [view, anchor, gridFrom])
+  // Fetch window (instants) computed from the anchor keys. The boundary keys
+  // are user-zone calendar days; their instants are the user's local midnights
+  // (dayToInstant), so the server's AT TIME ZONE comparisons line up.
+  const { from, to } = useMemo(() => {
+    const instantOf = (key: string): Date => {
+      const ms = dayToInstant(key, zone)
+      return new Date(ms ?? Date.parse(`${key}T00:00:00Z`))
+    }
+    if (view === 'week') {
+      return { from: instantOf(weekKey), to: instantOf(addDaysToKey(weekKey, 7)) }
+    }
+    if (view === 'month') {
+      const gridStart = mondayKeyOf(monthKey)
+      return { from: instantOf(gridStart), to: instantOf(addDaysToKey(gridStart, 42)) }
+    }
+    // agenda: current Monday week −90d … +30d
+    const monday = instantOf(mondayKeyOf(todayKeyInZone(zone)))
+    const win = agendaWindow(monday)
+    return { from: win.from, to: win.to }
+  }, [view, weekKey, monthKey, zone])
 
   const q = useQuery({
     queryKey: ['calendar', view, from.toISOString(), to.toISOString()],
     queryFn: () =>
       api.get<{ items: CalendarEvent[] }>(
-        `/api/v1/calendar?from=${encodeURIComponent(toISO(from))}&to=${encodeURIComponent(toISO(to))}`,
+        `/api/v1/calendar?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`,
       ),
     staleTime: 30_000,
   })
 
   const events = q.data?.items ?? []
 
-  const weeks = useMemo(
-    () => (view === 'month' ? monthGrid(events, monthFirst, zone) : []),
-    [view, events, monthFirst, zone],
-  )
-  const days = useMemo(() => (view === 'week' ? weekColumns(events, anchor, zone) : []), [view, events, anchor, zone])
+  const weeks = useMemo(() => (view === 'month' ? monthGrid(events, monthKey, zone) : []), [view, events, monthKey, zone])
+  const days = useMemo(() => (view === 'week' ? weekColumns(events, weekKey, zone) : []), [view, events, weekKey, zone])
   const agendaGroups = useMemo(() => (view === 'agenda' ? agenda(events, new Date(), zone) : []), [view, events, zone])
 
   const navTitle =
     view === 'week'
-      ? `${anchor.getFullYear()} 年 ${anchor.getMonth() + 1} 月 ${anchor.getDate()} 日起`
+      ? `${fmtMonthKey(weekKey)} ${weekKey.slice(8, 10)} 日起`
       : view === 'month'
-        ? fmtMonth(anchor)
-        : '未来议程'
+        ? fmtMonthKey(monthKey)
+        : '议程'
+
+  const shiftMonth = (k: string, n: number): string => {
+    const y = Number(k.slice(0, 4))
+    const m = Number(k.slice(5, 7)) + n
+    const ny = y + Math.floor((m - 1) / 12)
+    const nm = ((m - 1) % 12 + 12) % 12 + 1
+    return `${ny}-${String(nm).padStart(2, '0')}-01`
+  }
+  const goPrev = () => {
+    if (view === 'week') setWeekKey((k) => addDaysToKey(k, -7))
+    else if (view === 'month') setMonthKey((k) => shiftMonth(k, -1))
+  }
+  const goNext = () => {
+    if (view === 'week') setWeekKey((k) => addDaysToKey(k, 7))
+    else if (view === 'month') setMonthKey((k) => shiftMonth(k, 1))
+  }
+  const goToday = () => {
+    const today = todayKeyInZone(zone)
+    setWeekKey(mondayKeyOf(today))
+    setMonthKey(monthKeyOf(today))
+  }
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -122,13 +151,13 @@ export function CalendarPage() {
         />
         <b style={{ fontSize: 15, minWidth: 150 }}>{navTitle}</b>
         <span style={{ display: 'flex', gap: 6 }}>
-          <Button variant="ghost" size="sm" onClick={() => setAnchor((a) => addDays(a, -7))}>
+          <Button variant="ghost" size="sm" onClick={goPrev}>
             上一周
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setAnchor(mondayOf())}>
+          <Button variant="ghost" size="sm" onClick={goToday}>
             今天
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setAnchor((a) => addDays(a, 7))}>
+          <Button variant="ghost" size="sm" onClick={goNext}>
             下一周
           </Button>
         </span>
@@ -163,13 +192,12 @@ export function CalendarPage() {
 }
 
 function WeekView({ days, onOpen }: { days: ReturnType<typeof weekColumns>; onOpen: (id: number) => void }) {
-  const today = new Date()
   return (
     <div style={{ overflowX: 'auto', paddingBottom: 2 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,minmax(130px,1fr))', gap: 8, minWidth: 920 }}>
         {days.map((d) => (
           <div
-            key={d.date.toISOString()}
+            key={d.key}
             style={{
               minHeight: 340,
               borderRadius: 12,
@@ -180,39 +208,36 @@ function WeekView({ days, onOpen }: { days: ReturnType<typeof weekColumns>; onOp
           >
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                {WEEKDAYS[(d.date.getDay() + 6) % 7]}
+                {WEEKDAYS[weekdayIdxOf(d.key)]}
               </span>
-              <Num color={d.isToday ? 'var(--accent)' : 'var(--text)'}>{d.date.getDate()}</Num>
+              <Num color={d.isToday ? 'var(--accent)' : 'var(--text)'}>{keyDayNum(d.key)}</Num>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
               {d.events.length === 0 && (
                 <span style={{ fontSize: 12, color: 'var(--text-muted)', opacity: 0.7 }}>—</span>
               )}
-              {d.events.map((e) => {
-                const past = e.start && new Date(e.start).getTime() < today.setHours(0, 0, 0, 0)
-                return (
-                  <button
-                    key={`${e.kind}-${e.id}`}
-                    className="board-card"
-                    style={{ opacity: e.cancelled || past || e.done ? 0.55 : 1, textAlign: 'left' }}
-                    onClick={() => onOpen(e.application_id)}
-                  >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
-                      <Dot color={toneOf(e)} size={6} />
-                      <b style={{ fontSize: 11, fontWeight: 600 }}>{kindLabel(e)}</b>
-                      <span style={{ color: 'var(--text-muted)' }}>{evTime(e)}</span>
+              {d.events.map((e) => (
+                <button
+                  key={`${e.kind}-${e.id}`}
+                  className="board-card"
+                  style={{ opacity: e.cancelled || e.done ? 0.55 : 1, textAlign: 'left' }}
+                  onClick={() => onOpen(e.application_id)}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
+                    <Dot color={toneOf(e)} size={6} />
+                    <b style={{ fontSize: 11, fontWeight: 600 }}>{kindLabel(e)}</b>
+                    <span style={{ color: 'var(--text-muted)' }}>{evTime(e)}</span>
+                  </span>
+                  <span className="ellipsis" style={{ display: 'block', fontSize: 12, marginTop: 3 }}>
+                    {e.company_name || e.title}
+                  </span>
+                  {e.location && (
+                    <span className="ellipsis" style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>
+                      📍 {e.location}
                     </span>
-                    <span className="ellipsis" style={{ display: 'block', fontSize: 12, marginTop: 3 }}>
-                      {e.company_name || e.title}
-                    </span>
-                    {e.location && (
-                      <span className="ellipsis" style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>
-                        📍 {e.location}
-                      </span>
-                    )}
-                  </button>
-                )
-              })}
+                  )}
+                </button>
+              ))}
             </div>
           </div>
         ))}
@@ -253,7 +278,7 @@ function MonthView({ weeks, onOpen }: { weeks: ReturnType<typeof monthGrid>; onO
               }}
             >
               <div style={{ fontSize: 11, color: cell.isToday ? 'var(--accent)' : 'var(--text-muted)', fontWeight: cell.isToday ? 600 : 400 }}>
-                {cell.date.getDate()}
+                {keyDayNum(cell.key)}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 3 }}>
                 {cell.events.slice(0, 3).map((e) => (

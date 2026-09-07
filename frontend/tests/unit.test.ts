@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
 import { fmtBytes, fmtDate, daysBetween, dayToInstant, toDayString, fmtDay } from '../src/lib/api'
 import { buildWeek } from '../src/features/today/week'
-import { agenda, agendaWindow, mondayOf, weekColumns } from '../src/features/calendar/grid'
+import { agenda, agendaWindow, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
 import type { CalendarEvent } from '../src/lib/types'
 
 describe('status dictionary', () => {
@@ -97,26 +97,45 @@ describe('analytics rate display semantics (§4.2)', () => {
 
 describe('calendar grid helpers', () => {
   const ZONE = 'Europe/Dublin' // deterministic zone for day bucketing
-  it('places an interview on the correct Monday-start week column', () => {
-    const wed = new Date(2026, 8, 9, 10, 0) // 2026-09-09 Wed (browser-local)
-    const mon = mondayOf(wed)
-    expect(mon.getDay()).toBe(1)
+  it('places an interview on the correct Monday-start week column (zone-aware keys)', () => {
+    // 2026-09-09T10:00Z is 2026-09-09 in Dublin — day key '2026-09-09'.
+    const monKey = mondayKeyOf('2026-09-09')
+    expect(monKey).toBe('2026-09-07') // 09-09 is a Wednesday
     const ev: CalendarEvent = {
       id: 1, kind: 'interview', application_id: 1, company_name: 'Acme', position: 'R',
       title: 'Acme · 一面', start: '2026-09-09T10:00:00Z', timezone: ZONE,
       all_day: false, location: '', meeting_url: '', cancelled: false, done: false,
       round_name: '一面', format: 'video',
     }
-    const cols = weekColumns([ev], mon, ZONE)
-    const col = cols.find((c) => c.date.getDate() === 9)
+    const cols = weekColumns([ev], monKey, ZONE)
+    const col = cols.find((c) => c.key === '2026-09-09')
     expect(col?.events.length).toBe(1)
-    expect(cols[0].date.getDay()).toBe(1)
+    expect(cols[0].key).toBe('2026-09-07')
+  })
+
+  it('a Shanghai-morning instant lands on the SHANGHAI day column, not the Dublin one', () => {
+    // 2026-09-09T00:30:00Z = 09-09 08:30 in Shanghai, but 09-09 01:30 in Dublin
+    // (summer) — both are 09-09 here. Pick a case that differs: 23:30Z on
+    // 09-09 is 09-10 07:30 in Shanghai but 09-10 00:30 in Dublin — same day in
+    // both. Use a real divergent case: 2026-09-09T16:30Z = 09-10 00:30 in
+    // Shanghai, 09-09 17:30 in Dublin.
+    const ev: CalendarEvent = {
+      id: 9, kind: 'interview', application_id: 1, company_name: 'Acme', position: '',
+      title: '', start: '2026-09-09T16:30:00Z', timezone: 'Asia/Shanghai',
+      all_day: false, location: '', meeting_url: '', cancelled: false, done: false,
+      round_name: '', format: '',
+    }
+    const week = mondayKeyOf('2026-09-10')
+    const shCols = weekColumns([ev], week, 'Asia/Shanghai')
+    expect(shCols.find((c) => c.key === '2026-09-10')?.events.length).toBe(1)
+    const dubCols = weekColumns([ev], week, 'Europe/Dublin')
+    expect(dubCols.find((c) => c.key === '2026-09-09')?.events.length).toBe(1)
+    expect(dubCols.find((c) => c.key === '2026-09-10')?.events.length).toBe(0)
   })
 
   it('groups events into today / future buckets and surfaces overdue actions', () => {
-    // Fix "now" at a UTC instant; bucketing happens in Europe/Dublin.
-    const nowIso = '2026-09-07T10:00:00Z' // 2026-09-07 11:00 in Dublin
-    const now = new Date(nowIso)
+    // Bucketing happens in Europe/Dublin.
+    const now = new Date('2026-09-07T10:00:00Z') // 2026-09-07 11:00 in Dublin
     const todayNoon = '2026-09-07T12:00:00Z'
     const in3d = '2026-09-10T12:00:00Z'
     const in20d = '2026-09-27T12:00:00Z'
@@ -129,13 +148,11 @@ describe('calendar grid helpers', () => {
       overdue,
     ]
     const groups = agenda(evs, now, ZONE)
-    const titles = groups.map((g) => g.title)
-    // 已逾期 bucket first, then 今天 / 未来 7 天 / 之后
     expect(groups.find((g) => g.title === '已逾期')?.items.map((e) => e.id)).toEqual([4])
     expect(groups.find((g) => g.title === '今天')?.items.map((e) => e.id)).toEqual([1])
     expect(groups.find((g) => g.title === '未来 7 天')?.items.map((e) => e.id)).toEqual([2])
     expect(groups.find((g) => g.title === '之后')?.items.map((e) => e.id)).toEqual([3])
-    expect(titles[0]).toBe('已逾期')
+    expect(groups[0].title).toBe('已逾期')
   })
 })
 const baseEv: CalendarEvent = {

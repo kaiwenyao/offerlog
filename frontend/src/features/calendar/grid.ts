@@ -2,85 +2,100 @@
 // grouping events into the Mon-Sun week grid. Kept free of React so it is
 // unit-testable.
 //
-// All bucketing of event *instants* into calendar days is done in the signed-in
-// user's timezone (the same zone the server uses for week windows), so a
-// browser elsewhere cannot disagree with the server. The zone is passed in by
-// the caller (default: the browser's own zone).
+// One rule governs this file: when a zone is supplied, every calendar-day
+// decision is made in that zone (the signed-in user's timezone, the same zone
+// the server uses). Internally all day math runs on calendar-day KEYS
+// (YYYY-MM-DD strings) — pure day arithmetic with no timezone/DST involvement —
+// and real instants are converted to keys through the zone exactly once. A
+// browser elsewhere therefore can never disagree with the server's windows.
 import type { CalendarEvent } from '../../lib/types'
 import { toDayString } from '../../lib/api'
 
 export type ViewMode = 'week' | 'month' | 'agenda'
 
-const DAY_MS = 86_400_000
 export const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 
-/** Monday 00:00 local of the week containing now. */
-export function mondayOf(now: Date = new Date()): Date {
-  const d = new Date(now)
-  d.setHours(0, 0, 0, 0)
-  const offset = (d.getDay() + 6) % 7
-  d.setDate(d.getDate() - offset)
-  return d
+// ---------------------------------------------------------------------------
+// Calendar-day keys (YYYY-MM-DD) and pure day-string arithmetic
+// ---------------------------------------------------------------------------
+
+/** Day key of an instant in the given zone (browser zone when none). */
+export function dayKeyInZone(d: Date | string, zone?: string): string {
+  const iso = typeof d === 'string' ? d : d.toISOString()
+  return toDayString(iso, zone) ?? ''
 }
 
-/** First day of the local month. */
-export function monthStart(now: Date = new Date()): Date {
-  return new Date(now.getFullYear(), now.getMonth(), 1)
+/** Day key of “now” in the given zone. */
+export function todayKeyInZone(zone?: string): string {
+  return dayKeyInZone(new Date(), zone)
 }
 
-export function addDays(d: Date, n: number): Date {
-  const c = new Date(d)
-  c.setDate(c.getDate() + n)
-  return c
+/** Add n calendar days to a YYYY-MM-DD key (n may be negative). */
+export function addDaysToKey(key: string, n: number): string {
+  const [y, m, d] = key.split('-').map(Number)
+  const t = new Date(Date.UTC(y, m - 1, d + n))
+  return t.toISOString().slice(0, 10)
 }
 
-/** Serialize a Date to the RFC3339 the API expects (UTC instant). */
-export function toISO(d: Date): string {
-  return d.toISOString()
+/** The Monday key of the week containing key. */
+export function mondayKeyOf(key: string): string {
+  const [y, m, d] = key.split('-').map(Number)
+  const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7 // Mon=0
+  return addDaysToKey(key, -dow)
 }
+
+/** Key of the first day of the month containing key. */
+export function monthKeyOf(key: string): string {
+  return key.slice(0, 8) + '01'
+}
+
+// ---------------------------------------------------------------------------
+// Grid cells
+// ---------------------------------------------------------------------------
 
 export interface DayCell {
-  date: Date
+  /** Calendar-day key of the column in the active zone (YYYY-MM-DD). */
+  key: string
   isToday: boolean
   inMonth?: boolean
   events: CalendarEvent[]
 }
 
 /**
- * The calendar-day key (YYYY-MM-DD) an event belongs to, in the user's zone.
- * All-day events arrive at the user's local midnight so this is exact; point
- * events use the same zone the server-side windows use.
+ * The calendar-day key an event belongs to in the active zone. All-day events
+ * arrive at the user's local midnight so this is exact; point events use the
+ * same zone the server-side windows use.
  */
 function eventDay(e: CalendarEvent, zone?: string): string | null {
   if (!e.start) return null
-  return toDayString(e.start, zone)
+  return dayKeyInZone(e.start, zone)
 }
 
-/** Build the 7 columns of the week view starting at weekStart (Monday). */
-export function weekColumns(events: CalendarEvent[], weekStart: Date, zone?: string): DayCell[] {
+/** 7 Monday-start columns; weekStartKey is the Monday key. */
+export function weekColumns(events: CalendarEvent[], weekStartKey: string, zone?: string): DayCell[] {
+  const today = todayKeyInZone(zone)
   return WEEKDAYS.map((_, i) => {
-    const date = addDays(weekStart, i)
-    const key = dateKey(date)
+    const key = addDaysToKey(weekStartKey, i)
     const dayEvents = events.filter((e) => eventDay(e, zone) === key)
-    return { date, isToday: sameLocalDay(date, new Date()), events: dayEvents }
+    return { key, isToday: key === today, events: dayEvents }
   })
 }
 
-/** Build a month grid (leading/trailing blanks filled from adjacent weeks). */
-export function monthGrid(events: CalendarEvent[], first: Date, zone?: string): DayCell[][] {
-  const startDow = (first.getDay() + 6) % 7 // Mon=0
-  const gridStart = addDays(first, -startDow)
+/** 6-week month grid starting at the Monday on/before monthKey's 1st. */
+export function monthGrid(events: CalendarEvent[], monthKey: string, zone?: string): DayCell[][] {
+  const firstKey = monthKeyOf(monthKey)
+  const gridStartKey = mondayKeyOf(firstKey)
+  const today = todayKeyInZone(zone)
   const weeks: DayCell[][] = []
   for (let w = 0; w < 6; w++) {
     const cols: DayCell[] = []
     for (let i = 0; i < 7; i++) {
-      const date = addDays(gridStart, w * 7 + i)
-      const key = dateKey(date)
+      const key = addDaysToKey(gridStartKey, w * 7 + i)
       const dayEvents = events.filter((e) => eventDay(e, zone) === key)
       cols.push({
-        date,
-        isToday: sameLocalDay(date, new Date()),
-        inMonth: date.getMonth() === first.getMonth(),
+        key,
+        isToday: key === today,
+        inMonth: key.slice(0, 7) === monthKey.slice(0, 7),
         events: dayEvents,
       })
     }
@@ -95,13 +110,12 @@ export interface AgendaGroup {
 }
 
 /**
- * Group events into agenda buckets: 已逾期（仅 action，仍在用户本地今天之前）/
- * 今天 / 未来 7 天 / 之后。逾期待办必须渲染出来，不能收进一个永不展示的桶。
+ * Group events into agenda buckets — 已逾期 / 今天 / 未来 7 天 / 之后 — all in
+ * the active zone. 逾期待办必须渲染出来，不能收进一个永不展示的桶。
  */
 export function agenda(events: CalendarEvent[], now: Date = new Date(), zone?: string): AgendaGroup[] {
-  const todayKey = dateKey(now)
-  const soon = addDays(now, 7)
-  const soonKey = dateKey(soon)
+  const todayKey = dayKeyInZone(now, zone)
+  const soonKey = addDaysToKey(todayKey, 7)
 
   const overdue: CalendarEvent[] = []
   const today: CalendarEvent[] = []
@@ -118,34 +132,42 @@ export function agenda(events: CalendarEvent[], now: Date = new Date(), zone?: s
     else if (day < soonKey) next7.push(e)
     else later.push(e)
   }
-  const sortByDay = (a: CalendarEvent, b: CalendarEvent) =>
-    (a.start ?? '').localeCompare(b.start ?? '')
+  const sortByDay = (a: CalendarEvent, b: CalendarEvent) => (a.start ?? '').localeCompare(b.start ?? '')
   const groups: AgendaGroup[] = []
-  if (overdue.length) {
-    groups.push({ title: '已逾期', items: overdue.sort(sortByDay) })
-  }
+  if (overdue.length) groups.push({ title: '已逾期', items: overdue.sort(sortByDay) })
   if (today.length) groups.push({ title: '今天', items: today.sort(sortByDay) })
   if (next7.length) groups.push({ title: '未来 7 天', items: next7.sort(sortByDay) })
   if (later.length) groups.push({ title: '之后', items: later.sort(sortByDay) })
   return groups
 }
 
-/**
- * Fetch window for the agenda view: overdue actions can be arbitrarily old,
- * so the fetch spans [−90d, +30d] around the current week — wide enough that
- * the “已逾期” bucket is not empty for real data, and far enough forward that
- * upcoming items render too.
- */
+// ---------------------------------------------------------------------------
+// Legacy Date-based helpers (browser zone) used by callers that render actual
+// day numbers; keys remain the source of truth for bucketing.
+// ---------------------------------------------------------------------------
+
+/** Monday 00:00 local (browser zone) of the week containing now. */
+export function mondayOf(now: Date = new Date()): Date {
+  const d = new Date(now)
+  d.setHours(0, 0, 0, 0)
+  const offset = (d.getDay() + 6) % 7
+  d.setDate(d.getDate() - offset)
+  return d
+}
+
+export function addDays(d: Date, n: number): Date {
+  const c = new Date(d)
+  c.setDate(c.getDate() + n)
+  return c
+}
+
+/** Serialize a Date to the RFC3339 the API expects (UTC instant). */
+export function toISO(d: Date): string {
+  return d.toISOString()
+}
+
+/** Fetch window for the agenda view (browser-zone anchor). */
 export function agendaWindow(anchor: Date): { from: Date; to: Date } {
   const monday = mondayOf(anchor)
   return { from: addDays(monday, -90), to: addDays(monday, 30) }
-}
-
-/** YYYY-MM-DD of a Date in the browser-local calendar. */
-function dateKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-export function sameLocalDay(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
