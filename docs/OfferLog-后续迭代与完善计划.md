@@ -28,6 +28,15 @@
 >
 > 本次验证：后端 go test（含新增集成测试）全绿；前端 typecheck + 13 个单元测试 + build 通过；本地 Docker 栈（make up）实测注册→建申请→面试→逾期→提醒→日历→偏好保存闭环。
 >
+> ### 评审修复记录（二轮/三轮）
+>
+> - **议程窗口**：取数窗口改为 `[本周周一−90d, +30d)`（原误改只取 −90d..−76d 已修正），久远逾期可入“已逾期”桶。
+> - **归档/删除作用域统一**：工作清单（todos、周条面试/待办臂）一律排除已归档岗位，待办臂 join 排除软删除；移除恒 false 的 `TodoItem.Archived`；`scope_note` 如实反映每周起始日偏好。
+> - **postpone 空白日期**：视为清除截止（不再存 0001-01-01 永久逾期），transport 级回归测试。
+> - **DismissByApplication 接线**：软删除/归档/首次回复/终态转换时退休该岗位提醒；deleteAction 补清逾期提醒。
+> - **通知幂等并发**：`InsertIdempotent` 改 `ON CONFLICT DO NOTHING`，8-goroutine 真实并发测试恰好一行。
+> - **week_start 端到端**：home 周窗口按偏好起算（设置页新增控件），scope_note 同步；reminders 移除无效 weekStart。
+> - **其它**：tz.ts 接受 UTC/GMT；OpenAPI 补齐 postpone/cancel/uncancel；通知 transport 只把真实不存在映射 404；`DaysSince` 跨 DST 不再少一天；stale 幂等 key 含阈值；TodayPage todayStr 用用户时区；buildWeek 移除误导注释。
 > ### 评审修复记录（P0/P1/P2）
 >
 > **P0 · 日期字段时区语义统一**：DATE 列（`actions.due_date`、`applications.deadline`、`next_action_due_at`）在 wire 上统一为 `YYYY-MM-DD` 字符串，绝不作为时间戳序列化（新增 `internal/platform/day`）；连接池固定会话时区为 UTC；所有日期比较（home 待办/周条、reminders 逾期、calendar 窗口）统一为 `due_date::timestamp AT TIME ZONE $用户时区`（用户本地午夜），去除裸 `::timestamptz` cast 与 calendar 的双重转换。前端配套 `fmtDay/toDayString/dayToInstant` + 用户时区模块，日期选择器直接发日期字符串。测试覆盖跨时区往返、`YYYY-MM-DD` 非法输入。
