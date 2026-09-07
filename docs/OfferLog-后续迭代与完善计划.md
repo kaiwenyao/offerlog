@@ -1,8 +1,10 @@
 # OfferLog 后续迭代与完善计划
 
-更新日期：2026-09-07（本 PR 实施批次）  
+更新日期：2026-09-07（本 PR 实施批次 + 评审修复批次）  
 审核基线：本地仓库提交 `e70f0bf`  
 文档状态：部分实施；P0 与 P1 主体（§4.1/4.2/4.3、§5.1/5.3/5.5 本地闭环）已完成并有测试证据，其余阶段未实施（见 §2 状态更新与 §9 实际完成表）。本文中的目标、测试和验收项不代表已经全部完成。
+
+> 评审修复批次（合并前）：日期字段时区语义统一决策 + 通知幂等/忽略语义对齐。详见 §2 末尾「评审修复记录」。
 
 ## 1. 目标与适用范围
 
@@ -24,7 +26,17 @@
 > - P1 §5.5 面试日历：**已实施**（本地日历闭环）。`/api/v1/calendar` 区间接口 + 周/月/议程前端视图，跨岗位汇总面试（排除取消）、待办截止与岗位截止，保留原始时区。日历导出（ICS）未做。
 > - 横向：首页/设置/数据库错误空态补齐（失败展示重试而非假装空数据）；`applications` Create 返回真实 `created_at/updated_at`。
 >
-> 本次验证：后端 go test（含新增集成测试）全绿；前端 typecheck + 10 个单元测试 + build 通过；本地 Docker 栈（make up）实测注册→建申请→面试→逾期→提醒→日历→偏好保存闭环。
+> 本次验证：后端 go test（含新增集成测试）全绿；前端 typecheck + 13 个单元测试 + build 通过；本地 Docker 栈（make up）实测注册→建申请→面试→逾期→提醒→日历→偏好保存闭环。
+>
+> ### 评审修复记录（P0/P1/P2）
+>
+> **P0 · 日期字段时区语义统一**：DATE 列（`actions.due_date`、`applications.deadline`、`next_action_due_at`）在 wire 上统一为 `YYYY-MM-DD` 字符串，绝不作为时间戳序列化（新增 `internal/platform/day`）；连接池固定会话时区为 UTC；所有日期比较（home 待办/周条、reminders 逾期、calendar 窗口）统一为 `due_date::timestamp AT TIME ZONE $用户时区`（用户本地午夜），去除裸 `::timestamptz` cast 与 calendar 的双重转换。前端配套 `fmtDay/toDayString/dayToInstant` + 用户时区模块，日期选择器直接发日期字符串。测试覆盖跨时区往返、`YYYY-MM-DD` 非法输入。
+>
+> **P1 · 通知幂等与忽略语义**：每事件只提醒一次（唯一索引 `(owner, kind, app_id, key) WHERE key<>''` + INSERT 守卫），并发不重复；已读/忽略只改可见性，绝不复活同一次事件；postpone/完成/撤销会清除该 action 的逾期提醒，新到期日重新提醒（新发生）；`remind_stale_days=0`（关闭）修复为可持久回读。集成测试覆盖 dismiss 不复活、postpone 重新提醒、并发唯一、stale_days=0 HTTP 往返。
+>
+> **P1 · 前端**：月视图 fetch 窗口对齐渲染网格（含残周）；议程视图补「已逾期」桶；react-query key 带 limit 不再撞键（修复首页只显示 1 条面试）；通知页可达（侧栏入口 + Bell「查看全部」）；Bell/通知页 60s 轮询；待办完成/延期 mutation 增加错误反馈；空态加载中不闪现；首页清单与徽标同源（`summary.todo_items`）。
+>
+> **P2 · 其它**：`cancel/uncancelInterview` 先校验面试归属（非本人 404），upsert 错误不再一律 404；`UpsertScheduleLink` 修跨 owner 覆盖漏洞；迁移回填守卫改为「该申请无任何 action」避免与手动 action 重复；日历/周条按用户偏好时区分桶（服务端返回 timezone），移除 `CalendarEvent.dueDate` 死字段。
 >
 > 尚未实施（明确未完成，不虚报）：保存视图完整 CRUD 与预设、完整岗位编辑（JD 快照/自定义属性值维护）、桑基下钻与导出、简历版本分析、Offer 对比、快速收集、每周复盘、真实 SeaweedFS 演练、浏览器 E2E、手机实机验收。
 
