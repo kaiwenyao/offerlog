@@ -79,24 +79,35 @@ export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; 
 }
 
 /**
- * Build the Monday→Sunday strip around today from the server-computed
- * week_items (day index is Mon=0..Sun=6 in the user's week). Chips that fall
- * outside the current local calendar week are dropped (week boundaries can
- * differ from calendar weeks at year edges only in wording).
+ * Build the Monday→Sunday strip from the server-computed week. The week's
+ * start (summary.week.start) is the user-zone Monday 00:00 instant; each day
+ * cell's number / weekday / “is today” is derived from that instant in the
+ * user zone (via the zone-aware helpers), so a browser in another timezone
+ * shows the same seven calendar days the server counted. week_items already
+ * carry server-computed day indexes (Mon=0..Sun=6 in the user zone) and are
+ * placed as-is.
  */
 export function buildWeek(summary: Pick<HomeSummary, 'week' | 'week_items'>, now: Date = new Date()): WeekDay[] {
-  const todayStart = startOfDay(now)
-  const offsetToMonday = (now.getDay() + 6) % 7
-  const monday = todayStart - offsetToMonday * DAY_MS
+  const zone = effectiveZone()
+  const todayKey = toDayString(now.toISOString(), zone)
+  const startIso = summary.week.start
+  const startMs = startIso ? dayToInstant(toDayString(startIso, zone), zone) : null
 
   const days: WeekDay[] = WEEKDAYS.map((weekday, i) => {
-    const ts = monday + i * DAY_MS
-    return { weekday, dayNum: new Date(ts).getDate(), isToday: ts === todayStart, items: [] }
+    // Monday 00:00 user-local + i calendar days.
+    let key: string | null = null
+    if (startMs != null) {
+      const ts = addDaysUtc(startMs, i, zone)
+      key = toDayString(new Date(ts).toISOString(), zone)
+    }
+    return {
+      weekday,
+      dayNum: key ? Number(key.slice(8, 10)) : 0,
+      isToday: key != null && key === todayKey,
+      items: [],
+    }
   })
 
-  // week_items carry a server-computed day index (Mon=0..Sun=6) in the user's
-  // timezone — the client must not reinterpret them against its own calendar,
-  // so we only range-check the index and place the chip as-is.
   const items = summary.week_items ?? []
   for (const it of items) {
     const day = it.day
@@ -104,6 +115,18 @@ export function buildWeek(summary: Pick<HomeSummary, 'week' | 'week_items'>, now
     days[day].items.push({ kind: it.kind, who: it.who, tone: it.tone })
   }
   return days
+}
+
+/** Add n calendar days to a user-zone midnight instant (DST-safe). */
+function addDaysUtc(ms: number, n: number, zone?: string): number {
+  // Work on the day key, then resolve back to a user-zone midnight.
+  const startKey = toDayString(new Date(ms).toISOString(), zone)
+  if (!startKey) return ms + n * DAY_MS
+  const [y, m, d] = startKey.split('-').map(Number)
+  const t = new Date(Date.UTC(y, m - 1, d + n))
+  const key = t.toISOString().slice(0, 10)
+  const inst = dayToInstant(key, zone)
+  return inst ?? ms + n * DAY_MS
 }
 
 export interface Kpis {

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, fmtBytes, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
+import { effectiveZone } from '../../lib/tz'
 import type { ActionItem, AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
 import { NEXT_STEP_SUGGESTION, STATUSES, statusMeta } from '../../lib/status'
 import { Button, Card, Eyebrow, LinkButton, PanelTitle, Select } from '../../ds'
@@ -10,10 +11,9 @@ import { ActionForm, InterviewForm, NoteForm } from './forms'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
 
-/** YYYY-MM-DD strictly before today's YYYY-MM-DD (browser-local day). */
+/** YYYY-MM-DD strictly before today's YYYY-MM-DD in the USER zone. */
 function dayBeforeToday(dayStr: string): boolean {
-  const now = new Date()
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const today = toDayString(new Date().toISOString(), effectiveZone()) ?? ''
   return dayStr < today
 }
 
@@ -151,8 +151,12 @@ export function OverviewTab({
             {openActions.map((a) => {
               const dueTs = a.due_ts ? new Date(a.due_ts).getTime() : null
               const dueDay = a.due_date ? toDayString(a.due_date) : null
-              const todayStart = new Date().setHours(0, 0, 0, 0)
-              const overdue = dueTs != null ? dueTs < todayStart : dueDay != null && dayBeforeToday(dueDay)
+              const todayKey = toDayString(new Date().toISOString(), effectiveZone()) ?? ''
+              // instant due: compare in user-zone local day; date-only due: day-key compare
+              const overdue =
+                dueTs != null
+                  ? (toDayString(a.due_ts, effectiveZone()) ?? '') < todayKey
+                  : dueDay != null && dueDay < todayKey
               const shown = dueTs != null ? fmtDateTime(a.due_ts) : dueDay ? fmtDay(a.due_date) : null
               return (
                 <div key={a.id} className="panel-row">

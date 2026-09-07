@@ -4,7 +4,7 @@ import * as echarts from 'echarts'
 import { api, fmtDate } from '../../lib/api'
 import type { ChannelRow, Metrics, SankeyData } from '../../lib/types'
 import { Button, Card, PanelTitle, Tabs } from '../../ds'
-import { Num, PageSpinner, Spinner } from '../../components/ui'
+import { ErrorText, Num, PageSpinner, Spinner } from '../../components/ui'
 
 type SankeyMode = 'current' | 'history'
 
@@ -71,7 +71,18 @@ export function AnalyticsPage() {
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {summaryQ.isLoading ? <PageSpinner /> : metrics && <MetricGrid metrics={metrics} />}
+      {summaryQ.isError ? (
+        <Card padding="18px">
+          <ErrorText>指标加载失败，请稍后重试</ErrorText>
+          <Button variant="secondary" size="sm" onClick={() => summaryQ.refetch()} style={{ marginTop: 10 }}>
+            重试
+          </Button>
+        </Card>
+      ) : summaryQ.isLoading ? (
+        <PageSpinner />
+      ) : metrics ? (
+        <MetricGrid metrics={metrics} />
+      ) : null}
 
       <SankeyPanel mode={mode} setMode={setMode} data={sankeyQ.data} loading={sankeyQ.isLoading} />
 

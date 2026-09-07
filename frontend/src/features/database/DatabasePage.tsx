@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, ApiError, fmtDate, fmtDay } from '../../lib/api'
+import { api, ApiError, fmtDate, fmtDay, toDayString } from '../../lib/api'
+import { effectiveZone } from '../../lib/tz'
 import type { AppRow, SavedView } from '../../lib/types'
 import { FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
 import { Button, Card, Input, Select, Tabs, Tag } from '../../ds'
@@ -31,10 +32,10 @@ const LAYOUT_TABS = [
 /** Table geometry from the design's 阶段推进 grid, as fixed table columns. */
 const COLS = ['236px', '118px', '116px', 'auto', '92px', '88px', '104px', '56px']
 
-/** YYYY-MM-DD strictly before today (browser-local day). today = ms of local midnight. */
-function isDayBeforeToday(dayStr: string, todayMs: number): boolean {
-  const [y, m, d] = dayStr.split('-').map(Number)
-  return new Date(y, m - 1, d).getTime() < todayMs
+/** YYYY-MM-DD strictly before today (user-zone day-key compare). */
+function isDayBeforeToday(dayStr: string): boolean {
+  const today = toDayString(new Date().toISOString(), effectiveZone()) ?? ''
+  return dayStr < today
 }
 
 export function DatabasePage() {
@@ -313,7 +314,6 @@ function TableView({
   onOpen: (id: number) => void
   onRestore: (id: number) => void
 }) {
-  const today = new Date().setHours(0, 0, 0, 0)
   const allChecked = rows.length > 0 && rows.every((r) => selected.has(r.id))
   return (
     <Card padding={0} style={{ overflow: 'auto' }}>
@@ -351,7 +351,7 @@ function TableView({
             const dueDay = a.next_action_due_at ?? a.deadline
             const overdue =
               a.next_action_due_at != null &&
-              isDayBeforeToday(a.next_action_due_at, today) &&
+              isDayBeforeToday(a.next_action_due_at) &&
               !['accepted', 'rejected', 'withdrawn', 'closed'].includes(a.status)
             return (
               <tr key={a.id} className="tbl-row" onClick={() => onOpen(a.id)}>
