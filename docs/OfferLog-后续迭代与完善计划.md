@@ -44,6 +44,16 @@
 >
 > 以上每项均带回归测试（后端 20+ 新增集成断言、前端单测同步），全绿：`go build/vet`、`go test ./internal/...`、`go test ./tests/integration/...`、前端 `tsc` + `vitest`。
 >
+> ### 评审修复记录（五轮 · P1 提醒静音 / 两处非事务写 / 前端时区渲染与输入）
+>
+> - **归档/终态后提醒永久静音（系统侧误用 dismiss）**：`softDelete/archive/transition` 调用的 `DismissByApplication` 只置 `dismissed_at` 保留行，而 `InsertIdempotent` 的幂等唯一索引只认 key 是否存在（ON CONFLICT DO NOTHING）——同 key 行在即静音，不管它是否已被系统 dismiss。于是「归档→取消归档」「rejected→重开」后 `overdue:<actionID>` / `stale:<appID>:<N>` 同 key 提醒永不重建，而 restore/unarchive/重开没有任何 re-arm；对比 interview 路径（cancel/改期/删除用 `ClearInterviewReminders` 的 DELETE）key 释放可重建，两条路径语义不一致。修法：系统侧生命周期清理改 DELETE——`DismissByApplication` 重命名为 `ClearByApplication`（`DELETE FROM notifications WHERE owner_id AND application_id`），软删除/归档/首次回复/终态转换全部改调它；restore/unarchive/非终态重开后 key 已释放，下次生成轮自然重新提醒。用户侧“忽略”仍是永久（`Dismiss` 保留行），仅系统生命周期释放 key，语义与 interview 路径对齐。回归测试：归档后行数为 0（不再是 dismissed 残留）、取消归档后同一逾期 action 重新提醒、用户 dismiss 后扫描不复活（原有断言保留）。
+> - **PUT /preferences 两段写非事务**：先写 `users` 行（`UpdateProfile`）再写 `user_preferences`（`Upsert`），中途失败留下半截状态。修法：与 2198cae 对 createInterview 的处理一致——`prefs` 仓储新增 `UpsertTx`、identity 新增 `UpdateProfileTx`（Repo 接口 + SQLUsers + Store 三层透传 `database.Querier`），`PUT /preferences` 在 `RunInTx` 内先写 users 行再写 prefs 行。回归测试：真实 identity store 在 tx 内先完成 users UPDATE 再返回注入错误，断言 users 行与 prefs 行都回滚（旧两段写会留下改过的 timezone）。
+> - **updateInterview 的面试更新 + schedule link upsert 非事务**：`:224` 与 `:249` 两次独立 Exec，create 路径已修、update 仍可能半截写入。修法：与 createInterview 同款 `RunInTx` 包住 `UpdateInterview` + `UpsertScheduleLink`（`CreateScheduleLink` 已有 tx 形态，`UpsertScheduleLink` 本就接受 Querier，改动仅在 transport 层）。
+> - **展示层按浏览器本地时区渲染**：`fmtDate/fmtDateTime` 无 timeZone 参数（`toLocaleDateString/toLocaleString` 用浏览器区）；TodayPage 即将面试角标直接 `new Date().getDate()/getMonth()`。日历落列/议程分桶/周条全走用户时区，浏览器区 ≠ 用户区时同一事件落在一列、角标/时间串却显示另一天。修法：`fmtDate/fmtDateTime` 增加可选 zone 参数并默认取 `effectiveZone()`（内部 `toLocale*` 的 `timeZone` 字段），TodayPage 角标改用 `toDayString(scheduled_at, effectiveZone())` 取用户区日号/月号。前端单测覆盖跨区渲染（同一 instant 在 Shanghai 与 Dublin 显示不同本地时间）。
+> - **InterviewForm 按浏览器时区解释 datetime-local 输入**：`new Date(scheduled).toISOString()` 按 ES 规范把无时区串解析为浏览器本地时间——Dublin 浏览器 + 上海用户输入 14:30 存成上海 21:30，错误 instant 污染「面试前一天」提醒触发日与日历分桶；且表单不传 timezone，后端按默认回填时区标签，双重误导。修法：新增 `localDateTimeToInstant`（把 `YYYY-MM-DDTHH:mm` 按指定 zone 解释为 UTC instant，同 `dayToInstant` 的 fixpoint 思路，跨 DST 用两步收敛），InterviewForm 按 `effectiveZone()` 解释输入并把该 zone 作为 `timezone` 标签随请求发送；transition 表单的 occurred_at/submitted_at 两处 datetime-local 同源修复。前端单测覆盖上海 14:30→06:30Z、Dublin 夏令时、跨 DST 边界与非法输入。
+>
+> 验证：`go build/vet`、`go test ./internal/...`、`go test ./tests/integration/...`、前端 `tsc` + `vitest`（23 个单测）全绿；顺带把 `TestCalendarExcludesArchivedAppsAcrossKinds` 的 `CURRENT_DATE` 播种改为显式未来日期，消除 UTC 午夜附近运行的偶发失败。
+>
 > ### 评审修复记录（二轮/三轮）
 >
 > - **议程窗口**：取数窗口改为 `[本周周一−90d, +30d)`（原误改只取 −90d..−76d 已修正），久远逾期可入“已逾期”桶。

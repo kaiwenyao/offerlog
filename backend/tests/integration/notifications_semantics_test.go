@@ -208,9 +208,11 @@ func TestPostponeBlankDueDateClearsNotYearOne(t *testing.T) {
 	_ = app
 }
 
-// Regression: archiving an application must retire its open reminders (no dead
-// links in the notification list), exercising the transport wiring path.
-func TestDismissByApplicationRetiresRemindersOnArchive(t *testing.T) {
+// Regression (round 2/5): archiving an application must retire its open
+// reminders (no dead links in the notification list). Retirement is a DELETE
+// (ClearByApplication), not a dismiss — see TestUnarchiveReArmsReminder for the
+// re-arm contract.
+func TestArchiveClearsRemindersByApplication(t *testing.T) {
 	db, svc, _, owner := setup(t)
 	ctx := context.Background()
 	app := mustCreate(t, svc, owner, "ArcN", "Role")
@@ -227,11 +229,11 @@ func TestDismissByApplicationRetiresRemindersOnArchive(t *testing.T) {
 	if len(open) == 0 {
 		t.Fatal("expected an overdue reminder before archive")
 	}
-	// archive via service then dismiss by application (transport calls this)
+	// archive via service then clear by application (transport calls this)
 	if err := svc.Archive(ctx, owner, app.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := nots.DismissByApplication(ctx, owner, app.ID); err != nil {
+	if err := nots.ClearByApplication(ctx, owner, app.ID); err != nil {
 		t.Fatal(err)
 	}
 	open2, _ := nots.List(ctx, owner, true, 50)
@@ -240,4 +242,86 @@ func TestDismissByApplicationRetiresRemindersOnArchive(t *testing.T) {
 			t.Fatalf("archived application still has an open reminder: %+v", n)
 		}
 	}
+}
+
+// Regression (round 5, P1): dismiss-by-application (soft delete / archive /
+// terminal) must DELETE the notification rows, not merely mark dismissed_at.
+// A dismiss leaves the row occupying its idempotency key, so after
+// unarchive/restore/terminal-reopen the generator would never re-create the
+// reminder (mute forever). The system lifecycle must release the key, while a
+// genuine user dismiss in the notification center stays permanent (covered by
+// TestDismissedReminderDoesNotResurrect).
+func TestUnarchiveReArmsReminder(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	pr := prefs.New(db)
+	if err := pr.Upsert(ctx, &prefs.Preferences{
+		UserID: owner, Timezone: "Europe/Dublin", WeekStart: 1,
+		RemindOverdue: true, RemindInterview: false, RemindStaleDays: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := mustCreate(t, svc, owner, "ReArm", "Role")
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进', CURRENT_DATE - 1, NULL, FALSE, 'medium','manual')`, app.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	gen := reminders.New(db)
+	nots := notifications.New(db)
+
+	// Overdue reminder exists.
+	if _, err := gen.Run(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	open, _ := nots.List(ctx, owner, true, 50)
+	if len(open) != 1 {
+		t.Fatalf("expected 1 open overdue before archive, got %d", len(open))
+	}
+
+	// Archive + system retirement must REMOVE the row (transport now calls
+	// ClearByApplication).
+	if err := svc.Archive(ctx, owner, app.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := nots.ClearByApplication(ctx, owner, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	var afterArchive int
+	_ = db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='overdue'`, owner).Scan(&afterArchive)
+	if afterArchive != 0 {
+		t.Fatalf("archive must delete notifications (a dismissal would mute forever); rows=%d", afterArchive)
+	}
+
+	// Unarchive → the same overdue action must notify again (fresh row).
+	if err := svc.Archive(ctx, owner, app.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gen.Run(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	open2, _ := nots.List(ctx, owner, true, 50)
+	if len(open2) != 1 {
+		t.Fatalf("after unarchive the overdue reminder must re-arm (got %d open)", len(open2))
+	}
+
+	// The mirror image of the user flow: an explicit user dismiss of that
+	// re-armed reminder must NOT resurrect on a later scan — only system
+	// lifecycle changes release the key, dismissals stay permanent.
+	if err := nots.Dismiss(ctx, owner, open2[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gen.Run(ctx, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := nots.List(ctx, owner, false, 100)
+	dismissed := 0
+	for _, n := range all {
+		if n.Kind == "overdue" {
+			dismissed++
+		}
+	}
+	if dismissed != 1 {
+		t.Fatalf("user-dismissed reminder resurrected after a fresh scan: %d overdue rows", dismissed)
+	}
+	_ = svc
 }

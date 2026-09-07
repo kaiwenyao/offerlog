@@ -128,12 +128,20 @@ func (r *Repo) Dismiss(ctx context.Context, ownerID, id int64) error {
 	return nil
 }
 
-// DismissByApplication dismisses every open notification referencing an
-// application (used when a record is deleted, archived, or its status ends so
-// no stale reminder survives).
-func (r *Repo) DismissByApplication(ctx context.Context, ownerID, appID int64) error {
-	_, err := r.db.Pool().Exec(ctx, `UPDATE notifications SET dismissed_at=now()
-		WHERE owner_id=$1 AND application_id=$2 AND dismissed_at IS NULL`, ownerID, appID)
+// ClearByApplication deletes every notification referencing an application —
+// read or dismissed, open or not. Used when a record is soft-deleted,
+// archived, or leaves the reminder-eligible set (terminal status / first
+// response). System-side retirement must DELETE, not merely dismiss: an
+// UPDATE-only dismiss leaves the row occupying its idempotency key
+// (overdue:<action> / stale:<app>:<N>), so restore / unarchive / terminal-
+// reopen could never re-arm that occurrence. Deleting frees the key and the
+// next generator pass re-notifies whatever is still applicable — the same
+// lifecycle as ClearInterviewReminders (cancel/reschedule) and ClearOccurrence
+// (postpone/done). User dismissals in the notification center stay permanent
+// (Dismiss keeps the row); only system lifecycle changes release the key.
+func (r *Repo) ClearByApplication(ctx context.Context, ownerID, appID int64) error {
+	_, err := r.db.Pool().Exec(ctx, `DELETE FROM notifications
+		WHERE owner_id=$1 AND application_id=$2`, ownerID, appID)
 	return err
 }
 

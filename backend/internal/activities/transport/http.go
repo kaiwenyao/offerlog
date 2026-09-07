@@ -221,7 +221,28 @@ func (h *Handler) updateInterview(c *gin.Context) {
 		ScheduledAt: req.ScheduledAt, Timezone: req.Timezone, DurationMinutes: req.DurationMinutes,
 		Result: req.Result, Feedback: req.Feedback, Notes: req.Notes,
 	}
-	if err := h.repo.UpdateInterview(c.Request.Context(), h.repo.Pool(), it); err != nil {
+	// Interview update + its scheduling metadata are written in ONE transaction
+	// (same shape as createInterview) so a failure mid-way cannot leave the
+	// interview updated without its (optional) schedule link, or a link
+	// pointing at a stale interview.
+	var sch *actrepo.ScheduleLink
+	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.UpdateInterview(ctx, tx, it); err != nil {
+			return err
+		}
+		if req.Schedule != nil {
+			sch = &actrepo.ScheduleLink{
+				InterviewID: iid, OwnerID: user.ID, MeetingURL: req.Schedule.MeetingURL,
+				Location: req.Schedule.Location, ContactName: req.Schedule.ContactName,
+				ContactEmail: req.Schedule.ContactEmail, Notes: req.Schedule.Notes,
+				Cancelled: req.Schedule.Cancelled, CancelledReason: req.Schedule.CancelledReason,
+				OriginalTimezone: req.Schedule.OriginalTimezone,
+			}
+			return h.repo.UpsertScheduleLink(ctx, tx, sch)
+		}
+		return nil
+	})
+	if err != nil {
 		writeUpsertErr(c, err)
 		return
 	}
@@ -235,20 +256,6 @@ func (h *Handler) updateInterview(c *gin.Context) {
 		if err := h.nots.ClearInterviewReminders(c.Request.Context(), user.ID, iid); err != nil {
 			observability.L(c.Request.Context()).Warn("clear interview reminders on reschedule",
 				"interview_id", iid, "error", err)
-		}
-	}
-	var sch *actrepo.ScheduleLink
-	if req.Schedule != nil {
-		sch = &actrepo.ScheduleLink{
-			InterviewID: iid, OwnerID: user.ID, MeetingURL: req.Schedule.MeetingURL,
-			Location: req.Schedule.Location, ContactName: req.Schedule.ContactName,
-			ContactEmail: req.Schedule.ContactEmail, Notes: req.Schedule.Notes,
-			Cancelled: req.Schedule.Cancelled, CancelledReason: req.Schedule.CancelledReason,
-			OriginalTimezone: req.Schedule.OriginalTimezone,
-		}
-		if err := h.repo.UpsertScheduleLink(c.Request.Context(), h.repo.Pool(), sch); err != nil {
-			httpx.WriteErr(c, err)
-			return
 		}
 	}
 	c.JSON(http.StatusOK, interviewToDTO(it, sch))

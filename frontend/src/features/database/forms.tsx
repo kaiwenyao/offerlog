@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { api, ApiError } from '../../lib/api'
+import { api, ApiError, localDateTimeToInstant } from '../../lib/api'
+import { effectiveZone } from '../../lib/tz'
 import type { AppRow } from '../../lib/types'
 import { NEXT_STEP_SUGGESTION } from '../../lib/status'
 import { Button, Input, Select, Textarea } from '../../ds'
@@ -29,12 +30,36 @@ export function InterviewForm({
   const [err, setErr] = useState('')
 
   const mut = useMutation({
-    mutationFn: () =>
-      api.post(`/api/v1/applications/${appId}/interviews`, {
+    mutationFn: () => {
+      // The datetime-local value is a NAIVE wall-clock string with no zone.
+      // Interpret it in the USER's configured zone (effectiveZone), not the
+      // browser's: a Dublin browser + Shanghai user typing 14:30 must store
+      // 14:30 in Shanghai — new Date(...).toISOString() would parse it as
+      // Dublin 14:30 = Shanghai 21:30, polluting the "明天有面试" reminder day
+      // and calendar buckets. The zone label is sent so the stored interview
+      // keeps a truthful timezone tag instead of the backend default.
+      let scheduledAt: string | null = null
+      let zoneLabel = ''
+      if (scheduled) {
+        // The label sent must match the zone the wall-clock string was
+        // interpreted in: the user's configured zone when set, else the
+        // browser zone (the parse fallback).
+        const zone = effectiveZone() ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+        const ms = localDateTimeToInstant(scheduled, zone)
+        if (ms == null) {
+          setErr('时间格式不正确')
+          return Promise.reject(new ApiError('bad_scheduled_at', '时间格式不正确', 400))
+        }
+        scheduledAt = new Date(ms).toISOString()
+        zoneLabel = zone
+      }
+      return api.post(`/api/v1/applications/${appId}/interviews`, {
         round_name: roundName,
         format,
-        scheduled_at: scheduled ? new Date(scheduled).toISOString() : null,
-      }),
+        scheduled_at: scheduledAt,
+        timezone: zoneLabel,
+      })
+    },
     onSuccess: onDone,
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
   })

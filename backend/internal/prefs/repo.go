@@ -35,9 +35,11 @@ func New(db *database.DB) *Repo { return &Repo{db: db} }
 
 func (r *Repo) Pool() *database.DB { return r.db }
 
-// Upsert writes the preference row, defaulting on first insert.
-func (r *Repo) Upsert(ctx context.Context, p *Preferences) error {
-	_, err := r.db.Pool().Exec(ctx, `INSERT INTO user_preferences
+// UpsertTx writes the preference row inside an existing transaction (the same
+// shape as Upsert but on a Querier so PUT /preferences can persist the users
+// profile row and the preferences row atomically).
+func (r *Repo) UpsertTx(ctx context.Context, q database.Querier, p *Preferences) error {
+	_, err := q.Exec(ctx, `INSERT INTO user_preferences
 		(user_id, display_name, timezone, week_start, remind_overdue, remind_interview,
 		 remind_stale_days, remind_weekly, locale)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -54,6 +56,11 @@ func (r *Repo) Upsert(ctx context.Context, p *Preferences) error {
 		p.UserID, p.DisplayName, p.Timezone, p.WeekStart, p.RemindOverdue, p.RemindInterview,
 		p.RemindStaleDays, p.RemindWeekly, p.Locale)
 	return err
+}
+
+// Upsert writes the preference row, defaulting on first insert.
+func (r *Repo) Upsert(ctx context.Context, p *Preferences) error {
+	return r.UpsertTx(ctx, r.db, p)
 }
 
 // Get returns the preference row for a user; when the row is absent it

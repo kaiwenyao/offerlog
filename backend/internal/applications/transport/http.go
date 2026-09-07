@@ -34,18 +34,19 @@ func (h *Handler) WithNotifications(n *notifrepo.Repo) *Handler {
 	return h
 }
 
-// dismissAppReminders retires every open notification that references the
-// application (deleted/archived objects must not keep producing stale alerts).
-// dismissAppReminders retires every open notification that references the
-// application (deleted/archived objects must not keep producing stale alerts).
-// Best-effort: failures are logged and swallowed so they never fail the
+// clearAppReminders deletes every notification that references the application
+// (soft-deleted/archived/ended records must not keep producing stale alerts).
+// System-side retirement is a DELETE, not a dismiss: the row's idempotency key
+// must be released so restore / unarchive / terminal-reopen re-arms the next
+// reminder (a dismiss-only row would mute overdue:<action>/stale:<app>:<N>
+// forever). Failures are logged and swallowed so they never fail the
 // already-successful primary operation or write a second HTTP response.
-func (h *Handler) dismissAppReminders(c *gin.Context, ownerID, appID int64) {
+func (h *Handler) clearAppReminders(c *gin.Context, ownerID, appID int64) {
 	if h.nots == nil {
 		return
 	}
-	if err := h.nots.DismissByApplication(c.Request.Context(), ownerID, appID); err != nil {
-		observability.L(c.Request.Context()).Warn("dismiss app reminders",
+	if err := h.nots.ClearByApplication(c.Request.Context(), ownerID, appID); err != nil {
+		observability.L(c.Request.Context()).Warn("clear app reminders",
 			"application_id", appID, "error", err)
 	}
 }
@@ -346,7 +347,7 @@ func (h *Handler) softDelete(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
-	h.dismissAppReminders(c, user.ID, id)
+	h.clearAppReminders(c, user.ID, id)
 	httpx.Ok(c)
 }
 
@@ -357,6 +358,10 @@ func (h *Handler) restore(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
+	// Restoring re-arms reminders: the lifecycle DELETE (soft delete) freed the
+	// idempotency keys, so the next generator pass recreates whatever is again
+	// applicable (e.g. an action still overdue). Nothing to clear here — the
+	// removal already happened when the record went into the trash.
 	httpx.Ok(c)
 }
 
@@ -367,7 +372,7 @@ func (h *Handler) archive(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
-	h.dismissAppReminders(c, user.ID, id)
+	h.clearAppReminders(c, user.ID, id)
 	httpx.Ok(c)
 }
 
@@ -378,6 +383,11 @@ func (h *Handler) unarchive(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
+	// Un-archiving restores the application to the reminder-eligible set. The
+	// archive-time DELETE freed the idempotency keys, so the next generator
+	// pass re-arms reminders for whatever is again applicable (overdue actions
+	// / stale applications / upcoming interviews) instead of staying muted
+	// forever under a dismissed row that still occupies its key.
 	httpx.Ok(c)
 }
 
@@ -415,11 +425,13 @@ func (h *Handler) transition(c *gin.Context) {
 		return
 	}
 	// A first response (stale-follow-up no longer applies) or an ended status
-	// retires the application's open reminders; the UI then won't show alerts
-	// for an application that has moved on. Un-read/dismiss rows are kept for
-	// history but hidden (DismissByApplication marks dismissed_at).
+	// retires the application's reminders; the UI then won't show alerts for an
+	// application that has moved on. System retirement DELETEs the rows (not a
+	// dismiss) so the idempotency keys are freed: if the record is later
+	// reopened to a non-terminal status or the first response is cleared, the
+	// next generator pass re-arms whatever is again applicable.
 	if req.FirstResponseAt != nil || appdomain.IsTerminal(req.ToStatus) {
-		h.dismissAppReminders(c, user.ID, id)
+		h.clearAppReminders(c, user.ID, id)
 	}
 	c.JSON(http.StatusOK, toDTO(row))
 }

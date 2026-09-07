@@ -3,7 +3,16 @@
 // Playwright e2e suite.
 import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
-import { fmtBytes, fmtDate, daysBetween, dayToInstant, toDayString, fmtDay } from '../src/lib/api'
+import {
+  fmtBytes,
+  fmtDate,
+  fmtDateTime,
+  daysBetween,
+  dayToInstant,
+  localDateTimeToInstant,
+  toDayString,
+  fmtDay,
+} from '../src/lib/api'
 import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
 import type { CalendarEvent } from '../src/lib/types'
@@ -38,7 +47,8 @@ describe('formatting helpers', () => {
   })
   it('formats dates with dashes for empty input', () => {
     expect(fmtDate(null)).toBe('—')
-    expect(fmtDate('2026-09-05T10:00:00Z')).toBe('2026/09/05')
+    // Explicit zone keeps the expectation machine-timezone-independent.
+    expect(fmtDate('2026-09-05T10:00:00Z', 'UTC')).toBe('2026/09/05')
   })
   it('computes waiting days (plan: 等待天数 by backend/client)', () => {
     const past = new Date(Date.now() - 3 * 86400000).toISOString()
@@ -215,5 +225,58 @@ describe('calendar agenda window', () => {
     expect(toKey).toBe('2026-10-07') // +30d
     // an action overdue 10 days (2026-08-30) falls inside [fromKey, toKey)
     expect('2026-08-30' >= fromKey && '2026-08-30' < toKey).toBe(true)
+  })
+})
+
+describe('datetime-local wall-clock interpretation (§P1 round 5)', () => {
+  it('interprets a naive datetime-local value in the target zone, not the browser zone', () => {
+    // Shanghai user types 14:30 on 2026-09-10 (naive, no zone suffix).
+    // Correct: 14:30 Asia/Shanghai = 06:30Z. A browser-local parse would
+    // instead treat it as the (UTC-running) test browser's 14:30 = 14:30Z.
+    const ms = localDateTimeToInstant('2026-09-10T14:30', 'Asia/Shanghai')!
+    expect(new Date(ms).toISOString()).toBe('2026-09-10T06:30:00.000Z')
+  })
+  it('Dublin summer: 14:30 local = 13:30Z (UTC+1)', () => {
+    const ms = localDateTimeToInstant('2026-07-10T14:30', 'Europe/Dublin')!
+    expect(new Date(ms).toISOString()).toBe('2026-07-10T13:30:00.000Z')
+  })
+  it('cross-DST-boundary times still resolve to the requested wall clock', () => {
+    // 2026-03-29 is the EU spring-forward day (Europe/Dublin goes UTC+0 → +1
+    // at 01:00 UTC). A wall time after the transition must map with the new
+    // offset: 02:30 local = 01:30Z.
+    const after = localDateTimeToInstant('2026-03-29T02:30', 'Europe/Dublin')!
+    expect(new Date(after).toISOString()).toBe('2026-03-29T01:30:00.000Z')
+  })
+  it('falls back to browser-local interpretation when no zone is given', () => {
+    // No zone → legacy behavior: the naive value is the BROWSER's local time.
+    // Compare against the same local constructor rather than assuming UTC.
+    const ms = localDateTimeToInstant('2026-09-10T08:15')!
+    const [y, mo, d] = [2026, 9, 10]
+    expect(ms).toBe(new Date(y, mo - 1, d, 8, 15).getTime())
+  })
+  it('rejects malformed values', () => {
+    expect(localDateTimeToInstant(null)).toBeNull()
+    expect(localDateTimeToInstant('not-a-date')).toBeNull()
+    expect(localDateTimeToInstant('2026-09-10')).toBeNull() // missing time part
+  })
+})
+
+describe('fmtDate/fmtDateTime render in the given zone (§P1 round 5)', () => {
+  it('fmtDateTime shows the user-zone wall time (Shanghai), not browser-local', () => {
+    // 2026-09-10T06:30Z = 14:30 Shanghai, 07:30 Dublin summer.
+    const sh = fmtDateTime('2026-09-10T06:30:00Z', 'Asia/Shanghai')
+    const dub = fmtDateTime('2026-09-10T06:30:00Z', 'Europe/Dublin')
+    expect(sh).toContain('09/10')
+    expect(dub).toContain('09/10')
+    // locale digits differ by zone: Shanghai 14:30, Dublin 07:30.
+    expect(sh).toMatch(/14:30/)
+    expect(dub).toMatch(/07:30/)
+  })
+  it('fmtDate renders the calendar day in the given zone', () => {
+    // 2026-09-09T23:00Z is already 09-10 in Shanghai but still 09-09 in LA.
+    const sh = fmtDate('2026-09-09T23:00:00Z', 'Asia/Shanghai')
+    const la = fmtDate('2026-09-09T23:00:00Z', 'America/Los_Angeles')
+    expect(sh).toContain('2026/09/10')
+    expect(la).toContain('2026/09/09')
   })
 })

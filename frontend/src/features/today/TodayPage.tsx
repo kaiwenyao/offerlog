@@ -329,7 +329,15 @@ function UpcomingInterviews({
         </div>
       ) : (
         upcoming.map((i) => {
-          const at = new Date(i.scheduled_at)
+          // The date badge must show the USER-zone calendar day: the home feed
+          // and calendar column bucket events in the user's configured zone, so
+          // rendering the day with the browser's local getters would disagree
+          // when the browser zone differs (e.g. a Dublin browser + Shanghai
+          // user — an interview that is tomorrow in the user's zone would show
+          // the wrong day on the badge). Derive it from the zone day key.
+          const dayKey = toDayString(i.scheduled_at, effectiveZone()) ?? ''
+          const dayNum = dayKey.slice(8, 10) || ''
+          const monthNum = dayKey.slice(5, 7) || ''
           return (
             <button key={i.id} className="panel-row" onClick={() => onOpen(i.application_id)}>
               <span
@@ -344,9 +352,9 @@ function UpcomingInterviews({
                 }}
               >
                 <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>
-                  {String(at.getDate()).padStart(2, '0')}
+                  {String(Number(dayNum)).padStart(2, '0')}
                 </span>
-                <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{at.getMonth() + 1} 月</span>
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{Number(monthNum)} 月</span>
               </span>
               <span className="grow">
                 <span className="ellipsis" style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>

@@ -45,6 +45,7 @@ type Repo interface {
 	FindUserByID(ctx context.Context, id int64) (*UserRow, error)
 	CreateUser(ctx context.Context, u *UserRow) error
 	UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*UserRow, error)
+	UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*UserRow, error)
 }
 
 type Store struct {
@@ -273,6 +274,14 @@ func (s *Store) ValidateToken(ctx context.Context, token string) (*UserRow, erro
 // refreshed row.
 func (s *Store) UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*UserRow, error) {
 	return s.users.UpdateProfile(ctx, id, displayName, timezone)
+}
+
+// UpdateProfileTx persists the profile fields on the users row inside an
+// existing transaction (see Repo.UpdateProfileTx). Used by PUT /preferences so
+// the users-row write and the preferences-row write commit or roll back
+// together.
+func (s *Store) UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*UserRow, error) {
+	return s.users.UpdateProfileTx(ctx, q, id, displayName, timezone)
 }
 
 func (s *Store) Logout(ctx context.Context, token string) error {

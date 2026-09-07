@@ -51,8 +51,15 @@ func (r *SQLUsers) CreateUser(ctx context.Context, u *auth.UserRow) error {
 // timezone) on the users row so /auth/me and the session stay consistent. It
 // returns the updated row.
 func (r *SQLUsers) UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*auth.UserRow, error) {
+	return r.UpdateProfileTx(ctx, r.db, id, displayName, timezone)
+}
+
+// UpdateProfileTx is the transactional variant of UpdateProfile: it runs on the
+// given Querier (a pgx.Tx) so callers such as PUT /preferences can persist the
+// users profile row and the preferences row atomically.
+func (r *SQLUsers) UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*auth.UserRow, error) {
 	var u auth.UserRow
-	err := r.db.Pool().QueryRow(ctx, `UPDATE users SET display_name=$2, timezone=$3, updated_at=now()
+	err := q.QueryRow(ctx, `UPDATE users SET display_name=$2, timezone=$3, updated_at=now()
 		WHERE id=$1 RETURNING id, email, password_hash, display_name, timezone, locale, is_admin`,
 		id, displayName, timezone).
 		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Timezone, &u.Locale, &u.IsAdmin)

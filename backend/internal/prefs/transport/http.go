@@ -5,17 +5,21 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	authservice "offerlog/backend/internal/identity/service"
+	"offerlog/backend/internal/platform/database"
 	"offerlog/backend/internal/platform/httpx"
 	"offerlog/backend/internal/prefs"
 )
 
 // ProfileWriter persists the account display name/timezone on the users row
 // (implemented by the identity service); the settings page saves profile +
-// reminder prefs in one PUT.
+// reminder prefs in one PUT. Both writes must commit together, so the seam
+// exposes a transaction-scoped variant.
 type ProfileWriter interface {
 	UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*authservice.UserRow, error)
+	UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*authservice.UserRow, error)
 }
 
 type Handler struct {
@@ -169,18 +173,27 @@ func (h *Handler) put(c *gin.Context) {
 		p.RemindWeekly = *req.RemindWeekly
 	}
 
-	// Persist the profile fields on the users row too (single source for the
-	// session/sidebar display). The reminder preferences always go to prefs.
+	// Persist the profile fields on the users row AND the reminder preferences
+	// on the preferences row in ONE transaction: a mid-way failure would
+	// otherwise leave half of the settings saved (e.g. a new timezone on the
+	// users row without the preferences row, or vice versa). When no profile
+	// writer is wired (prefs-only surface) only the preferences row is written.
 	if h.profiles != nil {
-		if _, err := h.profiles.UpdateProfile(c.Request.Context(), user.ID, p.DisplayName, p.Timezone); err != nil {
+		err := h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := h.profiles.UpdateProfileTx(ctx, tx, user.ID, p.DisplayName, p.Timezone); err != nil {
+				return err
+			}
+			return h.repo.UpsertTx(ctx, tx, p)
+		})
+		if err != nil {
 			httpx.WriteErr(c, err)
 			return
 		}
-	}
-
-	if err := h.repo.Upsert(c.Request.Context(), p); err != nil {
-		httpx.WriteErr(c, err)
-		return
+	} else {
+		if err := h.repo.Upsert(c.Request.Context(), p); err != nil {
+			httpx.WriteErr(c, err)
+			return
+		}
 	}
 	// Keep the session's own user snapshot in step so /auth/me and the sidebar
 	// reflect the saved profile immediately.

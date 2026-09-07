@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { api, ApiError } from '../../lib/api'
+import { api, ApiError, localDateTimeToInstant } from '../../lib/api'
+import { effectiveZone } from '../../lib/tz'
 import { STATUSES } from '../../lib/status'
 import { Button, Input, Select } from '../../ds'
 import { ErrorText, Modal, Spinner, StatusChip } from '../../components/ui'
@@ -47,16 +48,26 @@ export function TransitionModal({
   const [err, setErr] = useState('')
 
   const mut = useMutation({
-    mutationFn: () =>
-      api.post(`/api/v1/applications/${appId}/transitions`, {
+    mutationFn: () => {
+      // occurred_at / submitted_at come from datetime-local inputs: naive
+      // wall-clock strings with no zone. Interpret them in the USER's zone
+      // (same rule as the interview scheduler) so a Dublin browser + Shanghai
+      // user entering 09:00 does not store 09:00 Dublin = 17:00 Shanghai.
+      const zone = effectiveZone() ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+      const toInstant = (v: string) => {
+        const ms = localDateTimeToInstant(v, zone)
+        return ms == null ? null : new Date(ms).toISOString()
+      }
+      return api.post(`/api/v1/applications/${appId}/transitions`, {
         to_status: to,
         version,
-        occurred_at: occurredAt ? new Date(occurredAt).toISOString() : null,
+        occurred_at: occurredAt ? toInstant(occurredAt) : null,
         reason,
         note,
-        submitted_at: submittedAt ? new Date(submittedAt).toISOString() : null,
+        submitted_at: submittedAt ? toInstant(submittedAt) : null,
         idempotency_key: `ui-${Date.now()}`,
-      }),
+      })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['app', appId] })
       qc.invalidateQueries({ queryKey: ['events', appId] })

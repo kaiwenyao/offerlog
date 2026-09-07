@@ -140,14 +140,22 @@ func TestCalendarExcludesArchivedAppsAcrossKinds(t *testing.T) {
 	db, svc, _, owner := setup(t)
 	ctx := context.Background()
 	repo := calendar.New(db)
-	now := time.Now()
+	loc, _ := time.LoadLocation("Europe/Dublin")
+	now := time.Now().In(loc)
+	// Seed events on explicit FUTURE Dublin calendar days (SQL CURRENT_DATE is
+	// the UTC-pinned session date and can equal the current Dublin day near UTC
+	// midnight, which would land the all-day event before the [now, …) window
+	// and make the test flaky). Day-of-month arithmetic on the DATE column is
+	// timezone-independent once the value is stored.
+	tomorrow := time.Now().In(loc).AddDate(0, 0, 1).Format("2006-01-02")
+	afterTomorrow := time.Now().In(loc).AddDate(0, 0, 2).Format("2006-01-02")
 	app := mustCreate(t, svc, owner, "ArchCal", "Role")
 	// deadline + action + interview all within the window
-	if _, err := db.Pool().Exec(ctx, `UPDATE applications SET deadline = CURRENT_DATE + 2 WHERE id=$1`, app.ID); err != nil {
+	if _, err := db.Pool().Exec(ctx, `UPDATE applications SET deadline = $2::date WHERE id=$1`, app.ID, afterTomorrow); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Pool().Exec(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, priority, source)
-		VALUES($1,$2,'待办', CURRENT_DATE + 1, 'high','manual')`, app.ID, owner); err != nil {
+		VALUES($1,$2,'待办', $3::date, 'high','manual')`, app.ID, owner, tomorrow); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Pool().Exec(ctx, `INSERT INTO interviews(application_id, owner_id, round_name, format, scheduled_at, timezone)
