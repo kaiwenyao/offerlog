@@ -16,11 +16,31 @@ package home
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"offerlog/backend/internal/platform/database"
 	"offerlog/backend/internal/platform/timeutil"
 )
+
+func weekdayCN(d time.Weekday) string {
+	switch d {
+	case time.Sunday:
+		return "周日"
+	case time.Monday:
+		return "周一"
+	case time.Tuesday:
+		return "周二"
+	case time.Wednesday:
+		return "周三"
+	case time.Thursday:
+		return "周四"
+	case time.Friday:
+		return "周五"
+	default:
+		return "周六"
+	}
+}
 
 type Repo struct{ db *database.DB }
 
@@ -141,7 +161,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		WeekItems: []WeekItem{}, Upcoming: []UpcomingInterview{}, Recent: []RecentApplication{},
 		TodoItems: []TodoItem{},
 	}
-	s.ScopeNote = "工作清单与周统计排除已归档；归档记录计入总数与归档数。周 = 周一开始的半开区间（用户时区）。本周面试 = 本周安排的非取消轮次；已完成轮次单独标注。"
+	s.ScopeNote = fmt.Sprintf("工作清单与周统计排除已归档；归档记录计入总数与归档数。周 = %s开始的半开区间（用户时区，按每周起始日偏好）。本周面试 = 本周安排的非取消轮次；已完成轮次单独标注。", weekdayCN(weekStartDay))
 
 	q := r.db.Pool()
 
