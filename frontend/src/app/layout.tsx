@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api, logout } from '../lib/api'
-import type { AppRow, FileItem, Me } from '../lib/types'
+import type { FileItem, HomeSummary, Me } from '../lib/types'
 import { Icon, SealMark, type IconName } from '../components/Icon'
 import { Button, Eyebrow } from '../ds'
 import { Dot } from '../components/ui'
@@ -51,9 +51,12 @@ function pageMeta(pathname: string) {
 
 /** Counts shown beside the nav entries — cheap queries the pages already cache. */
 function useSidebarCounts() {
-  const apps = useQuery({
-    queryKey: ['apps', 'list', { page: 1, size: 200 }],
-    queryFn: () => api.get<{ items: AppRow[]; total?: number }>('/api/v1/applications?page=1&page_size=200'),
+  // Server-side aggregates (full data set) — the badge next to 今日待办 is the
+  // unified open-action count, and the 岗位 badge is the real total; neither is
+  // derived from a 200-row page.
+  const home = useQuery({
+    queryKey: ['home', 'summary'],
+    queryFn: () => api.get<HomeSummary>('/api/v1/home/summary?limit=1'),
     staleTime: 30_000,
   })
   const files = useQuery({
@@ -61,12 +64,10 @@ function useSidebarCounts() {
     queryFn: () => api.get<{ items: FileItem[] }>('/api/v1/files'),
     staleTime: 30_000,
   })
-  const rows = apps.data?.items ?? []
-  const open = rows.filter((a) => a.next_action && !a.archived).length
   return {
-    apps: apps.data?.total ?? rows.length,
+    apps: home.data?.total ?? home.data?.active ?? 0,
     files: (files.data?.items ?? []).length,
-    open,
+    open: home.data?.todos.open ?? 0,
   }
 }
 
