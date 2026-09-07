@@ -66,7 +66,8 @@ export function InterviewForm({
 
 export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () => void; onDone: () => void }) {
   const [title, setTitle] = useState(app.next_action || NEXT_STEP_SUGGESTION[app.status] || '')
-  const [due, setDue] = useState(app.next_action_due_at ? app.next_action_due_at.slice(0, 10) : '')
+  // next_action_due_at is a date-only YYYY-MM-DD string (never a timestamp).
+  const [due, setDue] = useState(app.next_action_due_at ?? '')
   const [err, setErr] = useState('')
 
   const mut = useMutation({

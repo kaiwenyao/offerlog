@@ -340,6 +340,8 @@ func (s *Service) RunQuery(ctx context.Context, ownerID int64, filters []views.F
 			&createdAt, &updatedAt, &notes); err != nil {
 			return nil, 0, 0, err
 		}
+		// DATE columns are emitted date-only (YYYY-MM-DD) so every surface —
+		// applications list/detail and the views query — shares one wire format.
 		m := map[string]any{
 			"id": id, "company_name": companyName, "position": position, "job_url": jobURL,
 			"location": location, "remote_policy": remotePolicy, "employment_type": empType,
@@ -347,8 +349,8 @@ func (s *Service) RunQuery(ctx context.Context, ownerID int64, filters []views.F
 			"channel": channel, "status": status, "priority": priority, "tags": tags,
 			"custom_values": json.RawMessage(custom), "notes": notes,
 			"saved_at": savedAt, "submitted_at": submittedAt, "first_response_at": firstResp,
-			"deadline": deadline, "accepted_at": acceptedAt, "rejected_at": rejectedAt,
-			"reason": reason, "next_action": nextAction, "next_action_due_at": nextDueAt,
+			"deadline": dayString(deadline), "accepted_at": acceptedAt, "rejected_at": rejectedAt,
+			"reason": reason, "next_action": nextAction, "next_action_due_at": dayString(nextDueAt),
 			"version": version, "archived": archivedAt != nil, "deleted": deletedAt != nil,
 			"created_at": createdAt, "updated_at": updatedAt,
 		}
@@ -357,5 +359,11 @@ func (s *Service) RunQuery(ctx context.Context, ownerID int64, filters []views.F
 	return items, total, compiled.Count, rows.Err()
 }
 
-// pgxTime helpers removed; timestamps use time.Time directly.
-var _ = time.Now
+// dayString renders a DATE-derived time.Time as a date-only string (nil → nil).
+func dayString(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	v := t.UTC().Format("2006-01-02")
+	return &v
+}
