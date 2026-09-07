@@ -79,7 +79,8 @@ export function buildWeek(summary: Pick<HomeSummary, 'week' | 'week_items'>, now
 
   const startIso = new Date(summary.week.start).getTime()
   const endIso = new Date(summary.week.end).getTime()
-  for (const it of summary.week_items) {
+  const items = summary.week_items ?? []
+  for (const it of items) {
     // Verify the server week window matches this client's calendar week before
     // drawing; if they diverge (timezone skew), fall back to day index.
     const day = it.day < 0 || it.day > 6 ? -1 : it.day

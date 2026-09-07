@@ -134,14 +134,14 @@ func (r *Repo) DeleteInterview(ctx context.Context, q database.Querier, appID, o
 // actions across all applications joined with their company/position for the
 // today dashboard.
 func (r *Repo) ListActions(ctx context.Context, appID *int64, ownerID int64, openOnly bool) ([]*Action, error) {
-	join := ""
+	// The company/position/status enrichment columns are always selected, so
+	// the applications join is always present. appID scoping applies to the
+	// actions alias; an unscoped list (today dashboard) reads across apps.
 	where := "a.owner_id=$1"
 	args := []any{ownerID}
 	if appID != nil {
 		where += " AND a.application_id=$2"
 		args = append(args, *appID)
-	} else {
-		join = " LEFT JOIN applications ap ON ap.id = a.application_id"
 	}
 	if openOnly {
 		where += " AND a.done_at IS NULL"
@@ -149,7 +149,9 @@ func (r *Repo) ListActions(ctx context.Context, appID *int64, ownerID int64, ope
 	rows, err := r.db.Pool().Query(ctx, `SELECT a.id, a.application_id, a.owner_id, a.title, a.due_date, a.due_ts,
 		a.done_at, a.remind_me, a.remind_at, a.priority, a.created_at, a.updated_at,
 		COALESCE(ap.company_name,''), COALESCE(ap.position,''), COALESCE(ap.status,'')
-		FROM actions a`+join+` WHERE `+where+` ORDER BY COALESCE(a.due_date, a.due_ts) NULLS LAST, a.id`, args...)
+		FROM actions a
+		LEFT JOIN applications ap ON ap.id = a.application_id AND ap.owner_id = a.owner_id
+		WHERE `+where+` ORDER BY COALESCE(a.due_date, a.due_ts) NULLS LAST, a.id`, args...)
 	if err != nil {
 		return nil, err
 	}

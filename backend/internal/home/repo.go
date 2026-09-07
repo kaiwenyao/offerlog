@@ -94,7 +94,7 @@ type Summary struct {
 	Todos              TodoCounts          `json:"todos"`
 	Week               Week                `json:"week"`
 	WeekItems          []WeekItem          `json:"week_items"` // chips for the Mon-Sun strip (server-side)
-	Upcoming           []UpcomingInterview `json:"upcoming"` // cross-app, actual-time sorted, next N
+	Upcoming           []UpcomingInterview `json:"upcoming"`   // cross-app, actual-time sorted, next N
 	Recent             []RecentApplication `json:"recent"`
 	AsOf               time.Time           `json:"as_of"`
 	Timezone           string              `json:"timezone"`
@@ -114,7 +114,12 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time,
 		upcomingLimit = 5
 	}
 
-	s := &Summary{Timezone: tz, AsOf: now, Week: Week{Start: weekStart, End: weekEnd}}
+	s := &Summary{
+		Timezone: tz, AsOf: now, Week: Week{Start: weekStart, End: weekEnd},
+		// Non-nil slices so the JSON contract is [] rather than null — the
+		// frontend never has to defend against a missing collection.
+		WeekItems: []WeekItem{}, Upcoming: []UpcomingInterview{}, Recent: []RecentApplication{},
+	}
 	s.ScopeNote = "工作清单与周统计排除已归档；归档记录计入总数与归档数。周 = 周一开始的半开区间（用户时区）。本周面试 = 本周安排的非取消轮次；已完成轮次单独标注。"
 
 	q := r.db.Pool()
