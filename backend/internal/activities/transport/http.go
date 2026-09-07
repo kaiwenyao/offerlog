@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -160,24 +161,29 @@ func (h *Handler) createInterview(c *gin.Context) {
 		ScheduledAt: req.ScheduledAt, Timezone: req.Timezone, DurationMinutes: req.DurationMinutes,
 		Result: req.Result, Feedback: req.Feedback, Notes: req.Notes,
 	}
-	if err := h.repo.CreateInterview(c.Request.Context(), h.repo.Pool(), it); err != nil {
+	// Interview + its scheduling metadata are created in ONE transaction so a
+	// failure mid-way cannot leave an interview without its (optional) link or
+	// a link pointing at a half-created interview.
+	var sch *actrepo.ScheduleLink
+	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.CreateInterview(ctx, tx, it); err != nil {
+			return err
+		}
+		if req.Schedule != nil {
+			sch = &actrepo.ScheduleLink{
+				InterviewID: it.ID, OwnerID: user.ID, MeetingURL: req.Schedule.MeetingURL,
+				Location: req.Schedule.Location, ContactName: req.Schedule.ContactName,
+				ContactEmail: req.Schedule.ContactEmail, Notes: req.Schedule.Notes,
+				Cancelled: req.Schedule.Cancelled, CancelledReason: req.Schedule.CancelledReason,
+				OriginalTimezone: req.Schedule.OriginalTimezone,
+			}
+			return h.repo.CreateScheduleLink(ctx, tx, sch)
+		}
+		return nil
+	})
+	if err != nil {
 		httpx.WriteErr(c, err)
 		return
-	}
-	// persist scheduling metadata when supplied
-	var sch *actrepo.ScheduleLink
-	if req.Schedule != nil {
-		sch = &actrepo.ScheduleLink{
-			InterviewID: it.ID, OwnerID: user.ID, MeetingURL: req.Schedule.MeetingURL,
-			Location: req.Schedule.Location, ContactName: req.Schedule.ContactName,
-			ContactEmail: req.Schedule.ContactEmail, Notes: req.Schedule.Notes,
-			Cancelled: req.Schedule.Cancelled, CancelledReason: req.Schedule.CancelledReason,
-			OriginalTimezone: req.Schedule.OriginalTimezone,
-		}
-		if err := h.repo.CreateScheduleLink(c.Request.Context(), h.repo.Pool(), sch); err != nil {
-			httpx.WriteErr(c, err)
-			return
-		}
 	}
 	c.JSON(http.StatusCreated, interviewToDTO(it, sch))
 }
