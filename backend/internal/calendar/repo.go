@@ -58,7 +58,7 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		WHERE i.owner_id=$1 AND i.scheduled_at IS NOT NULL
 		  AND COALESCE(sl.cancelled,FALSE) = FALSE
 		  AND i.scheduled_at >= $2 AND i.scheduled_at < $3
-		  AND a.deleted_at IS NULL
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		ORDER BY i.scheduled_at`, ownerID, from, to)
 	if err != nil {
 		return nil, err
@@ -92,10 +92,10 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 	// user-zone instant) is correct; `::timestamptz AT TIME ZONE` would double-
 	// shift it through the session zone and drop the first window day for
 	// west-of-UTC users.
-	arows, err := r.db.Pool().Query(ctx, `SELECT x.id, COALESCE(x.application_id,0), COALESCE(ap.company_name,''), COALESCE(ap.position,''),
+	arows, err := r.db.Pool().Query(ctx, `SELECT x.id, x.application_id, ap.company_name, ap.position,
 		x.title, x.due_date, x.due_ts, (x.done_at IS NOT NULL), x.priority
-		FROM actions x LEFT JOIN applications ap ON ap.id=x.application_id AND ap.owner_id=x.owner_id
-		WHERE x.owner_id=$1
+		FROM actions x JOIN applications ap ON ap.id=x.application_id AND ap.owner_id=x.owner_id
+		WHERE x.owner_id=$1 AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 		  AND ( (x.due_ts IS NOT NULL AND x.due_ts >= $2 AND x.due_ts < $3)
 		     OR (x.due_ts IS NULL AND x.due_date IS NOT NULL
 		         AND (x.due_date::timestamp AT TIME ZONE $4) >= $2 AND (x.due_date::timestamp AT TIME ZONE $4) < $3) )
@@ -141,7 +141,7 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 	// its instant is the user's local midnight (single AT TIME ZONE).
 	drows, err := r.db.Pool().Query(ctx, `SELECT a.id, a.company_name, a.position, a.deadline, a.status
 		FROM applications a
-		WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.deadline IS NOT NULL
+		WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.archived_at IS NULL AND a.deadline IS NOT NULL
 		  AND (a.deadline::timestamp AT TIME ZONE $2) >= $3 AND (a.deadline::timestamp AT TIME ZONE $2) < $4
 		ORDER BY a.deadline`, ownerID, tz, from, to)
 	if err != nil {

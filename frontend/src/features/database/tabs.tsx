@@ -88,12 +88,17 @@ export function OverviewTab({
   const openActions = actions.filter((a) => !a.done_at)
   const recentDone = actions.filter((a) => a.done_at).slice(0, 3)
 
+  const invalidateAfterAction = () => {
+    qc.invalidateQueries({ queryKey: ['actions'] })
+    // completing/postponing moves the item between calendar buckets
+    qc.invalidateQueries({ queryKey: ['calendar'] })
+    refetchAll()
+  }
   const doneMut = useMutation({
     mutationFn: ({ id, done }: { id: number; done: boolean }) => api.post(`/api/v1/actions/${id}/done`, { done }),
     onSuccess: () => {
       setActionErr('')
-      qc.invalidateQueries({ queryKey: ['actions'] })
-      refetchAll()
+      invalidateAfterAction()
     },
     onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '操作失败，请重试'),
   })
@@ -101,8 +106,7 @@ export function OverviewTab({
     mutationFn: (id: number) => api.post(`/api/v1/actions/${id}/postpone`, { days: 1 }),
     onSuccess: () => {
       setActionErr('')
-      qc.invalidateQueries({ queryKey: ['actions'] })
-      refetchAll()
+      invalidateAfterAction()
     },
     onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '延期失败，请重试'),
   })

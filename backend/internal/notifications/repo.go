@@ -9,6 +9,7 @@ package notifications
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -133,6 +134,16 @@ func (r *Repo) Dismiss(ctx context.Context, ownerID, id int64) error {
 func (r *Repo) DismissByApplication(ctx context.Context, ownerID, appID int64) error {
 	_, err := r.db.Pool().Exec(ctx, `UPDATE notifications SET dismissed_at=now()
 		WHERE owner_id=$1 AND application_id=$2 AND dismissed_at IS NULL`, ownerID, appID)
+	return err
+}
+
+// ClearInterviewReminders removes notifications of an interview occurrence
+// (kind='interview', key prefix "interview:<id>:<day>") — used when the
+// interview is cancelled or rescheduled so stale "明天有面试" alerts disappear.
+func (r *Repo) ClearInterviewReminders(ctx context.Context, ownerID, interviewID int64) error {
+	_, err := r.db.Pool().Exec(ctx, `DELETE FROM notifications
+		WHERE owner_id=$1 AND kind='interview' AND idempotency_key LIKE $2`,
+		ownerID, fmt.Sprintf("interview:%d:%%", interviewID))
 	return err
 }
 

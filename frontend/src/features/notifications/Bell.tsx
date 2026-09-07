@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api, ApiError, fmtDateTime } from '../../lib/api'
@@ -32,6 +32,16 @@ export function NotificationsBell() {
   const [open, setOpen] = useState(false)
   const nav = useNavigate()
 
+  // Esc closes the dropdown (keyboard accessibility).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
   const q = useQuery({
     queryKey: ['notifications', 'open'],
     queryFn: () => api.get<{ items: Notification[] }>('/api/v1/notifications?open=1'),
@@ -59,6 +69,8 @@ export function NotificationsBell() {
       <button
         type="button"
         aria-label={`通知（${unread} 条未读）`}
+        aria-expanded={open}
+        aria-haspopup="true"
         onClick={() => setOpen((v) => !v)}
         style={{
           position: 'relative',
@@ -100,7 +112,7 @@ export function NotificationsBell() {
 
       {open && (
         <>
-          <span style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
+          <span aria-hidden style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setOpen(false)} />
           <Card
             variant="strong"
             padding={0}

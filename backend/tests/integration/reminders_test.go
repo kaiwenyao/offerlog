@@ -176,3 +176,40 @@ func TestStaleStopsAfterFirstReply(t *testing.T) {
 		t.Fatalf("stale after reply = %d, want unchanged 1 (no duplicate)", stale2)
 	}
 }
+
+// Regression (round 3, P2): cancelling an interview must clear its generated
+// "明天有面试" reminder (kind='interview', key prefix interview:<id>:).
+func TestCancelInterviewClearsReminder(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	pr := prefs.New(db)
+	_ = pr.Upsert(ctx, &prefs.Preferences{
+		UserID: owner, Timezone: "Europe/Dublin", WeekStart: 1,
+		RemindOverdue: false, RemindInterview: true, RemindStaleDays: 0,
+	})
+	app := mustCreate(t, svc, owner, "CancelRemCo", "Role")
+	var iid int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO interviews(application_id, owner_id, round_name, format, scheduled_at, timezone)
+		VALUES($1,$2,'一面','video', now() + interval '1 day','Europe/Dublin') RETURNING id`, app.ID, owner).Scan(&iid); err != nil {
+		t.Fatal(err)
+	}
+	// Generate the tomorrow reminder.
+	if _, err := reminders.New(db).Run(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	nots := notifications.New(db)
+	before := 0
+	_ = db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='interview'`, owner).Scan(&before)
+	if before == 0 {
+		t.Fatal("expected an interview reminder before cancel")
+	}
+	// Cancel via the repo path the transport now takes: set cancelled + clear.
+	if err := nots.ClearInterviewReminders(ctx, owner, iid); err != nil {
+		t.Fatal(err)
+	}
+	after := 0
+	_ = db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='interview'`, owner).Scan(&after)
+	if after != 0 {
+		t.Fatalf("interview reminders after cancel = %d, want 0", after)
+	}
+}

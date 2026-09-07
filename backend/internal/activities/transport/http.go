@@ -319,6 +319,13 @@ func (h *Handler) cancelInterview(c *gin.Context) {
 		writeUpsertErr(c, err)
 		return
 	}
+	// A cancelled interview must not keep its generated “明天有面试” reminder.
+	if h.nots != nil {
+		if err := h.nots.ClearInterviewReminders(c.Request.Context(), user.ID, iid); err != nil {
+			observability.L(c.Request.Context()).Warn("clear interview reminders",
+				"interview_id", iid, "error", err)
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "cancelled": true})
 }
 

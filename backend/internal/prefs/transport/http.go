@@ -67,10 +67,11 @@ func toDTO(userID int64, fallbackName, fallbackTZ string, p *prefs.Preferences) 
 		WeekStart: 1, RemindOverdue: true, RemindInterview: true, RemindStaleDays: 14,
 		RemindWeekly: false, Locale: "zh-CN"}
 	if p != nil {
-		d.DisplayName = firstNonEmpty(p.DisplayName, fallbackName)
-		// users.timezone is the single source of truth — always surface it
-		// (fallbackTZ) even when a stale prefs.timezone exists, so a user who
-		// changed their zone via PATCH /auth/me sees the same zone here.
+		// users row is canonical for display_name + timezone (both written by
+		// PATCH /auth/me and PUT /preferences via UpdateProfile); the prefs row
+		// mirrors them and can drift when only /auth/me is used, so never let
+		// the stale copy win.
+		d.DisplayName = fallbackName
 		d.Timezone = fallbackTZ
 		if p.WeekStart >= 0 && p.WeekStart <= 6 {
 			d.WeekStart = p.WeekStart
@@ -87,13 +88,6 @@ func toDTO(userID int64, fallbackName, fallbackTZ string, p *prefs.Preferences) 
 		}
 	}
 	return d
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
 
 type putReq struct {

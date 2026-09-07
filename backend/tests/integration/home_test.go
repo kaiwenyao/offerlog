@@ -38,14 +38,11 @@ func TestHomeSummaryLargeCohortAndUpcomingBeyond200(t *testing.T) {
 	// Seed 210 submitted applications over the past month (well beyond the old
 	// 200-page cutoff) — mix archived and unarchived, some with interviews.
 	repo := home.New(db)
-	day := now.AddDate(0, 0, -1)
 	for i := 0; i < 210; i++ {
 		sub := now.AddDate(0, 0, -(i%30)-1)
 		sub = sub.Add(-time.Duration(i) * time.Minute)
 		mustCreateWithSubmit(t, svc, owner, fmt.Sprintf("Co%d", i), "Engineer", sub)
-		day = sub
 	}
-	_ = day
 	// 8 distinct applications get scheduled interviews STRICTLY IN THE FUTURE
 	// relative to `now` (now + i hours). Seeding relative to the week start
 	// would put the early ones in the past whenever the test runs on a later

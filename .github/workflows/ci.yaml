@@ -71,7 +71,15 @@ jobs:
       - name: migrations in sync
         run: |
           set -e
+          # db/migrations is the canonical copy; internal/platform/migrate/migrations
+          # is the embedded twin. Both directories must contain identical files in
+          # both directions (a file added to only one side is drift too).
           for f in backend/db/migrations/*.sql; do
             b="backend/internal/platform/migrate/migrations/$(basename "$f")"
+            test -f "$b" || { echo "migration drift: $b missing"; exit 1; }
             cmp "$f" "$b" || { echo "migration drift: $f differs from $b"; exit 1; }
+          done
+          for f in backend/internal/platform/migrate/migrations/*.sql; do
+            a="backend/db/migrations/$(basename "$f")"
+            test -f "$a" || { echo "migration drift: $a missing"; exit 1; }
           done

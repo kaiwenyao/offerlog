@@ -132,3 +132,48 @@ func TestCalendarAllDayActionAndDeadline(t *testing.T) {
 		t.Fatalf("action=%v deadline=%v want both", actionSeen, deadlineSeen)
 	}
 }
+
+// Regression (round 3, P2): /calendar must consistently exclude deleted and
+// archived applications across all three event kinds (interview / action /
+// deadline) — an archived app's events must not keep appearing.
+func TestCalendarExcludesArchivedAppsAcrossKinds(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	repo := calendar.New(db)
+	now := time.Now()
+	app := mustCreate(t, svc, owner, "ArchCal", "Role")
+	// deadline + action + interview all within the window
+	if _, err := db.Pool().Exec(ctx, `UPDATE applications SET deadline = CURRENT_DATE + 2 WHERE id=$1`, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, priority, source)
+		VALUES($1,$2,'待办', CURRENT_DATE + 1, 'high','manual')`, app.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO interviews(application_id, owner_id, round_name, format, scheduled_at, timezone)
+		VALUES($1,$2,'一面','video', now() + interval '1 day','Europe/Dublin')`, app.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	items, err := repo.Range(ctx, owner, "Europe/Dublin", now, now.AddDate(0, 0, 14))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, e := range items {
+		seen[e.Kind] = true
+	}
+	if !seen["interview"] || !seen["action"] || !seen["deadline"] {
+		t.Fatalf("before archive expected all three kinds, got %v", seen)
+	}
+	// Archive → all three disappear.
+	if err := svc.Archive(ctx, owner, app.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	items2, err := repo.Range(ctx, owner, "Europe/Dublin", now, now.AddDate(0, 0, 14))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items2) != 0 {
+		t.Fatalf("after archive calendar still returns %d events, want 0 (archived apps excluded across kinds)", len(items2))
+	}
+}

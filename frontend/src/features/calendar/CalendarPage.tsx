@@ -329,7 +329,7 @@ function AgendaView({ groups, onOpen }: { groups: Array<{ title: string; items: 
                   </span>
                 </span>
                 <span className="ellipsis" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  {kindLabel(e)} · {e.start ? fmtDateTime(e.start) : '无时间'}
+                  {kindLabel(e)} · {evTime(e)}
                   {e.location ? ` · ${e.location}` : ''}
                 </span>
               </span>
