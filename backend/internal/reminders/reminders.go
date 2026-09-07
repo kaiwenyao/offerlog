@@ -93,17 +93,12 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 	remindInterview := true
 	remindStale := true
 	staleDays := 14
-	weekStart := time.Monday
 	if p != nil {
 		remindOverdue = p.RemindOverdue
 		remindInterview = p.RemindInterview
 		remindStale = p.RemindStaleDays > 0
 		staleDays = p.RemindStaleDays
-		if p.WeekStart >= 0 && p.WeekStart <= 6 {
-			weekStart = time.Weekday(p.WeekStart)
-		}
 	}
-	_ = weekStart
 	inserted := 0
 
 	// 1) 逾期待办：open actions whose due falls before today's start. A
@@ -210,7 +205,7 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 			ok, err := g.nots.InsertIdempotent(ctx, &notifications.Notification{
 				OwnerID: ownerID, Kind: "stale", Title: "投递后未回复",
 				Body: body, ApplicationID: &id,
-			}, fmt.Sprintf("stale:%d", id))
+			}, fmt.Sprintf("stale:%d:%d", id, staleDays))
 			if err != nil {
 				rows.Close()
 				return inserted, err

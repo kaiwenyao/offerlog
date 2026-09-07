@@ -106,13 +106,15 @@ func (r *Repo) MarkRead(ctx context.Context, ownerID, id int64) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return errors.New("通知不存在")
+		return ErrNotFound
 	}
 	return nil
 }
 
-// Dismiss hides a notification without deleting it (idempotent — dismissing
-// twice is fine; the dismissal also clears any read_at).
+// Dismiss hides a notification without deleting it. Dismissing twice is a
+// no-op (COALESCE keeps the first dismissal); the read_at column is untouched
+// (dismissing an unread notification merely hides it — a later MarkRead has no
+// visible effect on a dismissed row).
 func (r *Repo) Dismiss(ctx context.Context, ownerID, id int64) error {
 	tag, err := r.db.Pool().Exec(ctx, `UPDATE notifications SET dismissed_at=COALESCE(dismissed_at, now())
 		WHERE id=$1 AND owner_id=$2`, id, ownerID)
@@ -120,7 +122,7 @@ func (r *Repo) Dismiss(ctx context.Context, ownerID, id int64) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return errors.New("通知不存在")
+		return ErrNotFound
 	}
 	return nil
 }
@@ -151,6 +153,10 @@ func (r *Repo) MarkAllRead(ctx context.Context, ownerID int64) error {
 		WHERE owner_id=$1 AND dismissed_at IS NULL AND read_at IS NULL`, ownerID)
 	return err
 }
+
+// ErrNotFound is returned for read/dismiss on a notification the user does
+// not own (or that does not exist). Only this error maps to HTTP 404.
+var ErrNotFound = errors.New("通知不存在")
 
 // ErrNoRows is re-exported for callers that distinguish absent rows.
 var ErrNoRows = pgx.ErrNoRows

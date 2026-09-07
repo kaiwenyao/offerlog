@@ -157,7 +157,7 @@ func (a *App) Handler() http.Handler {
 	notifH.Routes(api.Group("/notifications"))
 
 	// home dashboard aggregates (server-side counts + upcoming)
-	homeH := hometransport.New(a.Home)
+	homeH := hometransport.New(a.Home).WithPrefs(a.Prefs)
 	homeH.Routes(api.Group("/home"))
 
 	// health (no auth)

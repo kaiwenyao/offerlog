@@ -94,22 +94,14 @@ export function buildWeek(summary: Pick<HomeSummary, 'week' | 'week_items'>, now
     return { weekday, dayNum: new Date(ts).getDate(), isToday: ts === todayStart, items: [] }
   })
 
-  const startIso = new Date(summary.week.start).getTime()
-  const endIso = new Date(summary.week.end).getTime()
+  // week_items carry a server-computed day index (Mon=0..Sun=6) in the user's
+  // timezone — the client must not reinterpret them against its own calendar,
+  // so we only range-check the index and place the chip as-is.
   const items = summary.week_items ?? []
   for (const it of items) {
-    // Verify the server week window matches this client's calendar week before
-    // drawing; if they diverge (timezone skew), fall back to day index.
-    const day = it.day < 0 || it.day > 6 ? -1 : it.day
-    if (day === -1) continue
+    const day = it.day
+    if (day < 0 || day > 6) continue
     days[day].items.push({ kind: it.kind, who: it.who, tone: it.tone })
-  }
-  // Drop chips before the server week start / at-or-after end for a clean edge.
-  if (!isNaN(startIso) && !isNaN(endIso)) {
-    for (const d of days) {
-      const at = monday + WEEKDAYS.indexOf(d.weekday) * DAY_MS
-      if (at < startIso || at >= endIso) d.items = []
-    }
   }
   return days
 }

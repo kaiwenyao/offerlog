@@ -119,13 +119,16 @@ type Summary struct {
 }
 
 // Get computes the dashboard summary. Active set = deleted_at IS NULL AND
-// archived_at IS NULL; archived rows count into Total/Archived only.
-func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, now time.Time, upcomingLimit int) (*Summary, error) {
+// archived_at IS NULL; archived rows count into Total/Archived only. The week
+// window honors the user's week_start preference (default Monday); the
+// Mon-Sun chip strip keeps its fixed labels and therefore its own Monday
+// grid, which is documented in the response's scope note when they differ.
+func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay time.Weekday, now time.Time, upcomingLimit int) (*Summary, error) {
 	loc, err := time.LoadLocation(tz)
 	if err != nil || loc == nil {
 		loc = time.UTC
 	}
-	weekStart, weekEnd := timeutil.WeekBounds(now, loc, time.Monday)
+	weekStart, weekEnd := timeutil.WeekBounds(now, loc, weekStartDay)
 	dayStart, _ := timeutil.TodayBounds(now, loc)
 	if upcomingLimit <= 0 {
 		upcomingLimit = 5

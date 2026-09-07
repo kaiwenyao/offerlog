@@ -212,7 +212,8 @@ paths:
   /notifications/read-all:
     post: { summary: 全部标为已读 }
   /notifications/{id}/read:
-    post: { summary: 标记已读 }
+    post:
+      summary: 标记已读（仅真实不存在/非本人返回 404；DB 故障按 500 返回，不伪装成 404）
   /notifications/{id}/dismiss:
     post: { summary: 忽略（不删除，保留历史） }
   /calendar:
@@ -232,3 +233,26 @@ paths:
   # applications.next_action_due_at) travel as YYYY-MM-DD strings — never
   # timestamps — and are stored as the user's calendar day. Instant columns
   # (due_ts, submitted_at, …) remain RFC3339.
+  /actions/{action_id}/postpone:
+    post:
+      summary: 延期行动项（due_date 为 YYYY-MM-DD 或 due_ts；空白 due_date = 清除截止）
+      parameters:
+        - name: action_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days: { type: integer }
+                due_date: { type: string, format: date }
+                due_ts: { type: string, format: date-time }
+  /applications/{id}/interviews/{interview_id}/cancel:
+    post:
+      summary: 取消面试轮次（保留记录，取消状态同步到首页/日历/提醒；非本人 404）
+  /applications/{id}/interviews/{interview_id}/uncancel:
+    post:
+      summary: 恢复被取消的面试轮次

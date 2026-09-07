@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { api, ApiError, fmtDate, fmtDateTime, fmtDay } from '../../lib/api'
+import { api, ApiError, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
 import type { HomeSummary } from '../../lib/types'
 import { statusMeta } from '../../lib/status'
 import { Button, Card, PanelTitle } from '../../ds'
 import { Dot, EmptyHint, ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
+import { effectiveZone } from '../../lib/tz'
 import { buildWeek, CHIP_TONES, groupActions, startOfDay, type TodoItem } from './week'
 
 const PANEL: React.CSSProperties = { padding: 0, overflow: 'hidden' }
@@ -270,9 +271,9 @@ function TodoRow({
   const dueDay = item.due_date || null
   const todayStart = startOfDay()
   // date-only due_date is a calendar day — compare as day strings, never
-  // through new Date() (which would shift west-of-UTC).
-  const nowDay = new Date()
-  const todayStr = `${nowDay.getFullYear()}-${String(nowDay.getMonth() + 1).padStart(2, '0')}-${String(nowDay.getDate()).padStart(2, '0')}`
+  // through new Date() (which would shift west-of-UTC). “today” is taken in
+  // the user's configured zone so it agrees with startOfDay()/the server.
+  const todayStr = toDayString(new Date().toISOString(), effectiveZone()) ?? ''
   const overdue =
     dueTsVal != null ? dueTsVal < todayStart : dueDay != null && dueDay < todayStr
   const derived = item.action_id == null

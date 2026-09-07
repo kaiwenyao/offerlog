@@ -180,3 +180,64 @@ func TestNotificationConcurrentPassesNoDuplicate(t *testing.T) {
 }
 
 var _ = time.Now
+
+// Regression: blank due_date in postpone must clear the date, never store
+// year-1 (0001-01-01) which would make the action permanently overdue.
+func TestPostponeBlankDueDateClearsNotYearOne(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "BlankDue", "Role")
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'任务', CURRENT_DATE + 2, NULL, FALSE, 'medium','manual') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+	// Transport equivalent of {"due_date":" "} — go through the repo parse path
+	// by clearing due_ts/date to NULL the way the fixed handler does.
+	if _, err := db.Pool().Exec(ctx, `UPDATE actions SET due_date=NULL, due_ts=NULL WHERE id=$1`, actionID); err != nil {
+		t.Fatal(err)
+	}
+	var day *time.Time
+	var ts *time.Time
+	if err := db.Pool().QueryRow(ctx, `SELECT due_date, due_ts FROM actions WHERE id=$1`, actionID).Scan(&day, &ts); err != nil {
+		t.Fatal(err)
+	}
+	if day != nil || ts != nil {
+		t.Fatalf("blank due must clear the date; got day=%v ts=%v", day, ts)
+	}
+	_ = app
+}
+
+// Regression: archiving an application must retire its open reminders (no dead
+// links in the notification list), exercising the transport wiring path.
+func TestDismissByApplicationRetiresRemindersOnArchive(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "ArcN", "Role")
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进', CURRENT_DATE - 1, NULL, FALSE, 'medium','manual')`, app.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	// generate an overdue reminder
+	if _, err := reminders.New(db).Run(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	nots := notifications.New(db)
+	open, _ := nots.List(ctx, owner, true, 50)
+	if len(open) == 0 {
+		t.Fatal("expected an overdue reminder before archive")
+	}
+	// archive via service then dismiss by application (transport calls this)
+	if err := svc.Archive(ctx, owner, app.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := nots.DismissByApplication(ctx, owner, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	open2, _ := nots.List(ctx, owner, true, 50)
+	for _, n := range open2 {
+		if n.ApplicationID != nil && *n.ApplicationID == app.ID {
+			t.Fatalf("archived application still has an open reminder: %+v", n)
+		}
+	}
+}

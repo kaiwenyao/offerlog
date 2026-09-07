@@ -14,7 +14,13 @@ export function getUserZone(): string {
 }
 
 export function setUserZone(zone: string | null | undefined) {
-  userZone = zone && /^[A-Za-z_]+(?:\/[A-Za-z_+-]+)+$/.test(zone) ? zone : ''
+  // IANA names are Region/City (Europe/Dublin); fixed-offset zones (UTC, GMT)
+  // are bare names without a slash and must be honored too, or a
+  // UTC-preferenced user silently falls back to the browser zone.
+  const ok =
+    zone != null &&
+    (/^[A-Za-z_]+(?:\/[A-Za-z_+-]+)+$/.test(zone) || zone === 'UTC' || zone === 'GMT')
+  userZone = ok ? zone : ''
 }
 
 /** The effective Intl timezone token for formatting ('' → browser default). */

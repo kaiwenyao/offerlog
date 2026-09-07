@@ -52,10 +52,33 @@ func DateOnly(t time.Time, loc *time.Location) string {
 	return t.In(loc).Format("2006-01-02")
 }
 
-// DaysSince returns calendar days between t and now in loc (floor at day
-// boundaries).
+// DaysSince returns whole calendar days between t and now in loc, counting
+// local-midnight boundaries — robust across DST transitions where a real day
+// is 23 or 25 hours (dividing an elapsed duration by 24h would be off by one
+// across a spring-forward).
 func DaysSince(t, now time.Time, loc *time.Location) int {
 	ts := StartOfDay(t, loc)
 	ns := StartOfDay(now, loc)
-	return int(ns.Sub(ts).Hours() / 24)
+	// Walk whole local days (AddDate keeps the local wall clock, so DST shifts
+	// never skew the count) instead of dividing elapsed hours by 24.
+	days := 0
+	cursor := ts
+	if ns.After(ts) || ns.Equal(ts) {
+		for cursor.Before(ns) {
+			cursor = cursor.AddDate(0, 0, 1)
+			days++
+			if days > 40000 {
+				break // safety valve (~110 years)
+			}
+		}
+		return days
+	}
+	for cursor.After(ns) {
+		cursor = cursor.AddDate(0, 0, -1)
+		days--
+		if days < -40000 {
+			break
+		}
+	}
+	return days
 }

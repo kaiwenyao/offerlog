@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +12,16 @@ import (
 
 type Handler struct {
 	repo *notifications.Repo
+}
+
+// writeNotifErr maps only a real not-found to 404; genuine DB failures pass
+// through as 500 rather than masquerading as "通知不存在".
+func writeNotifErr(c *gin.Context, err error) {
+	if errors.Is(err, notifications.ErrNotFound) {
+		httpx.WriteErr(c, httpx.NotFound("通知不存在"))
+		return
+	}
+	httpx.WriteErr(c, err)
 }
 
 func New(repo *notifications.Repo) *Handler { return &Handler{repo: repo} }
@@ -52,7 +63,7 @@ func (h *Handler) read(c *gin.Context) {
 		return
 	}
 	if err := h.repo.MarkRead(c.Request.Context(), user.ID, id); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("通知不存在"))
+		writeNotifErr(c, err)
 		return
 	}
 	httpx.Ok(c)
@@ -66,7 +77,7 @@ func (h *Handler) dismiss(c *gin.Context) {
 		return
 	}
 	if err := h.repo.Dismiss(c.Request.Context(), user.ID, id); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("通知不存在"))
+		writeNotifErr(c, err)
 		return
 	}
 	httpx.Ok(c)

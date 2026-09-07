@@ -89,3 +89,22 @@ func TestDaysSince(t *testing.T) {
 		t.Fatalf("DaysSince = %d, want 14", d)
 	}
 }
+
+func TestDaysSinceAcrossDST(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Dublin")
+	// Spring forward: 2026-03-29 (clocks jump 01:00→02:00). Ten calendar days
+	// ending after the transition must count as exactly 10, even though the
+	// elapsed real time is only 239h (10×24−1).
+	start := time.Date(2026, 3, 24, 12, 0, 0, 0, loc)
+	end := time.Date(2026, 4, 3, 12, 0, 0, 0, loc)
+	if d := DaysSince(start, end, loc); d != 10 {
+		t.Fatalf("DaysSince across spring-forward = %d, want 10", d)
+	}
+	// Fall back: 2026-10-25 clocks jump back. Elapsed real time is 241h, but
+	// the calendar-day count is still 10.
+	start2 := time.Date(2026, 10, 20, 12, 0, 0, 0, loc)
+	end2 := time.Date(2026, 10, 30, 12, 0, 0, 0, loc)
+	if d := DaysSince(start2, end2, loc); d != 10 {
+		t.Fatalf("DaysSince across fall-back = %d, want 10", d)
+	}
+}

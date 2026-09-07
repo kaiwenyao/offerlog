@@ -33,7 +33,7 @@ func TestHomeTodoBadgeEqualsUnifiedList(t *testing.T) {
 	}
 
 	repo := home.New(db)
-	s, err := repo.Get(ctx, owner, tz, now, 5)
+	s, err := repo.Get(ctx, owner, tz, time.Monday, now, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestHomeTodoDueDayIsDateOnlyString(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := home.New(db)
-	s, err := repo.Get(ctx, owner, tz, time.Now(), 5)
+	s, err := repo.Get(ctx, owner, tz, time.Monday, time.Now(), 5)
 	if err != nil {
 		t.Fatal(err)
 	}

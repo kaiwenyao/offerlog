@@ -233,6 +233,30 @@ function RemindersPanel({ me }: { me: Me | null }) {
         ))}
         <div className="panel-row" style={{ padding: '10px 0' }}>
           <span className="grow">
+            <span style={{ display: 'block', fontSize: 14 }}>每周起始日</span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              首页“本周进展”与统计的周窗口按此起算
+            </span>
+          </span>
+          {savingKey === 'week_start' ? (
+            <Spinner size={14} />
+          ) : (
+            <Select
+              aria-label="每周起始日"
+              options={[
+                { value: '1', label: '周一' },
+                { value: '0', label: '周日' },
+                { value: '6', label: '周六' },
+              ]}
+              value={String(prefs?.week_start ?? 1)}
+              onChange={(e) => toggle('week_start', Number(e.target.value), 'week_start')}
+              fullWidth={false}
+              style={{ width: 110 }}
+            />
+          )}
+        </div>
+        <div className="panel-row" style={{ padding: '10px 0' }}>
+          <span className="grow">
             <span style={{ display: 'block', fontSize: 14 }}>投递满 N 天未回复提醒</span>
             <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               {REMINDER_HINTS.stale}（0 = 关闭）

@@ -76,7 +76,7 @@ func TestHomeSummaryLargeCohortAndUpcomingBeyond200(t *testing.T) {
 		}
 	}
 
-	s, err := repo.Get(ctx, owner, tz, now, 5)
+	s, err := repo.Get(ctx, owner, tz, time.Monday, now, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestHomeSummaryLargeCohortAndUpcomingBeyond200(t *testing.T) {
 		t.Fatalf("Upcoming len=%d want 5 (page-limited but cross-app)", len(s.Upcoming))
 	}
 	// Ask for a large limit: the 7th+ application's interview must show.
-	big, err := repo.Get(ctx, owner, tz, now, 20)
+	big, err := repo.Get(ctx, owner, tz, time.Monday, now, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestHomeSummaryWeekWindows(t *testing.T) {
 	mustCreateWithSubmit(t, svc, owner, "BoundaryCo", "R", atBoundary)
 	mustCreateWithSubmit(t, svc, owner, "BeforeCo", "R", before)
 
-	s, err := repo.Get(ctx, owner, tz, now, 5)
+	s, err := repo.Get(ctx, owner, tz, time.Monday, now, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
