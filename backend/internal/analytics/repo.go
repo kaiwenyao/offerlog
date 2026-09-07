@@ -143,6 +143,9 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 		}
 		m.ByStatus[s] = n
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	// submitted cohort metrics use submitted_at window; if the request carried
 	// a submission window, restrict there, else all submitted.
@@ -250,6 +253,9 @@ func (r *Repo) ByChannel(ctx context.Context, req *SnapshotRequest) ([]ChannelRo
 			c.OfferRate = &or
 		}
 		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, rows.Err()
 }

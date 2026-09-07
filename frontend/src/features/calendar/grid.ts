@@ -111,7 +111,11 @@ export interface AgendaGroup {
 
 /**
  * Group events into agenda buckets — 已逾期 / 今天 / 未来 7 天 / 之后 — all in
- * the active zone. 逾期待办必须渲染出来，不能收进一个永不展示的桶。
+ * the active zone. Every event whose calendar day is before today belongs to
+ * the first (past) bucket, whatever its kind: only doing that for open actions
+ * let a 3-day-old interview or deadline fall into “未来 7 天”. The −90d fetch
+ * window exists precisely so old overdue rows stay visible, and past events
+ * must never masquerade as upcoming.
  */
 export function agenda(events: CalendarEvent[], now: Date = new Date(), zone?: string): AgendaGroup[] {
   const todayKey = dayKeyInZone(now, zone)
@@ -127,7 +131,7 @@ export function agenda(events: CalendarEvent[], now: Date = new Date(), zone?: s
       later.push(e) // undated
       continue
     }
-    if (e.kind === 'action' && !e.done && day < todayKey) overdue.push(e)
+    if (day < todayKey) overdue.push(e)
     else if (day === todayKey) today.push(e)
     else if (day < soonKey) next7.push(e)
     else later.push(e)
@@ -142,32 +146,16 @@ export function agenda(events: CalendarEvent[], now: Date = new Date(), zone?: s
 }
 
 // ---------------------------------------------------------------------------
-// Legacy Date-based helpers (browser zone) used by callers that render actual
-// day numbers; keys remain the source of truth for bucketing.
+// Agenda fetch window (pure day keys — no browser-zone Date arithmetic)
 // ---------------------------------------------------------------------------
 
-/** Monday 00:00 local (browser zone) of the week containing now. */
-export function mondayOf(now: Date = new Date()): Date {
-  const d = new Date(now)
-  d.setHours(0, 0, 0, 0)
-  const offset = (d.getDay() + 6) % 7
-  d.setDate(d.getDate() - offset)
-  return d
-}
-
-export function addDays(d: Date, n: number): Date {
-  const c = new Date(d)
-  c.setDate(c.getDate() + n)
-  return c
-}
-
-/** Serialize a Date to the RFC3339 the API expects (UTC instant). */
-export function toISO(d: Date): string {
-  return d.toISOString()
-}
-
-/** Fetch window for the agenda view (browser-zone anchor). */
-export function agendaWindow(anchor: Date): { from: Date; to: Date } {
-  const monday = mondayOf(anchor)
-  return { from: addDays(monday, -90), to: addDays(monday, 30) }
+/**
+ * Fetch window for the agenda view, anchored at the Monday KEY of the current
+ * week in the active zone. Returns calendar-day KEYS; callers convert them to
+ * user-zone local-midnight instants via dayToInstant (never the browser zone),
+ * so the server's AT TIME ZONE comparisons see exactly the intended days even
+ * when the browser and the user zone disagree.
+ */
+export function agendaWindowKeys(weekStartKey: string): { fromKey: string; toKey: string } {
+  return { fromKey: addDaysToKey(weekStartKey, -90), toKey: addDaysToKey(weekStartKey, 30) }
 }

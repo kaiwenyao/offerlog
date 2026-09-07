@@ -225,6 +225,8 @@ export interface HomeSummary {
     due_ts: string | null
   }>
   week: { start: string; end: string }
+  /** user's 每周起始日 preference (0=周日..6=周六); strip day 0 = this weekday */
+  week_start: number
   week_items: Array<{ day: number; kind: string; who: string; tone: 'info' | 'warn' | 'good' | 'acc' | 'bad' }>
   upcoming: Array<{
     id: number

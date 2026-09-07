@@ -158,18 +158,35 @@ func (s *Store) Register(ctx context.Context, email, password, displayName, tz s
 	return u, nil
 }
 
-// ValidateTimezone normalizes an empty zone to the app default and verifies
-// the value is a real IANA zone — an invalid zone would otherwise flow into
-// SQL AT TIME ZONE and make that user's home/calendar queries fail forever.
+// ValidateTimezone verifies the value is a usable IANA zone for the users row
+// (an invalid/pseudo zone would otherwise flow into SQL AT TIME ZONE and make
+// that user's home/calendar queries fail forever). It shares NormalizeTimezone's
+// rules: empty → the app default is accepted, "Local" is rejected.
 func ValidateTimezone(tz string) error {
+	_, err := NormalizeTimezone(tz)
+	return err
+}
+
+// DefaultTimezone is the app fallback zone applied when a profile update
+// carries an empty/non-IANA value (Register also defaults to it).
+const DefaultTimezone = "Europe/Dublin"
+
+// NormalizeTimezone trims whitespace, rejects the pseudo-zone "Local" (Go
+// resolves it to the server's own zone, which is meaningless to the user and
+// would be persisted verbatim), and collapses an empty value to the app
+// default. Returns the normalized zone or an error describing the problem.
+func NormalizeTimezone(tz string) (string, error) {
 	tz = strings.TrimSpace(tz)
 	if tz == "" {
-		tz = "Europe/Dublin"
+		tz = DefaultTimezone
+	}
+	if strings.EqualFold(tz, "Local") {
+		return "", fmt.Errorf("无效的时区 %q（需 IANA 名称，如 Europe/Dublin）", tz)
 	}
 	if _, err := time.LoadLocation(tz); err != nil {
-		return fmt.Errorf("无效的时区 %q（需 IANA 名称，如 Europe/Dublin）", tz)
+		return "", fmt.Errorf("无效的时区 %q（需 IANA 名称，如 Europe/Dublin）", tz)
 	}
-	return nil
+	return tz, nil
 }
 
 // validateSignup enforces the same input rules for CLI-created and

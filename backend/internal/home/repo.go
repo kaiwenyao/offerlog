@@ -106,9 +106,13 @@ type Week struct {
 }
 
 // WeekItem is one chip in the current-week strip (kind=投递/回复/面试/截止/待办;
-// who = company/round label; tone = the strip color family).
+// who = company/round label; tone = the strip color family). Day is the index
+// of the event's day INSIDE the week window RELATIVE TO the user's week_start
+// (0 = the user's week-start day; 0=Mon..6=Sun only when week_start=1). The
+// frontend places a chip at strip column [day] and derives each column's label
+// and date from summary.week.start — no Monday assumption anywhere.
 type WeekItem struct {
-	Day  int    `json:"day"` // 0=Mon .. 6=Sun (within the week window)
+	Day  int    `json:"day"` // 0 = the user's week-start day .. 6
 	Kind string `json:"kind"`
 	Who  string `json:"who"`
 	Tone string `json:"tone"` // info | warn | good | acc | bad
@@ -130,7 +134,8 @@ type Summary struct {
 	Todos              TodoCounts          `json:"todos"`
 	TodoItems          []TodoItem          `json:"todo_items"` // the unified open list (badge == list)
 	Week               Week                `json:"week"`
-	WeekItems          []WeekItem          `json:"week_items"` // chips for the Mon-Sun strip (server-side)
+	WeekStart          int                 `json:"week_start"` // 0=周日..6=周六 (strip day 0 = this weekday)
+	WeekItems          []WeekItem          `json:"week_items"` // chips relative to week_start (day 0 = the week-start day)
 	Upcoming           []UpcomingInterview `json:"upcoming"`   // cross-app, actual-time sorted, next N
 	Recent             []RecentApplication `json:"recent"`
 	AsOf               time.Time           `json:"as_of"`
@@ -140,22 +145,28 @@ type Summary struct {
 
 // Get computes the dashboard summary. Active set = deleted_at IS NULL AND
 // archived_at IS NULL; archived rows count into Total/Archived only. The week
-// window honors the user's week_start preference (default Monday); the
-// Mon-Sun chip strip keeps its fixed labels and therefore its own Monday
-// grid, which is documented in the response's scope note when they differ.
+// window AND the chip strip honor the user's week_start preference: week bounds
+// run [start, start+7d) in the user zone, and each strip chip's day index is
+// relative to that same start (day 0 = the user's week-start day), so a
+// Sunday-start user sees a 周日→周六 strip with chips on the correct columns.
 func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay time.Weekday, now time.Time, upcomingLimit int) (*Summary, error) {
-	loc, err := time.LoadLocation(tz)
-	if err != nil || loc == nil {
-		loc = time.UTC
-	}
+	loc, tzSafe := safeLocation(tz)
 	weekStart, weekEnd := timeutil.WeekBounds(now, loc, weekStartDay)
 	dayStart, _ := timeutil.TodayBounds(now, loc)
+	// ISO weekday of the user's week-start day (Sunday=7): the strip's day
+	// index is (ISO weekday of event − this + 7) % 7 so day 0 is always the
+	// user's week-start day regardless of preference.
+	weekStartISO := int(weekStartDay)
+	if weekStartISO == 0 {
+		weekStartISO = 7
+	}
 	if upcomingLimit <= 0 {
 		upcomingLimit = 5
 	}
 
 	s := &Summary{
-		Timezone: tz, AsOf: now, Week: Week{Start: weekStart, End: weekEnd},
+		Timezone: tzSafe, AsOf: now, Week: Week{Start: weekStart, End: weekEnd},
+		WeekStart: int(weekStartDay),
 		// Non-nil slices so the JSON contract is [] rather than null — the
 		// frontend never has to defend against a missing collection.
 		WeekItems: []WeekItem{}, Upcoming: []UpcomingInterview{}, Recent: []RecentApplication{},
@@ -214,17 +225,21 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 	// Week strip chips: one row per event-day for submitted_at (投递),
 	// first_response_at (回复), scheduled interviews (面试), action due dates
 	// (待办) and application deadlines (截止), bounded to the active set. Day
-	// index is local-weekday from the user's week start.
+	// index is the weekday offset RELATIVE TO the user's week_start (0 = the
+	// week-start day): (ISO weekday − ISO weekday-of-week_start + 7) % 7, where
+	// Sunday is ISO 7. weekStartISO carries that ISO value (7 for a Sunday
+	// start) so the SQL stays parameterized. The tz parameter is the SQL-side
+	// string and must be a usable IANA zone (safeLocation guarantees it).
 	strip, err := q.Query(ctx, `WITH ev AS (
-		SELECT (EXTRACT(ISODOW FROM a.submitted_at AT TIME ZONE $2)::int) - 1 AS day, '投递' AS kind, a.company_name AS who, 'info' AS tone
+		SELECT ((EXTRACT(ISODOW FROM a.submitted_at AT TIME ZONE $2)::int - $6 + 7) % 7) AS day, '投递' AS kind, a.company_name AS who, 'info' AS tone
 		FROM applications a WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		  AND a.submitted_at >= $3 AND a.submitted_at < $4
 		UNION ALL
-		SELECT (EXTRACT(ISODOW FROM a.first_response_at AT TIME ZONE $2)::int) - 1, '回复', a.company_name, 'good'
+		SELECT ((EXTRACT(ISODOW FROM a.first_response_at AT TIME ZONE $2)::int - $6 + 7) % 7), '回复', a.company_name, 'good'
 		FROM applications a WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		  AND a.first_response_at >= $3 AND a.first_response_at < $4
 		UNION ALL
-		SELECT (EXTRACT(ISODOW FROM i.scheduled_at AT TIME ZONE $2)::int) - 1, '面试', a.company_name || ' · ' || i.round_name, 'acc'
+		SELECT ((EXTRACT(ISODOW FROM i.scheduled_at AT TIME ZONE $2)::int - $6 + 7) % 7), '面试', a.company_name || ' · ' || i.round_name, 'acc'
 		FROM interviews i JOIN applications a ON a.id=i.application_id AND a.owner_id=i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id=i.id AND sl.owner_id=i.owner_id
 		WHERE i.owner_id=$1 AND i.scheduled_at >= $3 AND i.scheduled_at < $4
@@ -236,7 +251,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		-- day index, the overdue tone and the window filter, so a row cannot land
 		-- on two different days across the three places.
 		SELECT day, '待办', who, tone FROM (
-			SELECT (EXTRACT(ISODOW FROM due_inst AT TIME ZONE $2)::int) - 1 AS day,
+			SELECT ((EXTRACT(ISODOW FROM due_inst AT TIME ZONE $2)::int - $6 + 7) % 7) AS day,
 			       COALESCE(who_c,'') AS who,
 			       CASE WHEN due_inst < $5 THEN 'bad' ELSE 'warn' END AS tone
 			FROM (
@@ -251,7 +266,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 			WHERE due_inst IS NOT NULL AND due_inst >= $3 AND due_inst < $4
 		) sub
 	)
-	SELECT day, kind, who, tone FROM ev ORDER BY day, kind, who`, ownerID, tz, weekStart, weekEnd, dayStart)
+	SELECT day, kind, who, tone FROM ev ORDER BY day, kind, who`, ownerID, tzSafe, weekStart, weekEnd, dayStart, weekStartISO)
 	if err != nil {
 		return nil, err
 	}
@@ -262,6 +277,9 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 			return nil, err
 		}
 		s.WeekItems = append(s.WeekItems, wi)
+	}
+	if err := strip.Err(); err != nil {
+		return nil, err
 	}
 	strip.Close()
 
@@ -308,7 +326,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 	// reminders generator (session timezone is pinned UTC, never relied on).
 	todoRows, err := q.Query(ctx, `WITH open_actions AS (
 			SELECT a.id AS action_id, a.application_id, a.title, a.due_date, a.due_ts, ap.company_name, ap.position, ap.status
-			FROM actions a JOIN applications ap ON ap.id = a.application_id
+			FROM actions a JOIN applications ap ON ap.id = a.application_id AND ap.owner_id = a.owner_id
 			WHERE a.owner_id=$1 AND a.done_at IS NULL AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 		),
 		derived AS (
@@ -333,7 +351,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		       to_char(due_date, 'YYYY-MM-DD'), due_ts, due_inst
 		FROM all_todos
 		ORDER BY due_inst NULLS LAST, application_id, action_id`,
-		ownerID, tz)
+		ownerID, tzSafe)
 	if err != nil {
 		return nil, err
 	}
@@ -385,4 +403,10 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		return nil, err
 	}
 	return s, nil
+}
+
+// safeLocation is a convenience wrapper over timeutil.SafeLocation keeping the
+// in-process loc and SQL-safe tz string in lockstep.
+func safeLocation(tz string) (*time.Location, string) {
+	return timeutil.SafeLocation(tz)
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -108,5 +109,51 @@ func TestStaleDaysRejectOutOfRange(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("stale_days=-1 status = %d, want 400", res.StatusCode)
+	}
+}
+
+// Regression (review round 4, P1): the timezone picker is a preset Select, but
+// a crafted PATCH/PUT with "Local" (which Go's time.LoadLocation happily
+// resolves) must be REJECTED at the transport, and an empty value must be
+// normalized to the app default instead of being stored blank (a blank zone
+// makes home/calendar SQL AT TIME ZONE fail forever).
+func TestTimezoneFieldRejectsLocalAndNormalizesEmpty(t *testing.T) {
+	db, _, _, owner := setup(t)
+	srv := newPrefsServer(t, db, owner)
+	defer srv.Close()
+
+	// "Local" → 400.
+	req, _ := http.NewRequest("PUT", srv.URL+"/api/v1/preferences", bytes.NewBufferString(`{"timezone":"Local"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("timezone=Local status = %d, want 400 (must never reach SQL AT TIME ZONE 'Local')", res.StatusCode)
+	}
+
+	// Empty string → stored as the app default, and home/calendar can still
+	// load it (no permanent 500).
+	req, _ = http.NewRequest("PUT", srv.URL+"/api/v1/preferences", bytes.NewBufferString(`{"timezone":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("timezone=empty status = %d, want 200 (normalized to default)", res.StatusCode)
+	}
+	var stored string
+	if err := db.Pool().QueryRow(context.Background(), `SELECT timezone FROM users WHERE id=$1`, owner).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored == "" || stored == "Local" {
+		t.Fatalf("empty timezone persisted verbatim: %q", stored)
+	}
+	if _, err := time.LoadLocation(stored); err != nil {
+		t.Fatalf("stored zone %q does not load: %v", stored, err)
 	}
 }

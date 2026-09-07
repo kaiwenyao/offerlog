@@ -9,7 +9,7 @@ import { Dot, EmptyHint, ErrorText, Num, PageSpinner } from '../../components/ui
 import {
   addDaysToKey,
   agenda,
-  agendaWindow,
+  agendaWindowKeys,
   dayKeyInZone,
   monthGrid,
   monthKeyOf,
@@ -87,10 +87,13 @@ export function CalendarPage() {
       const gridStart = mondayKeyOf(monthKey)
       return { from: instantOf(gridStart), to: instantOf(addDaysToKey(gridStart, 42)) }
     }
-    // agenda: current Monday week −90d … +30d
-    const monday = instantOf(mondayKeyOf(todayKeyInZone(zone)))
-    const win = agendaWindow(monday)
-    return { from: win.from, to: win.to }
+    // agenda: current Monday week −90d … +30d, computed as pure day keys in
+    // the user zone and converted to user-local-midnight instants — the window
+    // must never be derived from the browser zone (that drifted the `to` edge
+    // and silently cut +29/+30-day events).
+    const monday = mondayKeyOf(todayKeyInZone(zone))
+    const { fromKey, toKey } = agendaWindowKeys(monday)
+    return { from: instantOf(fromKey), to: instantOf(toKey) }
   }, [view, weekKey, monthKey, zone])
 
   const q = useQuery({

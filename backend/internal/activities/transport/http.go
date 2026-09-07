@@ -156,6 +156,15 @@ func (h *Handler) createInterview(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
+	// Ownership gate: an interview may only be attached to an application the
+	// caller owns. The FK alone proves the application exists, not that it is
+	// the caller's — without this check an attacker could write rows (and, via
+	// the joined home todo, leak company/status) against someone else's
+	// application.
+	if err := h.repo.AppOwnedBy(c.Request.Context(), h.repo.Pool(), appID, user.ID); err != nil {
+		httpx.WriteErr(c, ownershipErr(err))
+		return
+	}
 	it := &actrepo.Interview{
 		ApplicationID: appID, OwnerID: user.ID, RoundName: req.RoundName, Format: req.Format,
 		ScheduledAt: req.ScheduledAt, Timezone: req.Timezone, DurationMinutes: req.DurationMinutes,
@@ -190,11 +199,21 @@ func (h *Handler) createInterview(c *gin.Context) {
 
 func (h *Handler) updateInterview(c *gin.Context) {
 	user := httpx.UserFrom(c)
-	appID, _ := h.appID(c)
-	iid, _ := httpx.PathID(c, "interview_id")
+	appID, iid, ok := h.mustInterviewIDs(c)
+	if !ok {
+		return
+	}
 	var req interviewDTO
 	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.WriteErr(c, err)
+		return
+	}
+	// Ownership gate before mutating: only a genuine not-found is a 404; DB
+	// errors surface (previously every UpdateInterview failure — including a
+	// real DB outage — was masked as “面试记录不存在”).
+	existing, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid)
+	if err != nil {
+		writeInterviewOwnershipErr(c, err)
 		return
 	}
 	it := &actrepo.Interview{
@@ -203,8 +222,20 @@ func (h *Handler) updateInterview(c *gin.Context) {
 		Result: req.Result, Feedback: req.Feedback, Notes: req.Notes,
 	}
 	if err := h.repo.UpdateInterview(c.Request.Context(), h.repo.Pool(), it); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		writeUpsertErr(c, err)
 		return
+	}
+	// Rescheduling must clear the stale “明天有面试” occurrence: the idempotency
+	// key is interview:<id>:<day> and the body carries the interview time, so
+	// ANY change to scheduled_at (day OR time) leaves the old notification
+	// pinned and stale — it would also mute the fresh one. Clearing here frees
+	// the key; the daily generator re-arms the reminder for the new time on its
+	// next pass (same lifecycle as cancel/uncancel). Best-effort.
+	if h.nots != nil && scheduledAtChanged(existing, req.ScheduledAt) {
+		if err := h.nots.ClearInterviewReminders(c.Request.Context(), user.ID, iid); err != nil {
+			observability.L(c.Request.Context()).Warn("clear interview reminders on reschedule",
+				"interview_id", iid, "error", err)
+		}
 	}
 	var sch *actrepo.ScheduleLink
 	if req.Schedule != nil {
@@ -225,11 +256,27 @@ func (h *Handler) updateInterview(c *gin.Context) {
 
 func (h *Handler) deleteInterview(c *gin.Context) {
 	user := httpx.UserFrom(c)
-	appID, _ := h.appID(c)
-	iid, _ := httpx.PathID(c, "interview_id")
-	if err := h.repo.DeleteInterview(c.Request.Context(), h.repo.Pool(), appID, user.ID, iid); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+	appID, iid, ok := h.mustInterviewIDs(c)
+	if !ok {
 		return
+	}
+	// Ownership gate first so a foreign interview is a clean 404 and a real DB
+	// failure is not reported as “记录不存在”.
+	if _, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid); err != nil {
+		writeInterviewOwnershipErr(c, err)
+		return
+	}
+	if err := h.repo.DeleteInterview(c.Request.Context(), h.repo.Pool(), appID, user.ID, iid); err != nil {
+		writeUpsertErr(c, err)
+		return
+	}
+	// Deleting an interview must not leave its generated reminders behind
+	// (best-effort, same as cancel/reschedule).
+	if h.nots != nil {
+		if err := h.nots.ClearInterviewReminders(c.Request.Context(), user.ID, iid); err != nil {
+			observability.L(c.Request.Context()).Warn("clear interview reminders on delete",
+				"interview_id", iid, "error", err)
+		}
 	}
 	httpx.Ok(c)
 }
@@ -293,6 +340,29 @@ func writeInterviewOwnershipErr(c *gin.Context, err error) {
 		return
 	}
 	httpx.WriteErr(c, err)
+}
+
+// ownershipErr maps an AppOwnedBy failure for a create: the application does
+// not exist or belongs to someone else → 404 (same shape as reads of a
+// foreign application); genuine DB failures pass through untouched.
+func ownershipErr(err error) error {
+	if errors.Is(err, actrepo.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+		return httpx.NotFound("申请记录不存在")
+	}
+	return err
+}
+
+// scheduledAtChanged reports whether the incoming scheduled_at differs from the
+// stored row (nil on either side counts as a change: a cleared schedule drops
+// the stale reminder too).
+func scheduledAtChanged(existing *actrepo.Interview, next *time.Time) bool {
+	if existing == nil {
+		return true
+	}
+	if existing.ScheduledAt == nil || next == nil {
+		return existing.ScheduledAt != nil || next != nil
+	}
+	return !existing.ScheduledAt.Equal(*next)
 }
 
 // cancelInterview marks an interview cancelled (改期/取消). The row is kept
@@ -428,6 +498,12 @@ func (h *Handler) createAction(c *gin.Context) {
 	var appPtr *int64
 	if appID > 0 {
 		appPtr = &appID
+		// Ownership gate for app-scoped creates (ActionsRoot has no app path
+		// segment): actions may only attach to applications the caller owns.
+		if err := h.repo.AppOwnedBy(c.Request.Context(), h.repo.Pool(), appID, user.ID); err != nil {
+			httpx.WriteErr(c, ownershipErr(err))
+			return
+		}
 	}
 	dueDate, err := parseDueDate(req.DueDate)
 	if err != nil {
@@ -652,6 +728,11 @@ func (h *Handler) createNote(c *gin.Context) {
 	var req noteDTO
 	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.WriteErr(c, err)
+		return
+	}
+	// Ownership gate (see createInterview).
+	if err := h.repo.AppOwnedBy(c.Request.Context(), h.repo.Pool(), appID, user.ID); err != nil {
+		httpx.WriteErr(c, ownershipErr(err))
 		return
 	}
 	n := &actrepo.Note{ApplicationID: appID, OwnerID: user.ID, ContentMD: req.ContentMD}

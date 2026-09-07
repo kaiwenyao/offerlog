@@ -28,6 +28,22 @@
 >
 > 本次验证：后端 go test（含新增集成测试）全绿；前端 typecheck + 13 个单元测试 + build 通过；本地 Docker 栈（make up）实测注册→建申请→面试→逾期→提醒→日历→偏好保存闭环。
 >
+> ### 评审修复记录（四轮 · P0 越权写 + 9 项 P1）
+>
+> **P0 · 编译产物入库**：`backend/worker`（arm64 Mach-O，26MB）已 `git rm --cached` 并从历史工作树移除；`.gitignore` 补 `backend/worker`（及同构的 `backend/api`、`backend/api-admin`）防止再犯；部署仍走容器镜像内构建，不受影响。
+> - **create 越权写 + 信息泄露链**：`createInterview/createAction/createNote` 之前只校验外键存在、不校验属于当前用户；现在三个 create 都先 `AppOwnedBy`（该函数原已存在但无人调用），非本人申请一律 404；home `open_actions` CTE 的 join 补 `ap.owner_id = a.owner_id`（周条/reminders/calendar 都带，唯独这里漏了），彻底切断“建一行→/home/summary 带回受害者公司名/岗位/状态”的泄露链。回归测试覆盖 HTTP 404、零落库、owner 正常创建、遗留越权行不进入他人 todo。
+> - **时区校验可被空串/Local 穿透**：Go 的 `time.LoadLocation("")` 返回 (UTC, nil)、“Local”也成功，原样存入 `users.timezone` 后 `AT TIME ZONE` 永久 500。新增服务层 `NormalizeTimezone`（TrimSpace + 空串归默认 + 拒绝 Local），`PATCH /auth/me` 与 `PUT /preferences` 下沉统一调用；`ValidateTimezone`（register/CLI）共用同一规则。另加读侧兜底 `timeutil.SafeLocation`：历史遗留的脏时区行不再打挂 home/calendar/reminders（SQL 只收到可用的 IANA 值）。
+> - **CSRF 注释与实际相反**：`/api/v1/auth/` 前缀整体豁免非 GET，把带会话的 `PATCH /auth/me` 也豁免了。改为对 login/register/logout 三个端点精确放行，`/auth/me` 与其它变更一样必须带 X-CSRF-Token；bootstrap 注释同步修正。新增测试：无 token PATCH /me → 403、带 token → 200。
+> - **week_start=周日首页周条整体错位一天**：后端周条 day 索引改为相对用户每周起始日（`(ISO − weekStartISO + 7) % 7`，day 0 = 起始日）；响应新增 `week_start`；前端 `buildWeek` 去掉“固定周一→周日 + 硬编码标签”，列标签按实际周起始日滚动（周日起始 → 周日→周六），日期号与“今天”高亮随之正确。`week_start=0/1` 各一条确定性集成测试 + 前端单测。
+> - **改期/删除面试不清理旧提醒**：`updateInterview`（scheduled_at 任一变化，含同日改时间——提醒正文含时刻）与 `deleteInterview` 接上 best-effort `ClearInterviewReminders`，不再只有 cancel 清理；新增 transport 级回归测试。
+> - **议程把过去事件归进“未来 7 天”**：`agenda()` 改为 `day < todayKey` 即入“已逾期”，过去的面试/截止不再挂在“未来 7 天”标题下（−90d 取数窗口正是为久远逾期存在的）。
+> - **议程取数窗口用浏览器时区**：删除 `mondayOf/addDays/toISO/agendaWindow` 等浏览器区 Date 助手，新增纯 day-key `agendaWindowKeys`，页面用 `dayToInstant(addDaysToKey(...))` 转用户区午夜，边界不再漂移、+29/+30 天事件不再被半开区间截掉。
+> - **三处结果集漏检 rows.Err()**：home 周条循环、calendar 三类查询循环、reminders 三类生成循环补 `rows.Err()`；worker 不再把断连后截断的结果当成完整一轮（否则漏掉的“面试前一天”提醒永不补发）。analytics 两处同类循环一并补齐。
+> - **updateInterview/deleteInterview 一切错误映射 404**：改为与 cancel/uncancel 一致——先 `GetInterview` 归属校验（仅真不存在 404），写库错误只把 `pgx.ErrNoRows`/`ErrNotFound` 映射 404，真实 DB 故障透传 500；路径参数解析错误不再吞掉（400）。
+> - **worker 租约围栏无真实回归保护**：新增真实 DB 集成测试——Claim 后强制到期、二次 Claim 重新认领，旧 owner 的 RenewLease/Succeed/Fail 全部 `ErrLostLease` 且不翻转行状态，新 owner 可正常完成。删掉 jobs.go 的 `AND lease_until = $2` 该测试必红。
+>
+> 以上每项均带回归测试（后端 20+ 新增集成断言、前端单测同步），全绿：`go build/vet`、`go test ./internal/...`、`go test ./tests/integration/...`、前端 `tsc` + `vitest`。
+>
 > ### 评审修复记录（二轮/三轮）
 >
 > - **议程窗口**：取数窗口改为 `[本周周一−90d, +30d)`（原误改只取 −90d..−76d 已修正），久远逾期可入“已逾期”桶。

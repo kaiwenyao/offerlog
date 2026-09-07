@@ -100,9 +100,13 @@ func (a *App) Handler() http.Handler {
 	r.Use(gin.Recovery(), httpx.RequestID(), httpx.SecurityHeaders(), httpx.Auth(a.Auth))
 
 	api := r.Group("/api/v1", httpx.CSRF(a.Auth))
-	// Auth endpoints live OUTSIDE the CSRF-protected group: login/register
-	// have no session yet (nothing to protect), and logout only clears the
-	// cookie. A dedicated Origin check middleware guards them.
+	// Auth endpoints live inside the api group (so CSRF sees them), but the
+	// CSRF middleware itself exempts exactly login/register/logout — endpoints
+	// that bootstrap or tear down the session and therefore have no CSRF token
+	// to anchor on. They are protected by SameSite=Lax cookies + the Origin
+	// check in the middleware. Authenticated profile writes (PATCH /auth/me)
+	// carry a live session and must NOT be exempt; the middleware allowlists
+	// precisely, so /auth/me requires the CSRF token like every other mutation.
 	authH := idtransport.New(a.Auth, idtransport.Config{
 		Secure:           a.Cfg.HTTP.PublicBase != "" && strings.HasPrefix(a.Cfg.HTTP.PublicBase, "https"),
 		RegistrationOpen: a.Cfg.App.RegistrationOpen,

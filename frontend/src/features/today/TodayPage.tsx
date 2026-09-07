@@ -7,7 +7,7 @@ import { statusMeta } from '../../lib/status'
 import { Button, Card, PanelTitle } from '../../ds'
 import { Dot, EmptyHint, ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
 import { effectiveZone } from '../../lib/tz'
-import { buildWeek, CHIP_TONES, groupActions, startOfDay, type TodoItem } from './week'
+import { buildWeek, CHIP_TONES, groupActions, type TodoItem } from './week'
 
 const PANEL: React.CSSProperties = { padding: 0, overflow: 'hidden' }
 
@@ -267,15 +267,15 @@ function TodoRow({
   onPostpone: () => void
 }) {
   const due = item.due_ts ?? item.due_date
-  const dueTsVal = item.due_ts ? new Date(item.due_ts).getTime() : null
   const dueDay = item.due_date || null
-  const todayStart = startOfDay()
-  // date-only due_date is a calendar day — compare as day strings, never
-  // through new Date() (which would shift west-of-UTC). “today” is taken in
-  // the user's configured zone so it agrees with startOfDay()/the server.
+  // “today” is taken in the user's configured zone; an instant due is compared
+  // by its user-zone calendar day (never browser-local midnight), and a
+  // date-only due by day-key — both agree with the server's overdue window.
   const todayStr = toDayString(new Date().toISOString(), effectiveZone()) ?? ''
   const overdue =
-    dueTsVal != null ? dueTsVal < todayStart : dueDay != null && dueDay < todayStr
+    item.due_ts != null
+      ? (toDayString(item.due_ts, effectiveZone()) ?? '') < todayStr
+      : dueDay != null && dueDay < todayStr
   const derived = item.action_id == null
   return (
     <div className="panel-row">

@@ -184,7 +184,7 @@ paths:
     get: { summary: 检查 DB 与 schema }
   /home/summary:
     get:
-      summary: 首页全量汇总（服务端统计，周窗口为半开区间；含跨岗位近期面试与统一待办计数）
+      summary: 首页全量汇总（服务端统计，周窗口与周条均为用户每周起始日的半开区间；含跨岗位近期面试与统一待办计数）
       parameters:
         - name: limit
           in: query

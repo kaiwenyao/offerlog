@@ -68,7 +68,7 @@ export interface WeekDay {
   items: Array<{ kind: string; who: string; tone: 'info' | 'warn' | 'good' | 'acc' | 'bad' }>
 }
 
-const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
 export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; fg: string }> = {
   info: { bg: 'var(--info-soft)', fg: 'var(--info-strong)' },
@@ -79,34 +79,43 @@ export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; 
 }
 
 /**
- * Build the Monday→Sunday strip from the server-computed week. The week's
- * start (summary.week.start) is the user-zone Monday 00:00 instant; each day
- * cell's number / weekday / “is today” is derived from that instant in the
- * user zone (via the zone-aware helpers), so a browser in another timezone
- * shows the same seven calendar days the server counted. week_items already
- * carry server-computed day indexes (Mon=0..Sun=6 in the user zone) and are
- * placed as-is.
+ * Build the 7-column week strip from the server-computed week. The week's
+ * start (summary.week.start) is the user-zone midnight of the user's chosen
+ * week-start day (week_start preference: 0=周日..6=周六); each column's
+ * weekday label and day number are derived from that instant + column index in
+ * the user zone, and week_items' day index is relative to the same start
+ * (server already normalized day 0 = the week-start day). The client therefore
+ * never assumes Monday — for a Sunday-start user the strip reads 周日→周六 and
+ * every chip lands on the correct calendar day.
  */
-export function buildWeek(summary: Pick<HomeSummary, 'week' | 'week_items'>, now: Date = new Date()): WeekDay[] {
+export function buildWeek(
+  summary: Pick<HomeSummary, 'week' | 'week_start' | 'week_items'>,
+  now: Date = new Date(),
+): WeekDay[] {
   const zone = effectiveZone()
   const todayKey = toDayString(now.toISOString(), zone)
   const startIso = summary.week.start
+  // Instant of the week-start day (user-zone midnight).
   const startMs = startIso ? dayToInstant(toDayString(startIso, zone), zone) : null
+  // 0=周日..6=周六 (server preference value). The labels follow actual calendar
+  // weekdays, so for week_start=0 column 0 is 周日 and chips (day 0) sit there.
+  const weekStart = summary.week_start ?? 1
 
-  const days: WeekDay[] = WEEKDAYS.map((weekday, i) => {
-    // Monday 00:00 user-local + i calendar days.
+  const days: WeekDay[] = []
+  for (let i = 0; i < 7; i++) {
     let key: string | null = null
     if (startMs != null) {
       const ts = addDaysUtc(startMs, i, zone)
       key = toDayString(new Date(ts).toISOString(), zone)
     }
-    return {
-      weekday,
+    const dow = (weekStart + i) % 7 // actual weekday 0=Sunday..6=Saturday
+    days.push({
+      weekday: WEEKDAY_LABELS[dow],
       dayNum: key ? Number(key.slice(8, 10)) : 0,
       isToday: key != null && key === todayKey,
       items: [],
-    }
-  })
+    })
+  }
 
   const items = summary.week_items ?? []
   for (const it of items) {

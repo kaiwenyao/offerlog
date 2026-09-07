@@ -3,7 +3,6 @@ package transport
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -139,11 +138,12 @@ func (h *Handler) put(c *gin.Context) {
 		p.DisplayName = name
 	}
 	if req.Timezone != nil {
-		if _, err := timeLoad(*req.Timezone); err != nil {
-			httpx.WriteErr(c, httpx.BadRequest("invalid_timezone", "无效的时区（需 IANA 名称，如 Europe/Dublin）"))
+		norm, err := authservice.NormalizeTimezone(*req.Timezone)
+		if err != nil {
+			httpx.WriteErr(c, httpx.BadRequest("invalid_timezone", err.Error()))
 			return
 		}
-		p.Timezone = *req.Timezone
+		p.Timezone = norm
 	}
 	if req.WeekStart != nil {
 		if *req.WeekStart < 0 || *req.WeekStart > 6 {
@@ -190,9 +190,3 @@ func (h *Handler) put(c *gin.Context) {
 	user.Timezone = p.Timezone
 	c.JSON(http.StatusOK, toDTO(user.ID, user.DisplayName, user.Timezone, p))
 }
-
-func timeLoad(tz string) (*time.Location, error) {
-	return time.LoadLocation(tz)
-}
-
-var _ = http.StatusOK

@@ -3,7 +3,6 @@ package transport
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -163,7 +162,10 @@ func (h *Handler) me(c *gin.Context) {
 
 // updateMe persists display name / timezone from the settings page. It runs
 // on the CSRF-protected parent group because a session already exists. Both
-// fields are optional pointers (only present ones change).
+// fields are optional pointers (only present ones change). The timezone goes
+// through the service-layer NormalizeTimezone (TrimSpace, empty → app default,
+// pseudo-zones like "Local" rejected) so a value that would later break SQL
+// AT TIME ZONE can never reach the users row.
 func (h *Handler) updateMe(c *gin.Context) {
 	u := httpx.UserFrom(c)
 	if u == nil {
@@ -188,11 +190,12 @@ func (h *Handler) updateMe(c *gin.Context) {
 	}
 	tz := u.Timezone
 	if req.Timezone != nil {
-		tz = strings.TrimSpace(*req.Timezone)
-		if _, err := time.LoadLocation(tz); err != nil {
-			httpx.WriteErr(c, httpx.BadRequest("invalid_timezone", "无效的时区（需 IANA 名称，如 Europe/Dublin）"))
+		norm, err := idservice.NormalizeTimezone(*req.Timezone)
+		if err != nil {
+			httpx.WriteErr(c, httpx.BadRequest("invalid_timezone", err.Error()))
 			return
 		}
+		tz = norm
 	}
 	row, err := h.auth.UpdateProfile(c.Request.Context(), u.ID, displayName, tz)
 	if err != nil {

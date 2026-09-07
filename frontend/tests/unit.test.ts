@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
 import { fmtBytes, fmtDate, daysBetween, dayToInstant, toDayString, fmtDay } from '../src/lib/api'
 import { buildWeek } from '../src/features/today/week'
-import { agenda, agendaWindow, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
+import { agenda, agendaWindowKeys, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
 import type { CalendarEvent } from '../src/lib/types'
 
 describe('status dictionary', () => {
@@ -63,10 +63,11 @@ describe('filter tree helpers (used by saved views)', () => {
 })
 
 describe('server week strip (home summary)', () => {
-  it('places week_items into the correct Mon-Sun day columns', () => {
-    // 2026-08-31 is a Monday.
+  it('places week_items into the correct Mon-Sun day columns under the Monday default', () => {
+    // 2026-08-31 is a Monday; week_start defaults to 1 (周一).
     const mon = new Date(2026, 7, 31, 10, 0, 0)
     const summary = {
+      week_start: 1,
       week: { start: '2026-08-31T00:00:00', end: '2026-09-07T00:00:00' },
       week_items: [
         { day: 0, kind: '投递', who: 'Acme', tone: 'info' },
@@ -77,6 +78,29 @@ describe('server week strip (home summary)', () => {
     expect(days[0].items.map((i) => i.who)).toContain('Acme')
     expect(days[3].items.map((i) => i.who)).toContain('BigCo · 一面')
     expect(days[0].weekday).toBe('周一')
+    expect(days[6].weekday).toBe('周日')
+  })
+
+  it('anchors the strip at the user week_start=0 (周日): column 0 is 周日 and chips land on their real day', () => {
+    // 2026-09-06 is a Sunday. With week_start=0 the window starts Sunday
+    // 2026-09-06; chips are indexed 0 = 周日.
+    const sunday = new Date(2026, 8, 6, 12, 0, 0)
+    const summary = {
+      week_start: 0,
+      week: { start: '2026-09-06T00:00:00', end: '2026-09-13T00:00:00' },
+      week_items: [
+        { day: 0, kind: '投递', who: 'SunCo', tone: 'info' }, // 周日
+        { day: 3, kind: '面试', who: 'WedCo · 一面', tone: 'acc' }, // 周三
+      ],
+    } as never
+    const days = buildWeek(summary, sunday)
+    expect(days[0].weekday).toBe('周日')
+    expect(days[3].weekday).toBe('周三')
+    expect(days[6].weekday).toBe('周六')
+    expect(days[0].items.map((i) => i.who)).toContain('SunCo')
+    expect(days[3].items.map((i) => i.who)).toContain('WedCo · 一面')
+    expect(days[0].dayNum).toBe(6) // 2026-09-06
+    expect(days[3].dayNum).toBe(9) // 2026-09-09
   })
 })
 
@@ -141,14 +165,17 @@ describe('calendar grid helpers', () => {
     const in20d = '2026-09-27T12:00:00Z'
     // an action due yesterday (overdue must surface in its own bucket)
     const overdue = { ...baseEv, id: 4, kind: 'action' as const, start: '2026-09-05T12:00:00Z' }
+    // a PAST interview (3 days ago) must NOT appear under “未来 7 天”
+    const pastInterview = { ...baseEv, id: 5, kind: 'interview' as const, start: '2026-09-04T12:00:00Z' }
     const evs: CalendarEvent[] = [
       { ...baseEv, id: 1, start: todayNoon },
       { ...baseEv, id: 2, start: in3d },
       { ...baseEv, id: 3, start: in20d },
       overdue,
+      pastInterview,
     ]
     const groups = agenda(evs, now, ZONE)
-    expect(groups.find((g) => g.title === '已逾期')?.items.map((e) => e.id)).toEqual([4])
+    expect(groups.find((g) => g.title === '已逾期')?.items.map((e) => e.id).sort()).toEqual([4, 5])
     expect(groups.find((g) => g.title === '今天')?.items.map((e) => e.id)).toEqual([1])
     expect(groups.find((g) => g.title === '未来 7 天')?.items.map((e) => e.id)).toEqual([2])
     expect(groups.find((g) => g.title === '之后')?.items.map((e) => e.id)).toEqual([3])
@@ -182,13 +209,11 @@ describe('date-only helpers (§P0 timezone semantics)', () => {
 
 describe('calendar agenda window', () => {
   it('spans −90d..+30d so old overdue and upcoming items are both fetched', () => {
-    const wed = new Date(2026, 8, 9, 12, 0) // 2026-09-09
-    const { from, to } = agendaWindow(wed)
-    // Monday of that week is 2026-09-07; −90d is 2026-06-09, +30d is 2026-10-07.
-    expect(from.getTime()).toBe(new Date(2026, 5, 9).getTime())
-    expect(to.getTime()).toBe(new Date(2026, 9, 7).getTime())
-    // an action overdue 10 days (2026-08-30) falls inside [from, to)
-    const overdue = new Date(2026, 7, 30).getTime()
-    expect(overdue >= from.getTime() && overdue < to.getTime()).toBe(true)
+    // Monday key of the week of 2026-09-09 (Wednesday) is 2026-09-07.
+    const { fromKey, toKey } = agendaWindowKeys('2026-09-07')
+    expect(fromKey).toBe('2026-06-09') // −90d
+    expect(toKey).toBe('2026-10-07') // +30d
+    // an action overdue 10 days (2026-08-30) falls inside [fromKey, toKey)
+    expect('2026-08-30' >= fromKey && '2026-08-30' < toKey).toBe(true)
   })
 })

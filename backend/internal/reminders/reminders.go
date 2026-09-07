@@ -74,11 +74,8 @@ func (g *Gen) Run(ctx context.Context, now time.Time) (int, error) {
 	}
 	inserted := 0
 	for _, u := range users {
-		loc, err := time.LoadLocation(u.Timezone)
-		if err != nil || loc == nil {
-			loc = time.UTC
-		}
-		n, err := g.runOne(ctx, u.ID, loc, now)
+		loc, tzSafe := timeutil.SafeLocation(u.Timezone)
+		n, err := g.runOne(ctx, u.ID, loc, now, tzSafe)
 		if err != nil {
 			return inserted, err
 		}
@@ -87,7 +84,7 @@ func (g *Gen) Run(ctx context.Context, now time.Time) (int, error) {
 	return inserted, nil
 }
 
-func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now time.Time) (int, error) {
+func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now time.Time, tz string) (int, error) {
 	p, err := g.prefs.Get(ctx, ownerID)
 	if err != nil {
 		return 0, err
@@ -117,7 +114,7 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 			  AND ( (a.due_ts IS NOT NULL AND a.due_ts < $2)
 			     OR (a.due_ts IS NULL AND a.due_date IS NOT NULL
 			         AND (a.due_date::timestamp AT TIME ZONE $3) < $2) )
-			ORDER BY a.id`, ownerID, dayStart, loc.String())
+			ORDER BY a.id`, ownerID, dayStart, tz)
 		if err != nil {
 			return inserted, err
 		}
@@ -140,6 +137,9 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 			if ok {
 				inserted++
 			}
+		}
+		if err := rows.Err(); err != nil {
+			return inserted, err
 		}
 		rows.Close()
 	}
@@ -181,6 +181,9 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 				inserted++
 			}
 		}
+		if err := rows.Err(); err != nil {
+			return inserted, err
+		}
 		rows.Close()
 	}
 
@@ -218,6 +221,9 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 			if ok {
 				inserted++
 			}
+		}
+		if err := rows.Err(); err != nil {
+			return inserted, err
 		}
 		rows.Close()
 	}

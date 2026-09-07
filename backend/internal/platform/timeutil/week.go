@@ -6,6 +6,7 @@
 package timeutil
 
 import (
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,25 @@ import (
 func StartOfDay(d time.Time, loc *time.Location) time.Time {
 	y, m, day := d.In(loc).Date()
 	return time.Date(y, m, day, 0, 0, 0, 0, loc)
+}
+
+// SafeLocation resolves a user timezone for BOTH the in-process loc and the
+// SQL-side tz string. time.LoadLocation accepts "" (→ UTC) and "Local" (→ the
+// server zone), but PostgreSQL's `AT TIME ZONE` does NOT — persisting either
+// (possible before NormalizeTimezone was enforced) made that user's home and
+// calendar queries fail forever. Any unloadable / blank / "Local" value is
+// therefore rewritten to a usable default before it ever reaches SQL.
+func SafeLocation(tz string) (*time.Location, string) {
+	tz = strings.TrimSpace(tz)
+	if tz == "" || strings.EqualFold(tz, "Local") {
+		tz = "Europe/Dublin"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil || loc == nil {
+		loc = time.UTC
+		tz = "UTC"
+	}
+	return loc, tz
 }
 
 // WeekBounds returns the half-open [start, end) window of the week containing

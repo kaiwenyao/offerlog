@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/timeutil"
 )
 
 type Repo struct{ db *database.DB }
@@ -42,10 +43,7 @@ type Event struct {
 // scheduled instant; actions/deadlines are all-day (date) events converted to
 // the user's local midnight and compared in the half-open window.
 func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to time.Time) ([]Event, error) {
-	loc, err := time.LoadLocation(tz)
-	if err != nil || loc == nil {
-		loc = time.UTC
-	}
+	loc, tzSafe := timeutil.SafeLocation(tz)
 	var out []Event
 
 	// Interviews (non-cancelled) scheduled in the window.
@@ -80,9 +78,12 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		e.AllDay = false
 		e.Done = result == "passed" || result == "failed"
 		if e.Timezone == "" {
-			e.Timezone = tz
+			e.Timezone = tzSafe
 		}
 		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	rows.Close()
 
@@ -99,7 +100,7 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		  AND ( (x.due_ts IS NOT NULL AND x.due_ts >= $2 AND x.due_ts < $3)
 		     OR (x.due_ts IS NULL AND x.due_date IS NOT NULL
 		         AND (x.due_date::timestamp AT TIME ZONE $4) >= $2 AND (x.due_date::timestamp AT TIME ZONE $4) < $3) )
-		ORDER BY COALESCE(x.due_ts, x.due_date::timestamp AT TIME ZONE $4)`, ownerID, from, to, tz)
+		ORDER BY COALESCE(x.due_ts, x.due_date::timestamp AT TIME ZONE $4)`, ownerID, from, to, tzSafe)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +118,7 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		e.Kind = "action"
 		e.Done = done
 		e.AllDay = dueTs == nil
-		e.Timezone = tz
+		e.Timezone = tzSafe
 		// Start: use the precise instant when present, else local-midnight of
 		// the date column so the UI buckets it on the right day.
 		if dueTs != nil {
@@ -135,6 +136,9 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		}
 		out = append(out, e)
 	}
+	if err := arows.Err(); err != nil {
+		return nil, err
+	}
 
 	// Application deadlines (date) and offer-decision windows use the
 	// application's own deadline/status columns. deadline is a calendar day;
@@ -143,7 +147,7 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		FROM applications a
 		WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.archived_at IS NULL AND a.deadline IS NOT NULL
 		  AND (a.deadline::timestamp AT TIME ZONE $2) >= $3 AND (a.deadline::timestamp AT TIME ZONE $2) < $4
-		ORDER BY a.deadline`, ownerID, tz, from, to)
+		ORDER BY a.deadline`, ownerID, tzSafe, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +163,7 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		e.Kind = "deadline"
 		e.Title = e.CompanyName + " · 截止"
 		e.AllDay = true
-		e.Timezone = tz
+		e.Timezone = tzSafe
 		if deadline != nil {
 			// date-only application deadline → user-local midnight of that day.
 			yy, mm, dd := deadline.UTC().Date()
@@ -168,6 +172,9 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		}
 		e.Done = status == "accepted" || status == "rejected" || status == "withdrawn" || status == "closed"
 		out = append(out, e)
+	}
+	if err := drows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
