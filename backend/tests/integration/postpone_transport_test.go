@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"offerlog/backend/internal/reminders"
 
 	"github.com/gin-gonic/gin"
 
@@ -89,4 +92,44 @@ func itoa(v int64) string {
 		v /= 10
 	}
 	return string(b)
+}
+
+// Regression (round 2): deleting an action via the API must also clear its
+// overdue reminder (done/postpone/update did; delete was missed).
+func TestDeleteActionClearsOverdueReminder(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "DelCo", "Role")
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进', CURRENT_DATE - 2, NULL, FALSE, 'medium','manual') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+	// Generate the overdue reminder.
+	if _, err := reminders.New(db).Run(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	_ = db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='overdue' AND dismissed_at IS NULL`, owner).Scan(&before)
+	if before == 0 {
+		t.Fatal("expected an open overdue reminder before delete")
+	}
+	srv := newActivityServer(t, db, owner)
+	defer srv.Close()
+	req, _ := http.NewRequest("DELETE", srv.URL+"/api/v1/actions/"+itoa(actionID), nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete status=%d", res.StatusCode)
+	}
+	var after int
+	_ = db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='overdue' AND dismissed_at IS NULL`, owner).Scan(&after)
+	if after != 0 {
+		t.Fatalf("overdue reminders open before=%d after=%d — delete must clear the deleted action's reminder", before, after)
+	}
+	_ = svc
+	_ = actionID
 }

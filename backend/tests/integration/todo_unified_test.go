@@ -90,3 +90,42 @@ func TestHomeTodoDueDayIsDateOnlyString(t *testing.T) {
 		t.Fatalf("derived date-only row must not expose due_ts: %+v", it.DueTs)
 	}
 }
+
+// Regression (round 2): archiving an application must remove its standalone
+// action from the unified todo list and from todos.open — the working set
+// excludes archived applications per scope_note, and both sources (standalone
+// actions + derived) must agree.
+func TestArchivedAppActionExcludedFromTodos(t *testing.T) {
+	ctx := context.Background()
+	db, svc, _, owner := setup(t)
+	var tz string
+	_ = db.Pool().QueryRow(ctx, `SELECT timezone FROM users WHERE id=$1`, owner).Scan(&tz)
+
+	app := mustCreate(t, svc, owner, "ArchivedCo", "Role")
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'待办A', CURRENT_DATE + 1, NULL, FALSE, 'high','manual')`, app.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	repo := home.New(db)
+	s, err := repo.Get(ctx, owner, tz, time.Monday, time.Now(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Todos.Open != 1 {
+		t.Fatalf("before archive open=%d want 1", s.Todos.Open)
+	}
+	// archive the app
+	if err := svc.Archive(ctx, owner, app.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := repo.Get(ctx, owner, tz, time.Monday, time.Now(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Todos.Open != 0 {
+		t.Fatalf("after archive open=%d want 0 (archived app's action must be excluded)", s2.Todos.Open)
+	}
+	if len(s2.TodoItems) != 0 {
+		t.Fatalf("after archive todo_items=%d want 0", len(s2.TodoItems))
+	}
+}
