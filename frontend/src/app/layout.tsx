@@ -21,6 +21,7 @@ interface NavEntry {
 const NAV: NavEntry[] = [
   { to: '/', label: '今日待办', short: '今日', icon: 'today', end: true, count: 'open' },
   { to: '/database', label: '求职数据库', short: '岗位', icon: 'database', count: 'apps' },
+  { to: '/calendar', label: '面试日历', short: '日历', icon: 'calendar' },
   { to: '/analytics', label: '统计分析', short: '统计', icon: 'analytics' },
   { to: '/files', label: '文件库', short: '文件', icon: 'files', count: 'files' },
   { to: '/settings', label: '设置', short: '设置', icon: 'settings' },
@@ -36,6 +37,7 @@ const SAVED_VIEWS: Array<{ label: string; dot: string; view: number; layout: str
 const PAGE_META: Record<string, { eyebrow: string; title: string }> = {
   '/': { eyebrow: 'TODAY', title: '今日待办' },
   '/database': { eyebrow: 'DATABASE', title: '求职数据库' },
+  '/calendar': { eyebrow: 'CALENDAR · 跨岗位日程', title: '面试日历' },
   '/analytics': { eyebrow: 'ANALYTICS', title: '统计分析' },
   '/files': { eyebrow: 'FILES · 私有存储', title: '文件库' },
   '/settings': { eyebrow: 'SETTINGS', title: '设置' },

@@ -17,6 +17,8 @@ import (
 	apprepo "offerlog/backend/internal/applications/repository"
 	appservice "offerlog/backend/internal/applications/service"
 	apptransport "offerlog/backend/internal/applications/transport"
+	calrepo "offerlog/backend/internal/calendar"
+	caltransport "offerlog/backend/internal/calendar/transport"
 	filetransport "offerlog/backend/internal/files/transport"
 	homerepo "offerlog/backend/internal/home"
 	hometransport "offerlog/backend/internal/home/transport"
@@ -141,6 +143,10 @@ func (a *App) Handler() http.Handler {
 	trH := trtransport.New(trRepo)
 	trH.Routes(api.Group("/imports"))
 	trH.ExportRoutes(api.Group("/exports"))
+
+	// calendar (cross-application agenda for the configured user week)
+	calH := caltransport.New(calrepo.New(a.DB))
+	calH.Routes(api.Group("/calendar"))
 
 	// preferences (account profile + reminder prefs)
 	prefsH := prefstransport.NewWithProfile(a.Prefs, a.Auth)

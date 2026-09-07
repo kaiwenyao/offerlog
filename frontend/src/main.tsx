@@ -21,6 +21,7 @@ import { DetailPage } from './features/detail/DetailPage'
 import { FilesPage } from './features/files/FilesPage'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { NotificationsPage } from './features/notifications/Page'
+import { CalendarPage } from './features/calendar/CalendarPage'
 import { LoginPage } from './features/auth/LoginPage'
 
 const AnalyticsPage = React.lazy(() => import('./features/analytics/AnalyticsPage'))
@@ -97,6 +98,7 @@ export default function App() {
             <Route path="/database" element={<DatabasePage />} />
             <Route path="/database/:id" element={<DatabasePage />} />
             <Route path="/apps/:id" element={<DetailPage />} />
+            <Route path="/calendar" element={<CalendarPage />} />
             <Route
               path="/analytics"
               element={

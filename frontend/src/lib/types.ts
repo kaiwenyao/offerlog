@@ -250,3 +250,23 @@ export interface InterviewSchedule {
   cancelled_reason: string
   original_timezone: string
 }
+
+// CalendarEvent is one cross-application agenda row (/api/v1/calendar).
+export interface CalendarEvent {
+  id: number
+  kind: 'interview' | 'action' | 'deadline' | 'offer_decision'
+  application_id: number
+  company_name: string
+  position: string
+  title: string
+  start: string | null
+  dueDate?: string | null
+  timezone: string
+  all_day: boolean
+  location: string
+  meeting_url: string
+  cancelled: boolean
+  done: boolean
+  round_name: string
+  format: string
+}

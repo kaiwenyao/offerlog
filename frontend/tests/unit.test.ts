@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
 import { fmtBytes, fmtDate, daysBetween } from '../src/lib/api'
 import { buildWeek } from '../src/features/today/week'
+import { agenda, mondayOf, weekColumns } from '../src/features/calendar/grid'
+import type { CalendarEvent } from '../src/lib/types'
 
 describe('status dictionary', () => {
   it('covers all 11 standard statuses with Chinese labels + icons', () => {
@@ -92,3 +94,40 @@ describe('analytics rate display semantics (§4.2)', () => {
     expect(rateOrDash(undefined, 0)).toBe('—')
   })
 })
+
+describe('calendar grid helpers', () => {
+  it('places an interview on the correct Monday-start week column', () => {
+    const wed = new Date(2026, 8, 9, 10, 0) // 2026-09-09 Wed
+    const mon = mondayOf(wed)
+    expect(mon.getDay()).toBe(1)
+    const ev: CalendarEvent = {
+      id: 1, kind: 'interview', application_id: 1, company_name: 'Acme', position: 'R',
+      title: 'Acme · 一面', start: '2026-09-09T10:00:00Z', timezone: 'Europe/Dublin',
+      all_day: false, location: '', meeting_url: '', cancelled: false, done: false,
+      round_name: '一面', format: 'video',
+    }
+    const cols = weekColumns([ev], mon)
+    const col = cols.find((c) => c.date.getDate() === 9)
+    expect(col?.events.length).toBe(1)
+    expect(cols[0].date.getDay()).toBe(1)
+  })
+
+  it('groups events into recent/after agenda buckets', () => {
+    const now = new Date(2026, 8, 7, 12, 0)
+    const in3d = new Date(now.getTime() + 3 * 86400000).toISOString()
+    const in20d = new Date(now.getTime() + 20 * 86400000).toISOString()
+    const evs: CalendarEvent[] = [
+      { ...baseEv, id: 1, start: in3d },
+      { ...baseEv, id: 2, start: in20d },
+    ]
+    const groups = agenda(evs, now)
+    expect(groups).toHaveLength(2)
+    expect(groups[0].items.map((e) => e.id)).toEqual([1])
+    expect(groups[1].items.map((e) => e.id)).toEqual([2])
+  })
+})
+const baseEv: CalendarEvent = {
+  id: 0, kind: 'interview', application_id: 1, company_name: 'Acme', position: '',
+  title: '', start: '', timezone: 'UTC', all_day: false, location: '', meeting_url: '',
+  cancelled: false, done: false, round_name: '', format: '',
+}

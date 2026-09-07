@@ -213,3 +213,15 @@ paths:
     post: { summary: 标记已读 }
   /notifications/{id}/dismiss:
     post: { summary: 忽略（不删除，保留历史） }
+  /calendar:
+    get:
+      summary: 跨岗位日程（?from=ISO&to=ISO，半开区间；面试/待办/截止/Offer 答复）
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
