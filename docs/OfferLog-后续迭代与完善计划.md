@@ -28,6 +28,13 @@
 >
 > 本次验证：后端 go test（含新增集成测试）全绿；前端 typecheck + 13 个单元测试 + build 通过；本地 Docker 栈（make up）实测注册→建申请→面试→逾期→提醒→日历→偏好保存闭环。
 >
+> ### 评审修复记录（六轮 · 延期语义失效 + dayToInstant DST 偏差）
+>
+> - **「延期」按钮对逾期项永远无效（days 语义锚点错误）**：前端「延期」只在逾期项上渲染（TodayPage 与岗位详情待办卡均为 `overdue && …`），但 `postpone {days:N}` 的后端语义是「从旧截止日 +N 天」——一个逾期多日的待办延期后仍然逾期，按钮永远无法把项推出逾期区，等于无效操作；instant 截止同理（从过期的旧 anchor 平移）。修法：基准取 `max(当前截止, 今天)`——逾期项延期落到「用户时区的今天 +N」（date-only 保持日历日口径，且"今天"按 `user.Timezone` 解析而非服务器时区；instant 从 now 起算），未来项维持从自身截止 +N 的"再给 N 天"语义。回归测试：逾期 date-only `days:1` → 用户区明天；逾期 due_ts `days:1` → ≈now+24h。
+> - **`dayToInstant` 在 DST 切换日偏差 1 小时**：原实现用「UTC 正午读偏移」推算本地午夜——春/秋切换日正午偏移已≠午夜偏移（如 Dublin 2026-03-29 算出 `03-28T23:00Z`，正确为 `03-29T00:00Z`；NY、悉尼及回退日同病），日历/周条取数窗口在切换日漂移 1h。修法：抽出与 `localDateTimeToInstant` 共用的两轮 fixpoint（读目标墙钟处收敛），`dayToInstant`/`localDateTimeToInstant` 同源；回退日取唯一/最早的 00:00（与 `java.time` atStartOfDay 一致）。前端单测覆盖 Dublin 春/秋、NY、悉尼四个切换日样本。
+>
+> 以上每项均带回归测试；验证：`gofmt/go vet`、后端全量 `go test ./...`、前端 `tsc` + `vitest` 全绿。
+>
 > ### 评审修复记录（四轮 · P0 越权写 + 9 项 P1）
 >
 > **P0 · 编译产物入库**：`backend/worker`（arm64 Mach-O，26MB）已 `git rm --cached` 并从历史工作树移除；`.gitignore` 补 `backend/worker`（及同构的 `backend/api`、`backend/api-admin`）防止再犯；部署仍走容器镜像内构建，不受影响。

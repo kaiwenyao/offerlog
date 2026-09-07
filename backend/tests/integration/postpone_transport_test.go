@@ -94,6 +94,98 @@ func itoa(v int64) string {
 	return string(b)
 }
 
+// Regression (round 6): the 延期 buttons render only on OVERDUE items, so
+// "days: N" must anchor at max(current due, user's today) — a blanket +N from
+// the old due left a long-overdue item overdue after postponing, making the
+// button a no-op. Date-only dues must also resolve "today" in the USER's
+// timezone, not the server's.
+func TestPostponeOverdueDaysAnchorsAtUserToday(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "SnoozeCo", "Role")
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'逾期跟进', CURRENT_DATE - 3, NULL, FALSE, 'medium','manual') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+	srv := newActivityServer(t, db, owner)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/actions/"+itoa(actionID)+"/postpone", bytes.NewBufferString(`{"days":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		b := new(bytes.Buffer)
+		_, _ = b.ReadFrom(res.Body)
+		t.Fatalf("postpone days status=%d body=%s", res.StatusCode, b.String())
+	}
+	var out struct {
+		DueDate *string `json:"due_date"`
+		DueTs   *string `json:"due_ts"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	if out.DueDate == nil || out.DueTs != nil {
+		t.Fatalf("date-only postpone must stay date-only; got due_date=%v due_ts=%v", out.DueDate, out.DueTs)
+	}
+	// The user zone (Europe/Dublin in the harness middleware) decides "today";
+	// accept ±1s of wall-clock drift in case the pass crosses local midnight.
+	loc, err := time.LoadLocation("Europe/Dublin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nowLocal := time.Now().In(loc)
+	want := nowLocal.AddDate(0, 0, 1).Format("2006-01-02")
+	wantAlt := nowLocal.Add(2*time.Second).AddDate(0, 0, 1).Format("2006-01-02")
+	if *out.DueDate != want && *out.DueDate != wantAlt {
+		t.Fatalf("overdue postpone {days:1} due_date=%s, want user-zone tomorrow %s (alt %s)", *out.DueDate, want, wantAlt)
+	}
+}
+
+// Same anchor rule for an instant-due action: an overdue due_ts postpones from
+// NOW (not from the stale past anchor), a future due_ts postpones from itself.
+func TestPostponeOverdueDueTsAnchorsAtNow(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "SnoozeTsCo", "Role")
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_ts, done_at, remind_me, priority, source)
+		VALUES($1,$2,'逾期提醒', now() - interval '72 hours', NULL, FALSE, 'medium','manual') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+	srv := newActivityServer(t, db, owner)
+	defer srv.Close()
+
+	testStart := time.Now().UTC()
+	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/actions/"+itoa(actionID)+"/postpone", bytes.NewBufferString(`{"days":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("postpone days status=%d", res.StatusCode)
+	}
+	var out struct {
+		DueDate *string    `json:"due_date"`
+		DueTs   *time.Time `json:"due_ts"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	if out.DueTs == nil || out.DueDate != nil {
+		t.Fatalf("instant postpone must stay instant; got due_date=%v due_ts=%v", out.DueDate, out.DueTs)
+	}
+	// base = now → new due ≈ testStart + 24h (within the handler's runtime).
+	lo := testStart.Add(24*time.Hour - 30*time.Second)
+	hi := time.Now().UTC().Add(24*time.Hour + 30*time.Second)
+	if out.DueTs.Before(lo) || out.DueTs.After(hi) {
+		t.Fatalf("overdue instant postpone due_ts=%v, want ≈ now+24h in [%v,%v]", out.DueTs.UTC(), lo, hi)
+	}
+}
+
 // Regression (round 2): deleting an action via the API must also clear its
 // overdue reminder (done/postpone/update did; delete was missed).
 func TestDeleteActionClearsOverdueReminder(t *testing.T) {

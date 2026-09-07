@@ -190,14 +190,66 @@ export function toDayString(s: string | null | undefined, zone?: string): string
 }
 
 /**
+ * Shared zone formatter + wall-clock reader used by dayToInstant and
+ * localDateTimeToInstant: read() renders a UTC instant as the zone's wall
+ * clock expressed as a "naive-as-UTC" ms value, so wall-clock deltas between
+ * two instants can be compared without any browser-zone involvement.
+ */
+function zoneWallReader(zone: string): { wallAt: (utcMs: number) => number } {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+  const wallAt = (utcMs: number) => {
+    const parts = fmt.formatToParts(utcMs)
+    const map: Record<string, string> = {}
+    for (const p of parts) map[p.type] = p.value
+    return Date.UTC(
+      Number(map.year),
+      Number(map.month) - 1,
+      Number(map.day),
+      Number(map.hour),
+      Number(map.minute),
+      Number(map.second),
+    )
+  }
+  return { wallAt }
+}
+
+/**
+ * UTC instant of a naive wall clock (Y/M/D h:m) interpreted in the given zone,
+ * via a two-pass fixpoint: guess the instant (naive-as-UTC), read the zone
+ * wall clock there, then shift by the wall-clock delta. Two passes converge
+ * even across a DST transition (the offset only changes by ≤1h), unlike a
+ * single "read the offset elsewhere in the day" shortcut: on a spring-forward
+ * day the offset at local noon already differs from the offset at local
+ * midnight, so an offset sampled away from the target wall time lands 1h off.
+ */
+function zoneWallToInstant(y: number, mo: number, d: number, h: number, mi: number, zone: string): number {
+  const { wallAt } = zoneWallReader(zone)
+  const targetWall = Date.UTC(y, mo - 1, d, h, mi, 0)
+  let utc = targetWall
+  for (let i = 0; i < 2; i++) {
+    utc += targetWall - wallAt(utc)
+  }
+  return utc
+}
+
+/**
  * UTC instant of local midnight (00:00) for a calendar-day string in the
  * given zone. Example: 2026-09-10 in America/Los_Angeles → 2026-09-10T07:00Z;
- * in Europe/Dublin (summer, UTC+1) → 2026-09-09T23:00Z.
- *
- * Implementation: at UTC noon of the target day every real-world zone shows
- * the same calendar day, so the offset read there is the day's offset; local
- * midnight = midnight UTC − offset. Returns null for malformed input; without
- * a zone it falls back to the browser's local midnight.
+ * in Europe/Dublin (summer, UTC+1) → 2026-09-09T23:00Z. On DST transition
+ * days the answer is the first (earliest) 00:00 wall clock of that day, e.g.
+ * 2026-03-29 in Europe/Dublin → 2026-03-29T00:00Z (midnight exists before the
+ * 01:00 spring-forward) and 2026-10-25 → 2026-10-24T23:00Z (the single 00:00
+ * is still on summer time). Returns null for malformed input; without a zone
+ * it falls back to the browser's local midnight.
  */
 export function dayToInstant(dayStr: string | null | undefined, zone?: string): number | null {
   if (!dayStr) return null
@@ -206,34 +258,7 @@ export function dayToInstant(dayStr: string | null | undefined, zone?: string): 
   const [y, m, d] = s.split('-').map(Number)
   if (zone) {
     try {
-      const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: zone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hourCycle: 'h23',
-      })
-      const read = (utcMs: number) => {
-        const parts = fmt.formatToParts(utcMs)
-        const map: Record<string, string> = {}
-        for (const p of parts) map[p.type] = p.value
-        const local = Date.UTC(
-          Number(map.year),
-          Number(map.month) - 1,
-          Number(map.day),
-          Number(map.hour),
-          Number(map.minute),
-          Number(map.second),
-        )
-        return local
-      }
-      const noonUtc = Date.UTC(y, m - 1, d, 12, 0, 0)
-      const localAtNoon = read(noonUtc)
-      const offsetMs = localAtNoon - noonUtc
-      return Date.UTC(y, m - 1, d, 0, 0, 0) - offsetMs
+      return zoneWallToInstant(y, m, d, 0, 0, zone)
     } catch {
       /* fall through to browser-local */
     }
@@ -266,40 +291,9 @@ export function localDateTimeToInstant(s: string | null | undefined, zone?: stri
   const [datePart, timePart] = v.split('T')
   const [y, mo, d] = datePart.split('-').map(Number)
   const [h, mi] = timePart.split(':').map(Number)
-  const targetWall = Date.UTC(y, mo - 1, d, h, mi, 0) // naive wall clock as a UTC frame
   if (zone) {
     try {
-      const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: zone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hourCycle: 'h23',
-      })
-      const wallAt = (utcMs: number) => {
-        const parts = fmt.formatToParts(utcMs)
-        const map: Record<string, string> = {}
-        for (const p of parts) map[p.type] = p.value
-        return Date.UTC(
-          Number(map.year),
-          Number(map.month) - 1,
-          Number(map.day),
-          Number(map.hour),
-          Number(map.minute),
-          Number(map.second),
-        )
-      }
-      // Fixpoint: guess the instant (naive-as-UTC), read the zone wall clock
-      // there, then shift by the wall-clock delta. Two passes converge even
-      // across a DST transition (the offset only changes by ≤1h).
-      let utc = targetWall
-      for (let i = 0; i < 2; i++) {
-        utc += targetWall - wallAt(utc)
-      }
-      return utc
+      return zoneWallToInstant(y, mo, d, h, mi, zone)
     } catch {
       /* fall through to browser-local */
     }

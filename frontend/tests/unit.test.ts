@@ -261,6 +261,30 @@ describe('datetime-local wall-clock interpretation (§P1 round 5)', () => {
   })
 })
 
+describe('dayToInstant DST-transition days (§P0 date semantics)', () => {
+  it('stays exact on spring-forward days (midnight offset ≠ noon offset)', () => {
+    // Dublin springs forward 2026-03-29 at 01:00Z. Local 00:00 still exists
+    // (on GMT, +0) → the instant is 00:00Z. Sampling the offset at local
+    // noon (already IST, +1) would land at 2026-03-28T23:00Z — one hour early.
+    const spring = dayToInstant('2026-03-29', 'Europe/Dublin')!
+    expect(new Date(spring).toISOString()).toBe('2026-03-29T00:00:00.000Z')
+    // New York springs forward 2026-03-08 at 02:00 local; 00:00 EST = 05:00Z
+    // (a noon-offset shortcut reads EDT −4 and lands at 04:00Z).
+    const ny = dayToInstant('2026-03-08', 'America/New_York')!
+    expect(new Date(ny).toISOString()).toBe('2026-03-08T05:00:00.000Z')
+    // Southern hemisphere: Sydney springs forward 2026-10-04 at 02:00 local;
+    // 00:00 AEST (+10) = 2026-10-03T14:00Z.
+    const syd = dayToInstant('2026-10-04', 'Australia/Sydney')!
+    expect(new Date(syd).toISOString()).toBe('2026-10-03T14:00:00.000Z')
+  })
+  it('picks the single first midnight on fall-back days', () => {
+    // Dublin falls back 2026-10-25 at 01:00Z (02:00 IST → 01:00 GMT). The only
+    // 00:00 wall clock of that day is on IST (+1) → 2026-10-24T23:00Z.
+    const fall = dayToInstant('2026-10-25', 'Europe/Dublin')!
+    expect(new Date(fall).toISOString()).toBe('2026-10-24T23:00:00.000Z')
+  })
+})
+
 describe('fmtDate/fmtDateTime render in the given zone (§P1 round 5)', () => {
   it('fmtDateTime shows the user-zone wall time (Shanghai), not browser-local', () => {
     // 2026-09-10T06:30Z = 14:30 Shanghai, 07:30 Dublin summer.

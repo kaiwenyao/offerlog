@@ -15,6 +15,7 @@ import (
 	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
 	"offerlog/backend/internal/platform/observability"
+	"offerlog/backend/internal/platform/timeutil"
 )
 
 type Handler struct {
@@ -652,16 +653,27 @@ func (h *Handler) postponeAction(c *gin.Context) {
 	}
 	now := time.Now()
 	if req.Days > 0 {
-		// "延期 N 天" keeps the same due flavor as today: a date-only action
-		// moves N calendar days; an instant action moves N×24h from now when
-		// it has no anchor of its own.
+		// “延期 N 天”是拖延，不是从旧截止日平移：基准取 max(当前截止, 今天)。
+		// 前端只在逾期项上渲染「延期」按钮 — 若从旧截止日 +N，一个逾期多日的
+		// 待办延期后仍然逾期，按钮永远无法把项推出逾期区。日期口径跟随用户
+		// 时区（day 键 = 用户的今天 +N），保持原 flavor：date-only 仍是
+		// 日历日，instant 仍是精确时刻。
 		if a.DueDate != nil && a.DueTs == nil {
-			nd := a.DueDate.AddDate(0, 0, req.Days)
-			ds := day.Format(nd)
-			req.DueDate = &ds
+			loc, _ := timeutil.SafeLocation(user.Timezone)
+			todayStart, _ := timeutil.TodayBounds(now, loc)
+			if a.DueDate.Before(todayStart) {
+				// overdue (or due before the user's today): anchor at the
+				// user's today so +N lands on a non-overdue calendar day.
+				key := timeutil.DateOnly(todayStart.AddDate(0, 0, req.Days), loc)
+				req.DueDate = &key
+			} else {
+				nd := a.DueDate.AddDate(0, 0, req.Days)
+				ds := day.Format(nd)
+				req.DueDate = &ds
+			}
 		} else {
 			base := now
-			if a.DueTs != nil {
+			if a.DueTs != nil && a.DueTs.After(now) {
 				base = *a.DueTs
 			}
 			nd := base.AddDate(0, 0, req.Days)
