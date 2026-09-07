@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	actrepo "offerlog/backend/internal/activities/repository"
 	notifrepo "offerlog/backend/internal/notifications"
 	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
+	"offerlog/backend/internal/platform/observability"
 )
 
 type Handler struct {
@@ -240,17 +242,67 @@ func writeUpsertErr(c *gin.Context, err error) {
 	httpx.WriteErr(c, err)
 }
 
+// writeActionErr maps action-repo errors: only a genuine not-found (pgx
+// ErrNoRows) is a 404; real DB failures pass through as 500 instead of being
+// masked as “行动项不存在”.
+func writeActionErr(c *gin.Context, err error) {
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, actrepo.ErrNotFound) {
+		httpx.WriteErr(c, httpx.NotFound("行动项不存在"))
+		return
+	}
+	httpx.WriteErr(c, err)
+}
+
+// writeNoteErr is the notes counterpart.
+func writeNoteErr(c *gin.Context, err error) {
+	if errors.Is(err, pgx.ErrNoRows) {
+		httpx.WriteErr(c, httpx.NotFound("备注不存在"))
+		return
+	}
+	httpx.WriteErr(c, err)
+}
+
+// mustInterviewIDs parses both path ids, returning false after writing a 400
+// when either is malformed (callers must not swallow these).
+func (h *Handler) mustInterviewIDs(c *gin.Context) (appID, iid int64, ok bool) {
+	var err error
+	appID, err = h.appID(c)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的岗位 ID"))
+		return 0, 0, false
+	}
+	iid, err = httpx.PathID(c, "interview_id")
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的面试 ID"))
+		return 0, 0, false
+	}
+	return appID, iid, true
+}
+
+// writeInterviewOwnershipErr maps an ownership-check failure: only a genuine
+// not-found (missing row / wrong owner) is a 404; DB errors pass through.
+func writeInterviewOwnershipErr(c *gin.Context, err error) {
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, actrepo.ErrNotFound) {
+		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		return
+	}
+	httpx.WriteErr(c, err)
+}
+
 // cancelInterview marks an interview cancelled (改期/取消). The row is kept
 // so history is intact; dashboards and reminders exclude cancelled rounds.
 func (h *Handler) cancelInterview(c *gin.Context) {
 	user := httpx.UserFrom(c)
-	appID, _ := h.appID(c)
-	iid, _ := httpx.PathID(c, "interview_id")
+	appID, iid, ok := h.mustInterviewIDs(c)
+	if !ok {
+		return
+	}
 	var req cancelReq
+	// reason is optional — an empty body (or no JSON) is fine for cancel.
 	_ = httpx.BindJSON(c, &req)
-	// Ownership check first: 404 when the interview is not this user's.
+	// Ownership check first: only a real not-found is 404; DB errors surface.
 	if _, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		writeInterviewOwnershipErr(c, err)
 		return
 	}
 	sch, err := h.repo.GetScheduleLink(c.Request.Context(), iid, user.ID)
@@ -272,11 +324,13 @@ func (h *Handler) cancelInterview(c *gin.Context) {
 
 func (h *Handler) uncancelInterview(c *gin.Context) {
 	user := httpx.UserFrom(c)
-	appID, _ := h.appID(c)
-	iid, _ := httpx.PathID(c, "interview_id")
-	// Ownership check first: 404 when the interview is not this user's.
+	appID, iid, ok := h.mustInterviewIDs(c)
+	if !ok {
+		return
+	}
+	// Ownership check first: only a real not-found is 404; DB errors surface.
 	if _, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("面试记录不存在"))
+		writeInterviewOwnershipErr(c, err)
 		return
 	}
 	sch, err := h.repo.GetScheduleLink(c.Request.Context(), iid, user.ID)
@@ -417,10 +471,10 @@ func (h *Handler) updateAction(c *gin.Context) {
 		DoneAt: req.DoneAt, RemindMe: req.RemindMe, RemindAt: req.RemindAt, Priority: req.Priority,
 	}
 	if err := h.repo.UpdateAction(c.Request.Context(), h.repo.Pool(), a); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("行动项不存在"))
+		writeActionErr(c, err)
 		return
 	}
-	h.clearOverdueReminder(c, user.ID, aid)
+	h.clearOverdueReminderBestEffort(c, user.ID, aid)
 	c.JSON(http.StatusOK, actionToDTO(a))
 }
 
@@ -433,7 +487,7 @@ func (h *Handler) deleteAction(c *gin.Context) {
 	}
 	// A deleted action must not leave an overdue reminder pointing at a
 	// now-nonexistent item (same lifecycle sync as done/postpone/update).
-	h.clearOverdueReminder(c, user.ID, aid)
+	h.clearOverdueReminderBestEffort(c, user.ID, aid)
 	httpx.Ok(c)
 }
 
@@ -452,23 +506,26 @@ func (h *Handler) markDone(c *gin.Context) {
 		done = *req.Done
 	}
 	if err := h.repo.MarkActionDone(c.Request.Context(), h.repo.Pool(), user.ID, aid, done); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("行动项不存在"))
+		writeActionErr(c, err)
 		return
 	}
-	h.clearOverdueReminder(c, user.ID, aid)
+	h.clearOverdueReminderBestEffort(c, user.ID, aid)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "done": done})
 }
 
-// clearOverdueReminder removes the action's overdue notifications so the next
-// generator pass reflects the action's current state exactly once (done → no
-// reminder; reopened while overdue → one fresh reminder).
-func (h *Handler) clearOverdueReminder(c *gin.Context, ownerID, actionID int64) {
+// clearOverdueReminderBestEffort removes the action's overdue notifications so
+// the next generator pass reflects the action's current state exactly once
+// (done → no reminder; reopened while overdue → one fresh reminder);
+// failures are logged and swallowed so a reminder-cleanup hiccup never fails an
+// already-successful action mutation or writes a second response after it.
+func (h *Handler) clearOverdueReminderBestEffort(c *gin.Context, ownerID, actionID int64) {
 	if h.nots == nil {
 		return
 	}
 	key := fmt.Sprintf("overdue:%d", actionID)
 	if err := h.nots.ClearOccurrence(c.Request.Context(), ownerID, "overdue", key); err != nil {
-		httpx.WriteErr(c, err)
+		observability.L(c.Request.Context()).Warn("clear overdue reminder",
+			"action_id", actionID, "error", err)
 	}
 }
 
@@ -489,7 +546,11 @@ func (h *Handler) postponeAction(c *gin.Context) {
 		return
 	}
 	a, err := h.repo.GetAction(c.Request.Context(), user.ID, aid)
-	if err != nil || a == nil {
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	if a == nil {
 		httpx.WriteErr(c, httpx.NotFound("行动项不存在"))
 		return
 	}
@@ -542,10 +603,10 @@ func (h *Handler) postponeAction(c *gin.Context) {
 		a.DueDate = nil
 	}
 	if err := h.repo.UpdateAction(c.Request.Context(), h.repo.Pool(), a); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("行动项不存在"))
+		writeActionErr(c, err)
 		return
 	}
-	h.clearOverdueReminder(c, user.ID, aid)
+	h.clearOverdueReminderBestEffort(c, user.ID, aid)
 	c.JSON(http.StatusOK, actionToDTO(a))
 }
 
@@ -598,7 +659,7 @@ func (h *Handler) updateNote(c *gin.Context) {
 	}
 	n := &actrepo.Note{ID: nid, OwnerID: user.ID, ContentMD: req.ContentMD}
 	if err := h.repo.UpdateNote(c.Request.Context(), h.repo.Pool(), n); err != nil {
-		httpx.WriteErr(c, httpx.NotFound("备注不存在"))
+		writeNoteErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, n)
@@ -608,7 +669,7 @@ func (h *Handler) deleteNote(c *gin.Context) {
 	user := httpx.UserFrom(c)
 	nid, _ := httpx.PathID(c, "note_id")
 	if err := h.repo.DeleteNote(c.Request.Context(), user.ID, nid); err != nil {
-		httpx.WriteErr(c, err)
+		writeNoteErr(c, err)
 		return
 	}
 	httpx.Ok(c)

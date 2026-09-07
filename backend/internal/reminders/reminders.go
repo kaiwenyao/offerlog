@@ -45,8 +45,12 @@ type userRow struct {
 
 // users returns every user id + effective timezone.
 func (g *Gen) users(ctx context.Context) ([]userRow, error) {
-	rows, err := g.db.Pool().Query(ctx, `SELECT u.id, COALESCE(p.timezone, u.timezone)
-		FROM users u LEFT JOIN user_preferences p ON p.user_id = u.id ORDER BY u.id`)
+	// users.timezone is the single source of truth (written by both PATCH
+	// /auth/me and PUT /preferences via UpdateProfile). user_preferences.timezone
+	// is a legacy mirror that can drift when only /auth/me is used — never read
+	// it for reminder windows, or a user's reminder zone would silently lag
+	// their profile zone.
+	rows, err := g.db.Pool().Query(ctx, `SELECT u.id, u.timezone FROM users u ORDER BY u.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -107,8 +111,9 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 	if remindOverdue {
 		dayStart, _ := timeutil.TodayBounds(now, loc)
 		rows, err := g.db.Pool().Query(ctx, `SELECT a.id, a.title, COALESCE(ap.company_name,''), ap.id
-			FROM actions a LEFT JOIN applications ap ON ap.id = a.application_id AND ap.owner_id = a.owner_id
+			FROM actions a JOIN applications ap ON ap.id = a.application_id AND ap.owner_id = a.owner_id
 			WHERE a.owner_id=$1 AND a.done_at IS NULL
+			  AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 			  AND ( (a.due_ts IS NOT NULL AND a.due_ts < $2)
 			     OR (a.due_ts IS NULL AND a.due_date IS NOT NULL
 			         AND (a.due_date::timestamp AT TIME ZONE $3) < $2) )

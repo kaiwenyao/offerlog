@@ -16,6 +16,7 @@ import (
 	notifrepo "offerlog/backend/internal/notifications"
 	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
+	"offerlog/backend/internal/platform/observability"
 )
 
 type Handler struct {
@@ -35,12 +36,17 @@ func (h *Handler) WithNotifications(n *notifrepo.Repo) *Handler {
 
 // dismissAppReminders retires every open notification that references the
 // application (deleted/archived objects must not keep producing stale alerts).
+// dismissAppReminders retires every open notification that references the
+// application (deleted/archived objects must not keep producing stale alerts).
+// Best-effort: failures are logged and swallowed so they never fail the
+// already-successful primary operation or write a second HTTP response.
 func (h *Handler) dismissAppReminders(c *gin.Context, ownerID, appID int64) {
 	if h.nots == nil {
 		return
 	}
 	if err := h.nots.DismissByApplication(c.Request.Context(), ownerID, appID); err != nil {
-		httpx.WriteErr(c, err)
+		observability.L(c.Request.Context()).Warn("dismiss app reminders",
+			"application_id", appID, "error", err)
 	}
 }
 

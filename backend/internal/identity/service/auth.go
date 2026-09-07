@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	_ "time/tzdata"
+
 	"golang.org/x/crypto/argon2"
 
 	"offerlog/backend/internal/platform/database"
@@ -131,8 +133,12 @@ func (s *Store) Register(ctx context.Context, email, password, displayName, tz s
 	if err := validateSignup(email, password, displayName); err != nil {
 		return nil, err
 	}
+	tz = strings.TrimSpace(tz)
 	if tz == "" {
 		tz = "Europe/Dublin"
+	}
+	if err := ValidateTimezone(tz); err != nil {
+		return nil, err
 	}
 	hash, err := hashPassword(password)
 	if err != nil {
@@ -150,6 +156,20 @@ func (s *Store) Register(ctx context.Context, email, password, displayName, tz s
 		return nil, err
 	}
 	return u, nil
+}
+
+// ValidateTimezone normalizes an empty zone to the app default and verifies
+// the value is a real IANA zone — an invalid zone would otherwise flow into
+// SQL AT TIME ZONE and make that user's home/calendar queries fail forever.
+func ValidateTimezone(tz string) error {
+	tz = strings.TrimSpace(tz)
+	if tz == "" {
+		tz = "Europe/Dublin"
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return fmt.Errorf("无效的时区 %q（需 IANA 名称，如 Europe/Dublin）", tz)
+	}
+	return nil
 }
 
 // validateSignup enforces the same input rules for CLI-created and

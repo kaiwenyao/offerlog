@@ -75,26 +75,34 @@ func main() {
 		}
 	}()
 
-	// Daily enqueue at 08:00 user-local is approximated: the worker enqueues a
-	// reminder pass on boot and after each pass re-enqueues 24h later (a real
-	// scheduler would compute the next 08:00 per user; in-app notifications are
-	// generated for "today" whenever the pass runs). The idempotency key is
-	// per-day so a completed pass never blocks the next one (the jobs unique
-	// index is on kind+key and would otherwise make the enqueue a permanent
-	// no-op after the first run).
+	// Reminder scheduler: a short ticker that enqueues one reminders pass per
+	// UTC day (idempotency key "daily:<utc-day>"). A fixed 24h re-arm timer
+	// would skip a whole day whenever the process sleeps/pauses across a
+	// boundary; the ticker re-checks every 10 minutes and enqueues for the
+	// current day the moment it is new, so a pause never loses a day. The
+	// generator itself resolves "today" per user in their own zone and is
+	// idempotent per occurrence, so enqueueing after a pause only produces the
+	// notifications that day is due.
 	go func() {
-		timer := time.NewTimer(10 * time.Second)
-		defer timer.Stop()
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		var lastKey string
+		// fire once shortly after boot so a fresh worker still runs today's pass
+		time.Sleep(10 * time.Second)
 		for {
+			day := time.Now().UTC().Format("2006-01-02")
+			if day != lastKey {
+				key := "daily:" + day
+				if err := store.Enqueue(ctx, "reminders", key, map[string]any{}, time.Now()); err != nil {
+					slog.Warn("enqueue reminders", "error", err)
+				} else {
+					lastKey = day
+				}
+			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-timer.C:
-				day := time.Now().UTC().Format("2006-01-02")
-				if err := store.Enqueue(ctx, "reminders", "daily:"+day, map[string]any{}, time.Now()); err != nil {
-					slog.Warn("enqueue reminders", "error", err)
-				}
-				timer.Reset(24 * time.Hour)
+			case <-ticker.C:
 			}
 		}
 	}()

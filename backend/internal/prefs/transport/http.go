@@ -68,7 +68,10 @@ func toDTO(userID int64, fallbackName, fallbackTZ string, p *prefs.Preferences) 
 		RemindWeekly: false, Locale: "zh-CN"}
 	if p != nil {
 		d.DisplayName = firstNonEmpty(p.DisplayName, fallbackName)
-		d.Timezone = firstNonEmpty(p.Timezone, fallbackTZ)
+		// users.timezone is the single source of truth — always surface it
+		// (fallbackTZ) even when a stale prefs.timezone exists, so a user who
+		// changed their zone via PATCH /auth/me sees the same zone here.
+		d.Timezone = fallbackTZ
 		if p.WeekStart >= 0 && p.WeekStart <= 6 {
 			d.WeekStart = p.WeekStart
 		}
@@ -120,7 +123,6 @@ func (h *Handler) put(c *gin.Context) {
 		*p = *cur
 	} else {
 		p.DisplayName = user.DisplayName
-		p.Timezone = user.Timezone
 		p.WeekStart = 1
 		p.RemindOverdue = true
 		p.RemindInterview = true
@@ -128,6 +130,11 @@ func (h *Handler) put(c *gin.Context) {
 		p.RemindWeekly = false
 		p.Locale = user.Locale
 	}
+	// users.timezone is canonical (PATCH /auth/me may have changed it since the
+	// prefs row was written). Seed from the session user so a reminder-only PUT
+	// cannot revert a zone change made through /auth/me.
+	p.Timezone = user.Timezone
+	p.DisplayName = user.DisplayName
 
 	if req.DisplayName != nil {
 		name := *req.DisplayName
