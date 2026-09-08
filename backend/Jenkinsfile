@@ -85,6 +85,8 @@ spec:
       volumeMounts:
         - mountPath: /var/run/docker.sock
           name: docker-sock
+        - mountPath: /ci-lock
+          name: ci-lock
     - name: gitops
       # Same Git tooling and credentials as eventpulse; no Docker socket needed.
       image: alpine:3.22
@@ -112,6 +114,13 @@ spec:
           cpu: "500m"
           memory: 512Mi
   volumes:
+    - name: ci-lock
+      # Cross-JOB mutex for the compose stage. The Lockable Resources plugin is
+      # not installed on this controller, so the lock lives on the shared docker
+      # host itself — which is exactly the resource being contended.
+      hostPath:
+        path: /var/cache/jenkins/lock
+        type: DirectoryOrCreate
     - name: go-mod
       hostPath:
         path: /var/cache/jenkins/go/mod
@@ -215,6 +224,47 @@ spec:
                             # a rerun of this same job would otherwise test the
                             # previous commit. (Cross-job image collisions are
                             # handled by $COMPOSE_PROJECT being job-unique.)
+                            # Serialize the heavy stage ACROSS jobs, and reap what earlier crashes left.
+                            #
+                            # disableConcurrentBuilds() only serializes within ONE job, but the
+                            # multibranch pipeline runs PR-N and its source branch as separate jobs —
+                            # and backend and frontend are separate pipelines — so a single push fired
+                            # four full stacks (postgres + api + worker + playwright) plus four image
+                            # builds at once. Those containers run on the HOST docker daemon through
+                            # the mounted socket, so their memory is invisible to the k8s scheduler:
+                            # the 4-core / 7.6GB / no-swap node oversubscribed silently until the
+                            # kernel OOM-killed the (BestEffort) Jenkins controller, and the build
+                            # died as "This commit cannot be built".
+                            #
+                            # flock, not the Lockable Resources plugin — that plugin is not installed
+                            # here. Locking an FD (not `flock FILE CMD`) keeps the lock across both
+                            # commands below without nesting quotes, and the kernel releases it when
+                            # the shell exits, so an aborted build can never strand it. No -w: busybox
+                            # flock silently rejects it and skips the command outright; the pipeline's
+                            # own 30-minute timeout is the backstop for a wedged holder.
+                            exec 9>/ci-lock/compose.lock
+                            flock 9
+
+                            # Reap stacks orphaned by a killed agent. post{} teardown never runs when
+                            # the agent pod is OOM-killed, so a crashed build leaves its whole stack
+                            # behind forever (one postgres had been up 29 hours). Those leaks add the
+                            # memory pressure that triggers the NEXT OOM — the failure feeds itself,
+                            # and this sweep breaks the loop.
+                            #
+                            # Safe only INSIDE the lock: the unique per-build project name exists so
+                            # concurrent jobs do not tear down each other's stack, but while we hold
+                            # the lock no other offerlog compose stack can be running, so anything
+                            # else named offerlog-ci-* is by definition a leak. Selected by compose
+                            # project label, so unrelated stacks sharing this host (firmament /
+                            # joplin / nightdeal / ...) are never touched.
+                            docker ps -a --filter "label=com.docker.compose.project" \
+                                --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
+                              | sort -u | grep "^offerlog-ci-" | grep -v "^${COMPOSE_PROJECT}$" \
+                              | while read -r stale; do
+                                    echo "reaping orphaned CI stack: $stale"
+                                    $COMPOSE -p "$stale" down -v --rmi local --remove-orphans || true
+                                done
+
                             $COMPOSE -p $COMPOSE_PROJECT --profile integration run --build --rm integration
                             '''
                         }
@@ -225,7 +275,7 @@ spec:
                                 try {
                                     container('docker') {
                                         sh '''
-                                        $COMPOSE -p $COMPOSE_PROJECT --profile integration down -v --remove-orphans || true
+                                        $COMPOSE -p $COMPOSE_PROJECT --profile integration down -v --rmi local --remove-orphans || true
                                         '''
                                     }
                                 } catch (err) {
@@ -318,7 +368,7 @@ spec:
                 try {
                     container('docker') {
                         sh '''
-                        $COMPOSE -p $COMPOSE_PROJECT --profile integration down -v --remove-orphans || true
+                        $COMPOSE -p $COMPOSE_PROJECT --profile integration down -v --rmi local --remove-orphans || true
                         '''
                     }
                 } catch (err) {
