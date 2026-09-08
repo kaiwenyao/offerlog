@@ -85,7 +85,7 @@ export function DatabasePage() {
     queryKey: ['apps', 'db', viewId, search, page, JSON.stringify(extraFilters), trashMode],
     queryFn: async () => {
       if (trashMode) {
-        return api.get<{ items: AppRow[]; total: number }>('/api/v1/applications?trash=1&page=1&page_size=60')
+        return api.get<{ items: AppRow[]; total: number }>('/api/v1/applications?trash=1&page=1&page_size=60&include=stage_history')
       }
       const view = allViews.find((v) => v.id === viewId)
       return api.post<{ items: AppRow[]; total: number }>('/api/v1/views/query', {
@@ -93,6 +93,7 @@ export function DatabasePage() {
         page_size: PAGE_SIZE,
         sort: [{ field: 'updated_at', dir: 'desc' }],
         filters: buildFilters(view, search, extraFilters),
+        include: ['stage_history'],
       })
     },
   })
@@ -392,7 +393,7 @@ function TableView({
                   </span>
                 </td>
                 <td>
-                  <StageRail status={a.status} pips={FLOW_PIPS} />
+                  <StageRail status={a.status} pips={FLOW_PIPS} dates={a.stage_history} />
                 </td>
                 <td>
                   <StatusChip status={a.status} />
@@ -463,7 +464,7 @@ function BoardView({
                 {a.position}
               </div>
               <div style={{ marginTop: 9 }}>
-                <StageRail status={a.status} pips={FLOW_PIPS} thin />
+                <StageRail status={a.status} pips={FLOW_PIPS} dates={a.stage_history} thin />
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 9 }}>
                 <Num color="var(--text-muted)">{fmtDay(a.next_action_due_at ?? a.deadline)}</Num>
@@ -525,11 +526,39 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const qc = useQueryClient()
   const [company, setCompany] = useState('')
   const [position, setPosition] = useState('')
+  const [location, setLocation] = useState('')
   const [url, setUrl] = useState('')
   const [err, setErr] = useState('')
+  const [parsing, setParsing] = useState(false)
+
+  // 粘贴 JD 链接 → 自动预填公司/岗位/城市（需求 #3）。解析由服务端发起
+  // （已做 SSRF 防护），失败返回 200 + 空字段 → 前端退回手填。
+  const prefill = useMutation({
+    mutationFn: async () => {
+      const u = url.trim()
+      if (!u) return
+      setParsing(true)
+      setErr('')
+      try {
+        const r = await api.post<{
+          company_name: string
+          position: string
+          location: string
+        }>('/api/v1/applications/parse-url', { url: u })
+        if (r.company_name) setCompany((c) => c || r.company_name)
+        if (r.position) setPosition((c) => c || r.position)
+        if (r.location) setLocation((c) => c || r.location)
+        if (!r.company_name && !r.position && !r.location) setErr('未能从链接识别出信息，可继续手填')
+      } catch (e) {
+        setErr(e instanceof ApiError ? e.message : '解析失败，可继续手填')
+      } finally {
+        setParsing(false)
+      }
+    },
+  })
 
   const mut = useMutation({
-    mutationFn: (b: { company_name: string; position: string; job_url?: string }) =>
+    mutationFn: (b: { company_name: string; position: string; location?: string; job_url?: string }) =>
       api.post('/api/v1/applications', b),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['apps'] })
@@ -538,11 +567,13 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '创建失败'),
   })
 
+  const canCreate = !mut.isPending && !parsing && company.trim() && position.trim()
+
   return (
     <Modal
       title="新增岗位"
       onClose={onClose}
-      width={480}
+      width={520}
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>
@@ -551,9 +582,14 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
           <Button
             variant="primary"
             size="sm"
-            disabled={mut.isPending || !company.trim() || !position.trim()}
+            disabled={!canCreate}
             onClick={() =>
-              mut.mutate({ company_name: company.trim(), position: position.trim(), job_url: url.trim() })
+              mut.mutate({
+                company_name: company.trim(),
+                position: position.trim(),
+                location: location.trim() || undefined,
+                job_url: url.trim(),
+              })
             }
           >
             {mut.isPending ? <Spinner size={14} /> : '创建'}
@@ -563,9 +599,49 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
     >
       {err && <ErrorText>{err}</ErrorText>}
       <div className="field-grid">
-        <Input id="cf-company" label="公司 *" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="公司名称" autoFocus />
-        <Input id="cf-pos" label="岗位 *" value={position} onChange={(e) => setPosition(e.target.value)} placeholder="岗位名称" />
-        <Input id="cf-url" className="full" label="链接（可选）" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" style={{ gridColumn: '1 / -1' }} />
+        <Input
+          id="cf-company"
+          label="公司 *"
+          value={company}
+          onChange={(e) => setCompany(e.target.value)}
+          placeholder="公司名称"
+          autoFocus
+        />
+        <Input
+          id="cf-pos"
+          label="岗位 *"
+          value={position}
+          onChange={(e) => setPosition(e.target.value)}
+          placeholder="岗位名称"
+        />
+        <Input
+          id="cf-loc"
+          label="城市"
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
+          placeholder="解析预填或手填"
+        />
+        <div className="full">
+          <Input
+            id="cf-url"
+            label="JD 链接"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="粘贴 JD 链接可自动预填公司、岗位与城市"
+          />
+          {url.trim() && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={parsing}
+              onClick={() => prefill.mutate()}
+              style={{ marginTop: 6 }}
+            >
+              {parsing ? <Spinner size={14} /> : '解析预填'}
+            </Button>
+          )}
+        </div>
       </div>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 'var(--space-4)' }}>
         保存后仍可继续编辑完整信息、上传附件并更新进度。

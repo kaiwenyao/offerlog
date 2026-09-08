@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,14 +18,23 @@ import (
 	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
 	"offerlog/backend/internal/platform/observability"
+	"offerlog/backend/internal/platform/timeutil"
 )
 
 type Handler struct {
 	svc  *appservice.Service
 	nots *notifrepo.Repo
+	url  *parseURLHandler
 }
 
 func New(svc *appservice.Service) *Handler { return &Handler{svc: svc} }
+
+// WithParseURL attaches the JD-link prefetch handler (POST parse-url). It is
+// optional so the pure-CRUD surface stays testable without outbound HTTP.
+func (h *Handler) WithParseURL() *Handler {
+	h.url = newParseURLHandler()
+	return h
+}
 
 // WithNotifications attaches the in-app notification store so application
 // lifecycle endpoints (soft delete / archive / first response / ended status)
@@ -85,6 +95,9 @@ type appDTO struct {
 	Deleted         bool            `json:"deleted"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
+	// StageHistory (include=stage_history) maps each reached status to the
+	// earliest calendar day (user-zone YYYY-MM-DD) the application entered it.
+	StageHistory map[string]string `json:"stage_history,omitempty"`
 }
 
 func toDTO(r *apprepo.Row) *appDTO {
@@ -136,6 +149,9 @@ func parseDayPtr(v *string) (*time.Time, error) {
 // the CSRF-protected, authenticated parent group.
 func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.Use(httpx.RequireUser)
+	if h.url != nil {
+		g.POST("/parse-url", h.url.parseURL)
+	}
 	g.GET("", h.list)
 	g.POST("", h.create)
 	g.POST("/query", h.query)
@@ -167,11 +183,40 @@ func (h *Handler) list(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
+	withStage := listIncludes(q.Get("include"))["stage_history"]
+	stage := map[int64]map[string]string{}
+	if withStage && len(rows) > 0 {
+		ids := make([]int64, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+		}
+		loc, _ := timeutil.SafeLocation(user.Timezone)
+		if stage, err = h.svc.Repo().StageHistoryFor(c.Request.Context(), user.ID, ids, loc); err != nil {
+			// Stage history is an enrichment: never fail the page over it.
+			stage = map[int64]map[string]string{}
+		}
+	}
 	out := make([]*appDTO, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, toDTO(row))
+		d := toDTO(row)
+		if withStage {
+			d.StageHistory = stage[row.ID]
+		}
+		out = append(out, d)
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out, "total": total, "page": page, "page_size": size})
+}
+
+// listIncludes parses a CSV include= parameter (GET) into a set.
+func listIncludes(v string) map[string]bool {
+	set := map[string]bool{}
+	for _, tok := range strings.Split(v, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok != "" {
+			set[tok] = true
+		}
+	}
+	return set
 }
 
 type createReq struct {

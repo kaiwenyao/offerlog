@@ -34,6 +34,8 @@ import (
 	"offerlog/backend/internal/platform/objectstore"
 	prefsrepo "offerlog/backend/internal/prefs"
 	prefstransport "offerlog/backend/internal/prefs/transport"
+	searchrepo "offerlog/backend/internal/search"
+	searchtransport "offerlog/backend/internal/search/transport"
 	trrepo "offerlog/backend/internal/transfers"
 	trtransport "offerlog/backend/internal/transfers/transport"
 	vrepo "offerlog/backend/internal/views/repository"
@@ -79,7 +81,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	appsRepo := apprepo.New(db)
 	appsSvc := appservice.New(db, appsRepo)
 	viewsRepo := vrepo.New(db)
-	viewsSvc := vservice.New(db, viewsRepo)
+	viewsSvc := vservice.New(db, viewsRepo).WithStageHistory(appsRepo)
 	jobStore := jobs.NewStore(db)
 
 	prefsRepo := prefsrepo.New(db)
@@ -99,7 +101,7 @@ func (a *App) Handler() http.Handler {
 	r := gin.New()
 	r.Use(gin.Recovery(), httpx.RequestID(), httpx.SecurityHeaders(), httpx.Auth(a.Auth))
 
-	api := r.Group("/api/v1", httpx.CSRF(a.Auth))
+	api := r.Group("/api/v1", httpx.CSRFWithAllowedOrigins(a.Auth, a.Cfg.HTTP.DevAllowedOrigins))
 	// Auth endpoints live inside the api group (so CSRF sees them), but the
 	// CSRF middleware itself exempts exactly login/register/logout — endpoints
 	// that bootstrap or tear down the session and therefore have no CSRF token
@@ -116,7 +118,7 @@ func (a *App) Handler() http.Handler {
 	authH.Routes(authRoutes)
 
 	// applications
-	appH := apptransport.New(a.appsSvc).WithNotifications(a.Nots)
+	appH := apptransport.New(a.appsSvc).WithNotifications(a.Nots).WithParseURL()
 	appH.Routes(api.Group("/applications"))
 
 	// activities under /applications/:id
@@ -163,6 +165,10 @@ func (a *App) Handler() http.Handler {
 	// home dashboard aggregates (server-side counts + upcoming)
 	homeH := hometransport.New(a.Home).WithPrefs(a.Prefs)
 	homeH.Routes(api.Group("/home"))
+
+	// cross-entity search (⌘K command palette)
+	srchH := searchtransport.New(searchrepo.New(a.DB))
+	srchH.Routes(api.Group("/search"))
 
 	// health (no auth)
 	r.GET("/health/live", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })

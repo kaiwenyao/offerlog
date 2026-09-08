@@ -41,12 +41,30 @@ function cellSkin(i: number, at: number, dead: boolean): CellSkin {
   return { fill: 'transparent', edge: 'var(--border)', label: 'var(--neutral-500)' }
 }
 
+/** Reached status keys → the walked pipeline path (used as the rail path). */
+function walkedPath(dates?: Record<string, string> | null): string[] {
+  if (!dates) return []
+  return FLOW_ORDER.filter((s) => s !== 'accepted' && dates[s])
+}
+
 /**
  * 工序线: the whole pipeline as a run of process blocks, filled up to the
- * stage the application has reached and hairline-outlined beyond it.
+ * stage the application has reached and hairline-outlined beyond it. When the
+ * server's stage history is available its reached-status dates double as the
+ * walked path (终态岗位画到它真正走到的那一格) and render under each reached
+ * block's label.
  */
-export function StageTrail({ current, path }: { current: string; path: string[] }) {
-  const at = railIndex(current, path)
+export function StageTrail({
+  current,
+  path,
+  dates,
+}: {
+  current: string
+  path: string[]
+  /** stage → YYYY-MM-DD（最早到达日，include=stage_history） */
+  dates?: Record<string, string> | null
+}) {
+  const at = railIndex(current, path.length ? path : walkedPath(dates))
   const dead = DEAD.has(current)
   const done = ENDED.has(current)
 
@@ -54,6 +72,20 @@ export function StageTrail({ current, path }: { current: string; path: string[] 
     <div className="stage-trail" aria-label={`工序线 ${statusMeta(current).label}`}>
       {FLOW_ORDER.map((stage, i) => {
         const skin = cellSkin(i, at, dead)
+        const full = dates?.[stage]
+        const date = full?.slice(5) // MM-DD inside the tight block
+        const isTip = i === at
+        const sub = isTip
+          ? date
+            ? `${date} · ${dead ? statusMeta(current).label : done ? '完成' : '当前'}`
+            : dead
+              ? statusMeta(current).label
+              : done
+                ? '完成'
+                : '当前'
+          : i < at && date
+            ? date
+            : ''
         return (
           <span key={stage} className="stage-node">
             <span
@@ -64,10 +96,8 @@ export function StageTrail({ current, path }: { current: string; path: string[] 
             <span className="label" style={{ color: skin.label }}>
               {statusMeta(stage).label}
             </span>
-            {i === at && (
-              <span style={{ fontSize: 10, letterSpacing: '.06em', color: 'var(--neutral-600)' }}>
-                {dead ? statusMeta(current).label : done ? '完成' : '当前'}
-              </span>
+            {sub && (
+              <span style={{ fontSize: 10, letterSpacing: '.06em', color: 'var(--neutral-600)' }}>{sub}</span>
             )}
           </span>
         )
@@ -80,16 +110,22 @@ interface StageRailProps {
   status: string
   pips: string[]
   path?: string[]
+  /** stage → YYYY-MM-DD（最早到达日）——作 path 并在 title 里显示 */
+  dates?: Record<string, string> | null
   /** Board cards get a 4px bar with no inline label. */
   thin?: boolean
 }
 
 /**
  * Compact rail rendered inside a table row or board card — same semantics as
- * StageTrail, without the stage labels (design: the 工序进度 column).
+ * StageTrail, without the stage labels (design: the 工序进度 column). When the
+ * server's stage history is available it supplies the walked path, so a
+ * terminated application still fills the pips up to the last stage it really
+ * reached; every reached pip shows its arrival date in the tooltip.
  */
-export function StageRail({ status, pips, path = [], thin = false }: StageRailProps) {
-  const at = railIndex(status, path)
+export function StageRail({ status, pips, path = [], dates = null, thin = false }: StageRailProps) {
+  const effPath = path.length ? path : walkedPath(dates)
+  const at = railIndex(status, effPath)
   const dead = DEAD.has(status)
   const capped = at < 0 ? -1 : Math.min(at, pips.length - 1)
 
@@ -97,10 +133,11 @@ export function StageRail({ status, pips, path = [], thin = false }: StageRailPr
     <span className={'rail' + (thin ? ' thin' : '')} aria-label={`工序进度 ${statusMeta(status).label}`}>
       {pips.map((p, i) => {
         const skin = cellSkin(i, capped, dead)
+        const date = dates?.[p]
         return (
           <span
             key={p}
-            title={statusMeta(p).label}
+            title={statusMeta(p).label + (date ? ` · ${date}` : '')}
             style={{
               background: skin.fill,
               boxShadow: `inset 0 0 0 1px ${skin.edge}`,

@@ -20,6 +20,7 @@ const (
 	TypeDate        = "date"
 	TypeCheckbox    = "checkbox"
 	TypeURL         = "url"
+	TypeImage       = "image"
 )
 
 // Known core fields that filters/sorts can reference. Each entry names the

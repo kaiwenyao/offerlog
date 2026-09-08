@@ -6,6 +6,7 @@ import type { FileItem, HomeSummary, Me } from '../lib/types'
 import { Icon, SealMark, type IconName } from '../components/Icon'
 import { BlueprintCorners, Button } from '../ds'
 import { NotificationsBell, useUnreadCount } from '../features/notifications/Bell'
+import { CommandPalette } from '../features/search/CommandPalette'
 
 interface NavEntry {
   to: string
@@ -89,18 +90,19 @@ export function AppLayout({ me }: { me: Me | null }) {
   const loc = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const counts = useSidebarCounts()
   const meta = pageMeta(loc.pathname)
 
   // Close the mobile sheet whenever the route changes.
   useEffect(() => setMenuOpen(false), [loc.pathname])
 
-  // ⌘K / Ctrl+K focuses the header search, as the design advertises.
+  // ⌘K / Ctrl+K opens the command palette (跨实体搜索 + 跳转命令).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        document.getElementById('global-search')?.focus()
+        setPaletteOpen(true)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -234,7 +236,7 @@ export function AppLayout({ me }: { me: Me | null }) {
                 placeholder="搜岗位、公司、备注…"
                 aria-label="搜索"
               />
-              <span className="kbd" aria-hidden>
+              <span className="kbd" aria-hidden onClick={() => setPaletteOpen(true)} style={{ cursor: 'pointer' }}>
                 ⌘K
               </span>
             </form>
@@ -249,6 +251,8 @@ export function AppLayout({ me }: { me: Me | null }) {
           <main className="content">
             <Outlet />
           </main>
+
+          <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
 
           <nav className="bottom-nav">
             {BOTTOM_NAV.map((n) => (

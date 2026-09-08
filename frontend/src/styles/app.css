@@ -961,3 +961,10 @@ button.panel-row:hover {
     padding: 20px;
   }
 }
+
+/* ⌘K 命令面板结果行 */
+.cmd-row:hover,
+.cmd-row:focus-visible {
+  background: var(--accent-soft, color-mix(in srgb, var(--accent) 12%, transparent));
+  outline: none;
+}

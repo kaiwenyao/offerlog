@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, fmtBytes, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
 import { effectiveZone } from '../../lib/tz'
@@ -53,6 +53,29 @@ export function FileTile({ name, size = 24 }: { name: string; size?: number }) {
       {ext}
     </span>
   )
+}
+
+/** 图片附件（截图）的缩略预览；非图片退回扩展名方块。 */
+export function FilePreview({ f, size = 40 }: { f: FileItem; size?: number }) {
+  const isImage = /^image\//.test(f.content_type || '')
+  if (isImage && f.status === 'ready') {
+    return (
+      <img
+        src={`/api/v1/files/${f.id}/download`}
+        alt={f.name}
+        loading="lazy"
+        style={{
+          width: size,
+          height: size,
+          objectFit: 'cover',
+          border: '1px solid var(--border)',
+          background: 'var(--surface-thin)',
+          flex: '0 0 auto',
+        }}
+      />
+    )
+  }
+  return <FileTile name={f.name} size={size} />
 }
 
 /* -------------------------------------------------------------------------- */
@@ -229,11 +252,29 @@ export function OverviewTab({
                   {i.format ? ` · ${i.format}` : ''}
                 </span>
                 <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {i.scheduled_at ? fmtDateTime(i.scheduled_at) : '时间未定'} · {i.result || '待定'}
+                  {i.scheduled_at ? fmtDateTime(i.scheduled_at) : '时间未定'}
                 </span>
                 {i.feedback && (
                   <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>反馈：{i.feedback}</span>
                 )}
+              </span>
+              {/* 三态标签：已通过 / 待进行 / 待安排（result + scheduled_at 推导） */}
+              <span
+                style={{
+                  fontSize: 11,
+                  border: '1px solid var(--border)',
+                  padding: '1px 6px',
+                  color:
+                    i.result === 'passed'
+                      ? 'var(--positive)'
+                      : i.result === 'failed'
+                        ? 'var(--danger)'
+                        : i.scheduled_at
+                          ? 'var(--info)'
+                          : 'var(--neutral-600)',
+                }}
+              >
+                {i.result === 'passed' ? '已通过' : i.result === 'failed' ? '未通过' : i.scheduled_at ? '待进行' : '待安排'}
               </span>
             </div>
           ))
@@ -325,68 +366,140 @@ export function OverviewTab({
 
 /* -------------------------------------------------------------------------- */
 
-export function FilesTab({ appId, files }: { appId: number; files: FileItem[] }) {
+export function FilesTab({
+  appId,
+  files,
+  interviews = [],
+}: {
+  appId: number
+  files: FileItem[]
+  /** 全部轮次（用于把附件按轮次分组展示；无轮次附件归入「未归档」） */
+  interviews?: Interview[]
+}) {
   const qc = useQueryClient()
   const [err, setErr] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [attachTo, setAttachTo] = useState<number>(0)
+
+  // 画布：⌘V 直接粘贴截图，自动挂到当前轮次。监听全局 paste：只有当焦点不在
+  // 输入框/文本域里（避免用户在表单里粘贴文字时误传）才处理剪贴板图片。
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
+      const files = Array.from(e.clipboardData?.files ?? [])
+      const img = files.find((f) => f.type.startsWith('image/'))
+      if (img) {
+        e.preventDefault()
+        uploadOne(img)
+      }
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attachTo])
+
+  const uploadOne = async (file: File) => {
+    setUploading(true)
+    setErr('')
+    try {
+      await upMut.mutateAsync(file)
+    } catch {
+      /* surfaced through the mutation's onError */
+    } finally {
+      setUploading(false)
+    }
+  }
 
   const upMut = useMutation({
     mutationFn: (file: File) => {
       const fd = new FormData()
       fd.append('file', file)
-      fd.append('category', /\.(pdf|docx?|txt)$/i.test(file.name) ? 'resume' : 'other')
+      fd.append('category', /[.]png|jpe?g$/i.test(file.name) ? 'other' : 'resume')
       fd.append('application_id', String(appId))
+      // 截图/附件挂到选中的轮次（默认挂到当前正在进行的轮次）
+      if (attachTo > 0) fd.append('interview_id', String(attachTo))
       return api.post('/api/v1/files', fd, true)
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['files'] }),
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '上传失败'),
   })
 
+  const roundByID = (id: number | null) => interviews.find((i) => i.id === id) ?? null
+  const roundFiles = (rid: number | null) => files.filter((f) => f.interview_id === rid)
+  const currentRound =
+    interviews.find((i) => i.result === 'pending' && i.scheduled_at) ??
+    interviews.find((i) => i.result === 'pending') ??
+    interviews[interviews.length - 1] ??
+    null
+  // 轮次到位后默认挂到当前轮（画布：「自动挂到当前轮次」），用户仍可改选。
+  useEffect(() => {
+    if (interviews.length > 0 && attachTo === 0 && currentRound) setAttachTo(currentRound.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interviews])
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
       {err && <ErrorText>{err}</ErrorText>}
 
-      <label
-        style={{
-          display: 'inline-flex',
-          alignSelf: 'flex-start',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-          height: 'var(--control-h-sm)',
-          padding: '0 var(--space-3)',
-          borderRadius: 'var(--radius-control)',
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          boxShadow: 'var(--highlight-inner)',
-          font: 'var(--type-ui)',
-          fontSize: 'var(--text-13)',
-          cursor: 'pointer',
-        }}
-      >
-        {uploading ? <Spinner size={14} /> : <Icon name="upload" size={14} />}
-        {uploading ? '上传中…' : '＋ 上传附件'}
-        <input
-          type="file"
-          style={{ display: 'none' }}
-          accept={ACCEPTED_UPLOADS}
-          onChange={async (e) => {
-            const f = e.target.files?.[0]
-            if (!f) return
-            setUploading(true)
-            try {
-              await upMut.mutateAsync(f)
-            } catch {
-              /* surfaced through the mutation's onError */
-            } finally {
-              setUploading(false)
-              e.target.value = ''
-            }
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+        <label
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            height: 'var(--control-h-sm)',
+            padding: '0 var(--space-3)',
+            borderRadius: 'var(--radius-control)',
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--highlight-inner)',
+            font: 'var(--type-ui)',
+            fontSize: 'var(--text-13)',
+            cursor: 'pointer',
           }}
-        />
-      </label>
+        >
+          {uploading ? <Spinner size={14} /> : <Icon name="upload" size={14} />}
+          {uploading ? '上传中…' : '＋ 上传附件'}
+          <input
+            type="file"
+            style={{ display: 'none' }}
+            accept={ACCEPTED_UPLOADS}
+            onChange={async (e) => {
+              const f = e.target.files?.[0]
+              if (!f) return
+              await uploadOne(f)
+              e.target.value = ''
+            }}
+          />
+        </label>
+        {interviews.length > 0 && (
+          <select
+            aria-label="附件归属轮次"
+            value={attachTo}
+            onChange={(e) => setAttachTo(Number(e.target.value))}
+            style={{
+              height: 'var(--control-h-sm)',
+              borderRadius: 'var(--radius-control)',
+              border: '1px solid var(--border)',
+              background: 'var(--surface)',
+              fontSize: 'var(--text-13)',
+              padding: '0 8px',
+              color: 'var(--text)',
+            }}
+          >
+            <option value={0}>不挂轮次</option>
+            {interviews.map((i) => (
+              <option key={i.id} value={i.id}>
+                挂到 {i.round_name || `面试 #${i.id}`}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
 
       <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-        允许 PDF / DOCX / TXT / PNG / JPEG，单文件 ≤ 20 MiB
+        允许 PDF / DOCX / TXT / PNG / JPEG，单文件 ≤ 20 MiB。截图可 ⌘V 直接粘贴，自动挂到当前轮次。
       </p>
 
       {files.length === 0 ? (
@@ -394,29 +507,82 @@ export function FilesTab({ appId, files }: { appId: number; files: FileItem[] })
           还没有附件。上传简历版本、JD、Offer 文件等。
         </p>
       ) : (
-        <Card padding={0}>
-          {files.map((f) => (
-            <div key={f.id} className="panel-row">
-              <FileTile name={f.name} />
-              <span className="grow" style={{ minWidth: 0 }}>
-                <span className="ellipsis" style={{ display: 'block', fontSize: 14 }}>
-                  {f.name}
-                </span>
-                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
-                  {fmtBytes(f.size_bytes)} · {f.category === 'resume' ? '简历' : '其他'} · {fmtDate(f.created_at)}
-                </span>
-                {f.status !== 'ready' && <span style={{ fontSize: 12, color: 'var(--danger)' }}>状态：{f.status}</span>}
-              </span>
-              {f.status === 'ready' && (
-                <LinkButton variant="ghost" size="sm" href={`/api/v1/files/${f.id}/download`} download>
-                  下载
-                </LinkButton>
-              )}
-            </div>
-          ))}
-        </Card>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          {/* 按轮次分组的附件区块：无轮次附件先列，再每个有附件的轮次 */}
+          {roundFiles(null).length > 0 && (
+            <FileGroup
+              key="unassigned"
+              title={interviews.length ? '未归档附件' : '附件'}
+              items={roundFiles(null)}
+            />
+          )}
+          {interviews.map((i) => {
+            const its = roundFiles(i.id)
+            if (its.length === 0) return null
+            return (
+              <FileGroup
+                key={i.id}
+                title={`${i.round_name || '面试'} · ${i.result === 'passed' ? '已通过' : i.result === 'failed' ? '未通过' : i.scheduled_at ? '待进行' : '待安排'}`}
+                items={its}
+              />
+            )
+          })}
+          {roundFiles(null).length === files.length && files.length > 0 && (
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              共 {files.length} 个文件
+            </span>
+          )}
+        </div>
       )}
     </div>
+  )
+}
+
+function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
+  const qc = useQueryClient()
+  const [err, setErr] = useState('')
+  const del = useMutation({
+    mutationFn: (id: string) => api.del(`/api/v1/files/${id}`),
+    onSuccess: () => {
+      setErr('')
+      qc.invalidateQueries({ queryKey: ['files'] })
+    },
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
+  })
+  return (
+    <Card padding={0}>
+      <div className="panel-head">
+        <PanelTitle>{title}</PanelTitle>
+        <Num color="var(--text-muted)">{items.length}</Num>
+      </div>
+      {err && (
+        <div style={{ padding: '6px 16px' }}>
+          <ErrorText>{err}</ErrorText>
+        </div>
+      )}
+      {items.map((f) => (
+        <div key={f.id} className="panel-row">
+          <FilePreview f={f} />
+          <span className="grow" style={{ minWidth: 0 }}>
+            <span className="ellipsis" style={{ display: 'block', fontSize: 14 }}>
+              {f.name}
+            </span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
+              {fmtBytes(f.size_bytes)} · {f.category === 'resume' ? '简历' : '其他'} · {fmtDate(f.created_at)}
+            </span>
+            {f.status !== 'ready' && <span style={{ fontSize: 12, color: 'var(--danger)' }}>状态：{f.status}</span>}
+          </span>
+          {f.status === 'ready' && (
+            <LinkButton variant="ghost" size="sm" href={`/api/v1/files/${f.id}/download`} download>
+              下载
+            </LinkButton>
+          )}
+          <Button variant="ghost" size="sm" disabled={del.isPending} onClick={() => del.mutate(f.id)} title="删除文件并移除关联">
+            删除
+          </Button>
+        </div>
+      ))}
+    </Card>
   )
 }
 

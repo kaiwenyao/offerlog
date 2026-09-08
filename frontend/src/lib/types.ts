@@ -34,6 +34,11 @@ export interface AppRow {
   deleted: boolean
   created_at: string
   updated_at: string
+  /**
+   * include=stage_history 时附加：已到达状态 → 用户时区最早日历日 YYYY-MM-DD。
+   * 工序线（StageTrail/StageRail）把它当 path 用，终态岗位也能画出灰色真实进度。
+   */
+  stage_history?: Record<string, string>
 }
 
 export interface AppEvent {
@@ -58,6 +63,8 @@ export interface FileItem {
   status: string
   category: string
   application_id: number | null
+  /** 归属的面试轮次（截图/附件按轮次归档）；无轮次为 null */
+  interview_id: number | null
   created_at: string
 }
 
