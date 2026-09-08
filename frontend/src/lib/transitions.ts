@@ -44,6 +44,13 @@ export function allowedTargets(from: string): StatusMeta[] {
 /** Statuses that still need submission evidence before they can be entered. */
 export const RECRUITING_KEYS = ['applied', 'screening', 'assessment', 'interviewing']
 
+/**
+ * Where 「未经正式投递」 is a coherent claim (mirror of domain.go
+ * SkipSubmissionStatuses). 已投递 is excluded on purpose: that status *is* the
+ * assertion that a submission happened, so it always needs a real time.
+ */
+export const SKIP_SUBMISSION_TARGETS = ['screening', 'assessment', 'interviewing']
+
 /** One-line "what picking this means" copy shown next to each target. */
 const TARGET_HINT: Record<string, string> = {
   preparing: '开始改简历 / 写求职信',

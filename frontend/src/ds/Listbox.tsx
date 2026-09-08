@@ -91,8 +91,11 @@ function measure(trigger: HTMLElement): PanelRect {
  * system-blue sheet. Options can carry a color pip, an icon and a hint, and can
  * be disabled with a stated reason.
  *
- * Not a combobox — there is no text entry, so the trigger is a plain button
- * owning a `role="listbox"` panel via `aria-controls`.
+ * Follows the APG select-only combobox pattern: DOM focus never leaves the
+ * trigger, so the trigger is the `role="combobox"` element and carries
+ * `aria-expanded` / `aria-controls` / `aria-activedescendant`. Putting
+ * activedescendant on the (unfocused) panel would leave screen readers silent
+ * while arrow keys visibly move the highlight.
  */
 export function Listbox({
   label,
@@ -115,6 +118,7 @@ export function Listbox({
 
   const options = useMemo(() => flatten(groups), [groups])
   const selectable = useMemo(() => options.filter((o) => !o.disabled), [options])
+  const activeValue = active >= 0 ? selectable[active]?.value : undefined
   const selected = options.find((o) => o.value === value)
   const optionId = (v: string) => `${baseId}-opt-${v}`
 
@@ -237,9 +241,11 @@ export function Listbox({
           type="button"
           className={triggerClassName}
           disabled={disabled}
+          role="combobox"
           aria-haspopup="listbox"
           aria-expanded={open}
           aria-controls={open ? `${baseId}-panel` : undefined}
+          aria-activedescendant={open && activeValue ? optionId(activeValue) : undefined}
           aria-labelledby={label ? `${baseId}-label` : undefined}
           onClick={() => (open ? close(false) : openPanel())}
           onKeyDown={onKeyDown}
@@ -263,9 +269,7 @@ export function Listbox({
                 id={`${baseId}-panel`}
                 role="listbox"
                 aria-labelledby={label ? `${baseId}-label` : undefined}
-                aria-activedescendant={active >= 0 ? optionId(selectable[active]?.value ?? '') : undefined}
                 tabIndex={-1}
-                onKeyDown={onKeyDown}
                 style={{
                   position: 'fixed',
                   zIndex: 81,
@@ -291,7 +295,7 @@ export function Listbox({
                         </div>
                       )}
                       {group.options.map((opt) => {
-                        const isActive = !opt.disabled && selectable[active]?.value === opt.value
+                        const isActive = !opt.disabled && activeValue === opt.value
                         return (
                           <div
                             key={opt.value}

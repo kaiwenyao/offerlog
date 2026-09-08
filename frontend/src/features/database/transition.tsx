@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
 import { toInstantInUserZone } from '../../lib/tz'
@@ -8,6 +8,7 @@ import {
   RECRUITING_KEYS,
   REASON_PRESETS,
   REOPEN_REASON_PRESETS,
+  SKIP_SUBMISSION_TARGETS,
   suggestedTargets,
   targetGroups,
 } from '../../lib/transitions'
@@ -48,9 +49,14 @@ export function TransitionModal({
   const [reason, setReason] = useState('')
   const [note, setNote] = useState('')
   const [err, setErr] = useState('')
-  // Set when the status change landed but the interview round did not: the
-  // transition is NOT retryable at that point (it would 409 / same_status).
-  const [statusCommitted, setStatusCommitted] = useState(false)
+  // The status change is durable well before the mutation settles, but the user
+  // must not be able to dismiss the dialog in that window — they would never see
+  // the partial-failure message. So the flag lives in a ref while the request is
+  // in flight, and only becomes UI state once the second write has actually
+  // failed. At that point the transition is NOT retryable (it would 409 /
+  // same_status), so the footer collapses to a single 关闭.
+  const statusCommitted = useRef(false)
+  const [partialFailure, setPartialFailure] = useState(false)
 
   // Inline interview round (only when advancing to 面试中).
   const [roundName, setRoundName] = useState(() => guessRound(interviews.length))
@@ -65,6 +71,9 @@ export function TransitionModal({
   // Only ask for a submission time when the record genuinely has none. A record
   // that was already submitted must not be re-asked on every later stage.
   const needsSubmitted = RECRUITING_KEYS.includes(to) && !submittedAt
+  // 已投递 always needs a real time — offering the escape hatch there would
+  // produce a row that reads as submitted but counts as unsubmitted everywhere.
+  const canSkipSubmission = SKIP_SUBMISSION_TARGETS.includes(to)
   const isInterviewing = to === 'interviewing'
   // Prefer the target's own presets (毁约 from 已接受 wants the 撤回 reasons,
   // not the reopen ones); fall back to reopen copy for a pipeline target.
@@ -77,8 +86,9 @@ export function TransitionModal({
     mutationFn: async () => {
       const occurred = occurredAt ? toInstantInUserZone(occurredAt) : null
       if (occurredAt && occurred?.iso == null) throw new ApiError('bad_occurred_at', '发生时间格式不正确', 400)
-      const submittedInstant = !noFormalSubmission && submitted ? toInstantInUserZone(submitted) : null
-      if (submitted && !noFormalSubmission && submittedInstant?.iso == null) {
+      const skipSubmission = canSkipSubmission && noFormalSubmission
+      const submittedInstant = !skipSubmission && submitted ? toInstantInUserZone(submitted) : null
+      if (submitted && !skipSubmission && submittedInstant?.iso == null) {
         throw new ApiError('bad_submitted_at', '投递时间格式不正确', 400)
       }
 
@@ -89,10 +99,10 @@ export function TransitionModal({
         reason,
         note,
         submitted_at: submittedInstant?.iso ?? null,
-        no_formal_submission: noFormalSubmission,
+        no_formal_submission: skipSubmission,
         idempotency_key: `ui-${Date.now()}`,
       })
-      setStatusCommitted(true)
+      statusCommitted.current = true
 
       // Second, independent write. The status change is already durable, so a
       // failure here must be reported as a partial success — never swallowed,
@@ -115,13 +125,19 @@ export function TransitionModal({
       onClose()
     },
     onError: (e: unknown) => {
-      const msg = e instanceof ApiError ? e.message : '更新失败'
-      if (statusCommitted) {
+      // A network-level failure has no server message; nesting the generic
+      // 「更新失败」 inside 「…创建失败：」 reads as nonsense, so each branch
+      // gets its own fallback.
+      const apiMsg = e instanceof ApiError ? e.message : null
+      if (statusCommitted.current) {
         // Refresh anyway: the status really did change.
         invalidate()
-        setErr(`状态已更新为「${statusMeta(to).label}」，但面试轮次创建失败：${msg}。可在「概览」标签重新安排。`)
+        setPartialFailure(true)
+        setErr(
+          `状态已更新为「${statusMeta(to).label}」，但面试轮次创建失败：${apiMsg ?? '网络错误或服务无响应'}。可在「概览」标签重新安排。`,
+        )
       } else {
-        setErr(msg)
+        setErr(apiMsg ?? '更新失败')
       }
     },
   })
@@ -141,13 +157,15 @@ export function TransitionModal({
       onClose={onClose}
       width={520}
       footer={
-        statusCommitted ? (
+        partialFailure ? (
           <Button variant="primary" size="sm" onClick={onClose}>
             关闭
           </Button>
         ) : (
           <>
-            <Button variant="ghost" size="sm" onClick={onClose}>
+            {/* Disabled while in flight: the status write may already have
+                landed, and dismissing now would hide a partial failure. */}
+            <Button variant="ghost" size="sm" disabled={mut.isPending} onClick={onClose}>
               取消
             </Button>
             <Button variant="primary" size="sm" disabled={!canSubmit || mut.isPending} onClick={() => mut.mutate()}>
@@ -221,7 +239,7 @@ export function TransitionModal({
                 gap: 'var(--space-3)',
               }}
             >
-              {!noFormalSubmission && (
+              {!(canSkipSubmission && noFormalSubmission) && (
                 <Input
                   label="实际投递时间 *"
                   type="datetime-local"
@@ -230,11 +248,13 @@ export function TransitionModal({
                   hint="这份申请什么时候投出的；进入招聘阶段需要它来计算等待天数"
                 />
               )}
-              <Checkbox
-                label="未经正式投递（内推 / 猎头直接约面）"
-                checked={noFormalSubmission}
-                onChange={setNoFormalSubmission}
-              />
+              {canSkipSubmission && (
+                <Checkbox
+                  label="未经正式投递（内推 / 猎头直接约面）"
+                  checked={noFormalSubmission}
+                  onChange={setNoFormalSubmission}
+                />
+              )}
             </div>
           </Card>
         )}

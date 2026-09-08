@@ -3,7 +3,15 @@
 // Playwright e2e suite.
 import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
-import { allowedTargets, needsReason, suggestedTargets, targetGroups, TRANSITIONS } from '../src/lib/transitions'
+import {
+  allowedTargets,
+  needsReason,
+  RECRUITING_KEYS,
+  SKIP_SUBMISSION_TARGETS,
+  suggestedTargets,
+  targetGroups,
+  TRANSITIONS,
+} from '../src/lib/transitions'
 import {
   fmtBytes,
   fmtDate,
@@ -120,6 +128,15 @@ describe('transition map (mirror of backend allowedDirect)', () => {
     expect(needsReason('offer', 'accepted')).toBe(false)
     expect(needsReason('applied', 'interviewing')).toBe(false)
     expect(needsReason('saved', '')).toBe(false)
+  })
+
+  it('never offers 未经正式投递 for 已投递 itself', () => {
+    // 已投递 IS the claim that a submission happened; a row in that status with
+    // a null submitted_at reads as submitted but counts as unsubmitted in every
+    // `submitted_at IS NOT NULL` query. Mirrors domain.go SkipSubmissionStatuses.
+    expect(SKIP_SUBMISSION_TARGETS).not.toContain('applied')
+    expect(RECRUITING_KEYS).toContain('applied') // still asks for the time
+    for (const k of SKIP_SUBMISSION_TARGETS) expect(RECRUITING_KEYS).toContain(k)
   })
 
   it('suggests the next flow step plus 被拒绝 as one-tap chips', () => {

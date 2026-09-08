@@ -39,6 +39,16 @@ var InProgressStatuses = map[string]bool{
 	StatusApplied: true, StatusScreening: true, StatusAssessment: true, StatusInterviewing: true,
 }
 
+// SkipSubmissionStatuses are the in-progress statuses a record may enter while
+// asserting it never went through a formal submission (内推 / 猎头直接约面).
+// StatusApplied is deliberately absent: 「已投递」 *is* the claim that a
+// submission happened, so a row in that status with a NULL submitted_at would
+// read as submitted in the UI while every analytics and reminder query
+// (submitted_at IS NOT NULL) treats it as not submitted.
+var SkipSubmissionStatuses = map[string]bool{
+	StatusScreening: true, StatusAssessment: true, StatusInterviewing: true,
+}
+
 // Terminal (ended) statuses.
 var TerminalStatuses = map[string]bool{
 	StatusAccepted: true, StatusRejected: true, StatusWithdrawn: true, StatusClosed: true,
@@ -224,9 +234,13 @@ func ValidateTransition(t Transition) error {
 	}
 
 	// Entering a recruiter-driven phase requires evidence of submission.
-	toInProgress := InProgressStatuses[t.ToStatus]
-	if toInProgress && !t.WasSubmitted && !t.SkipSubmission {
-		return errf("missing_submitted_at", "进入后续招聘阶段需补充实际投递时间或标记未经过正式投递")
+	if InProgressStatuses[t.ToStatus] && !t.WasSubmitted {
+		if !t.SkipSubmission {
+			return errf("missing_submitted_at", "进入后续招聘阶段需补充实际投递时间或标记未经过正式投递")
+		}
+		if !SkipSubmissionStatuses[t.ToStatus] {
+			return errf("missing_submitted_at", "「已投递」必须填写实际投递时间；没走正式投递流程请直接选择对应的招聘阶段")
+		}
 	}
 
 	// accepted requires an offer history or a simultaneous offer event.

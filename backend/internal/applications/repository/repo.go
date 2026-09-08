@@ -221,9 +221,16 @@ func (r *Repo) UpdateFields(ctx context.Context, q database.Querier, a *Row) (in
 }
 
 // SetStatus updates status-related columns within a transition.
+//
+// submitted_at / first_response_at are written OUTRIGHT, not COALESCEd: the
+// caller passes a full row read under FOR UPDATE, so a nil there means "clear
+// it", not "leave it alone". Reopening an ended record back to 待投递 /
+// 准备材料 has to erase them — with COALESCE the row kept its old timestamps and
+// stayed counted as submitted by analytics and stale-response reminders while
+// displaying a pre-submission status.
 func (r *Repo) SetStatus(ctx context.Context, q database.Querier, a *Row) error {
-	_, err := q.Exec(ctx, `UPDATE applications SET status=$1, submitted_at=COALESCE($2::timestamptz, submitted_at),
-		first_response_at=COALESCE($3::timestamptz, first_response_at), saved_at=COALESCE($4::timestamptz, saved_at),
+	_, err := q.Exec(ctx, `UPDATE applications SET status=$1, submitted_at=$2::timestamptz,
+		first_response_at=$3::timestamptz, saved_at=COALESCE($4::timestamptz, saved_at),
 		accepted_at=$5::timestamptz, rejected_at=$6::timestamptz, reason=$7, version = version + 1, updated_at = now()
 		WHERE id=$8 AND owner_id=$9 AND version=$10`,
 		a.Status, a.SubmittedAt, a.FirstResponseAt, a.SavedAt, a.AcceptedAt, a.RejectedAt,

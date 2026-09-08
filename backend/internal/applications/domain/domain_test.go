@@ -62,6 +62,17 @@ func TestTransitionValidationTable(t *testing.T) {
 			tr.SkipSubmission = true
 			return tr
 		}(), ""},
+		{"skip-submission is refused for 已投递 itself", func() Transition {
+			tr := base("saved", "applied")
+			tr.WasSubmitted = false
+			tr.SkipSubmission = true
+			return tr
+		}(), "missing_submitted_at"},
+		{"applied still accepts a real submitted_at", func() Transition {
+			tr := base("saved", "applied")
+			tr.WasSubmitted = true
+			return tr
+		}(), ""},
 		{"skip-submission does not unlock an illegal edge", func() Transition {
 			tr := base("saved", "accepted")
 			tr.WasSubmitted = false

@@ -124,6 +124,78 @@ func TestFullPipelineToAccepted(t *testing.T) {
 	_ = db
 }
 
+// Reopening an ended record back into the pre-submission phase must ERASE
+// submitted_at / first_response_at in the database, not just in the returned
+// row: SetStatus used to COALESCE both columns, so the response said null while
+// the row stayed "submitted" for analytics and stale-response reminders.
+func TestReopenToPreSubmissionClearsTimestamps(t *testing.T) {
+	_, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "Reopen", "前端工程师")
+
+	submitted := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
+	responded := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: &submitted, FirstResponseAt: &responded,
+	}); err != nil {
+		t.Fatalf("applied: %v", err)
+	}
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusWithdrawn, Version: 2, Reason: "放弃",
+	}); err != nil {
+		t.Fatalf("withdrawn: %v", err)
+	}
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusSaved, Version: 3, Reason: "重新考虑",
+	}); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+
+	// Re-read from the database — the transition response is built from the
+	// in-memory row and would pass even while the UPDATE kept the old values.
+	got, err := svc.Get(ctx, owner, app.ID, false)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != domain.StatusSaved {
+		t.Fatalf("status = %s, want saved", got.Status)
+	}
+	if got.SubmittedAt != nil {
+		t.Errorf("submitted_at should be cleared on reopen to 待投递, got %v", got.SubmittedAt)
+	}
+	if got.FirstResponseAt != nil {
+		t.Errorf("first_response_at should be cleared on reopen to 待投递, got %v", got.FirstResponseAt)
+	}
+}
+
+// 「已投递」 asserts a submission happened, so the no-formal-submission escape
+// hatch must not apply to it — otherwise the row reads as submitted in the UI
+// while every submitted_at IS NOT NULL query treats it as not submitted.
+func TestNoFormalSubmissionRejectedForApplied(t *testing.T) {
+	_, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "SkipGuard", "数据工程师")
+
+	_, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, NoFormalSubmission: true,
+	})
+	var ve *domain.ValidationError
+	if !errors.As(err, &ve) || ve.Code != "missing_submitted_at" {
+		t.Fatalf("want missing_submitted_at, got %v", err)
+	}
+
+	// The same assertion IS valid for a later stage.
+	row, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusInterviewing, Version: 1, NoFormalSubmission: true,
+	})
+	if err != nil {
+		t.Fatalf("interviewing with no-formal-submission: %v", err)
+	}
+	if row.Status != domain.StatusInterviewing || row.SubmittedAt != nil {
+		t.Fatalf("want interviewing with null submitted_at, got %+v", row)
+	}
+}
+
 func TestAcceptedWithSynthesizedOfferEvent(t *testing.T) {
 	_, svc, _, owner := setup(t)
 	ctx := context.Background()
