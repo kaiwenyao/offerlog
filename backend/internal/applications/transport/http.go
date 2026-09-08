@@ -187,11 +187,15 @@ func (h *Handler) list(c *gin.Context) {
 	stage := map[int64]map[string]string{}
 	if withStage && len(rows) > 0 {
 		ids := make([]int64, 0, len(rows))
+		submitted := make(map[int64]*time.Time, len(rows))
 		for _, row := range rows {
 			ids = append(ids, row.ID)
+			if row.SubmittedAt != nil {
+				submitted[row.ID] = row.SubmittedAt
+			}
 		}
 		loc, _ := timeutil.SafeLocation(user.Timezone)
-		if stage, err = h.svc.Repo().StageHistoryFor(c.Request.Context(), user.ID, ids, loc); err != nil {
+		if stage, err = h.svc.Repo().StageHistoryFor(c.Request.Context(), user.ID, ids, loc, submitted); err != nil {
 			// Stage history is an enrichment: never fail the page over it.
 			stage = map[int64]map[string]string{}
 		}

@@ -593,6 +593,15 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
   const [err, setErr] = useState('')
   const [pick, setPick] = useState<AppEvent | null>(null)
   const [newStatus, setNewStatus] = useState('')
+  // 系统信息（录入时间等数据库时间）默认隐藏，点击逐条展开。
+  const [sysInfo, setSysInfo] = useState<Set<number>>(new Set())
+  const toggleSys = (id: number) =>
+    setSysInfo((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
   const correctMut = useMutation({
     mutationFn: async () => {
@@ -616,7 +625,7 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
       {err && <ErrorText>{err}</ErrorText>}
       <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-        当前状态：{statusMeta(status).label}。每次真实变化都有审计记录。
+        当前状态：{statusMeta(status).label}。按你填写的实际发生时间排列；系统录入时间默认隐藏，展开「系统信息」可见。
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -639,7 +648,7 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
                     }`}
                   {!['created', 'correction', 'status_change'].includes(e.event_type) && e.event_type}
                 </span>
-                <span style={{ marginLeft: 'auto' }}>
+                <span style={{ marginLeft: 'auto' }} title="实际发生时间">
                   <Num color="var(--text-muted)">{fmtDateTime(e.occurred_at)}</Num>
                 </span>
               </span>
@@ -656,8 +665,27 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
                   纠正了事件 #{e.corrects_event_id}
                 </span>
               )}
-              {e.event_type === 'status_change' && e.to_status && status !== e.to_status && (
-                <span style={{ display: 'block', marginTop: 6 }}>
+              {sysInfo.has(e.id) && (
+                <span
+                  style={{
+                    display: 'block',
+                    marginTop: 6,
+                    padding: '6px 10px',
+                    border: '1px solid var(--border-alt)',
+                    background: 'var(--surface-thin)',
+                    fontSize: 12,
+                    color: 'var(--text-muted)',
+                    lineHeight: 1.6,
+                  }}
+                >
+                  <span style={{ display: 'block' }}>录入时间：{fmtDateTime(e.recorded_at)}（数据库写入，非业务时间）</span>
+                  <span style={{ display: 'block' }}>
+                    事件 #{e.id} · 序号 {e.sequence}
+                  </span>
+                </span>
+              )}
+              <span style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                {e.event_type === 'status_change' && e.to_status && status !== e.to_status && (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -668,8 +696,11 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
                   >
                     <Icon name="edit" size={13} /> 纠正此记录
                   </Button>
-                </span>
-              )}
+                )}
+                <Button variant="ghost" size="sm" onClick={() => toggleSys(e.id)} aria-expanded={sysInfo.has(e.id)}>
+                  <Icon name="clock" size={13} /> 系统信息{sysInfo.has(e.id) ? '▴' : '▾'}
+                </Button>
+              </span>
             </span>
           </div>
         ))}

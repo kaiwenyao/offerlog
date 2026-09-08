@@ -99,6 +99,14 @@ export function AppDetailContent({
     return <PageSpinner />
   }
 
+  // 用户填写的投递时间是「已投递」节点的权威到达时间：回填场景下事件本身可能
+  // 带的是录入当天的日期（旧数据）。与后端 include=stage_history 的覆盖规则一致。
+  const trailDates: Record<string, string> = { ...stageDates }
+  if (app.submitted_at) {
+    const day = toDayString(app.submitted_at, effectiveZone() ?? undefined)
+    if (day) trailDates.applied = day
+  }
+
   const tabItems = [
     { value: 'overview', label: '概览' },
     { value: 'files', label: `附件 (${files.length})` },
@@ -157,7 +165,7 @@ export function AppDetailContent({
     <>
       <div>
         <Eyebrow style={{ marginBottom: 10 }}>阶段轨迹</Eyebrow>
-        <StageTrail current={app.status} path={path} dates={stageDates} />
+        <StageTrail current={app.status} path={path} dates={trailDates} />
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>

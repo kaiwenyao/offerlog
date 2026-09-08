@@ -96,12 +96,20 @@ func TestStageHistoryIncludeOnListAndQuery(t *testing.T) {
 	app := mustCreate(t, svc, owner, "StageCo", "后端")
 
 	// Walk saved → applied → screening → rejected (dead end) with real dates.
-	step := func(to string, v int, at time.Time) {
+	// Walk saved → applied → screening → rejected (dead end) with real dates.
+	// Only the 已投递 step carries 实际投递时间 — mirroring the real UI, where
+	// that input appears for recruiting-stage targets and the submission time
+	// snapshot must stay the day the user entered there.
+	step := func(to string, v int, at time.Time, submitted ...time.Time) {
 		t.Helper()
-		if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		in := &appservice.TransitionInput{
 			ToStatus: to, Version: v, OccurredAt: &at, Reason: "测试推进",
-			SubmittedAt: &at, FirstResponseAt: &at,
-		}); err != nil {
+			FirstResponseAt: &at,
+		}
+		if len(submitted) > 0 {
+			in.SubmittedAt = &submitted[0]
+		}
+		if _, err := svc.Transition(ctx, owner, app.ID, in); err != nil {
 			t.Fatalf("transition %s: %v", to, err)
 		}
 	}
@@ -112,7 +120,7 @@ func TestStageHistoryIncludeOnListAndQuery(t *testing.T) {
 		WHERE application_id=$1 AND event_type='created'`, app.ID); err != nil {
 		t.Fatal(err)
 	}
-	step(domain.StatusApplied, 1, time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC))
+	step(domain.StatusApplied, 1, time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC), time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC))
 	step(domain.StatusScreening, 2, time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC))
 	step(domain.StatusRejected, 3, time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC))
 
@@ -173,6 +181,81 @@ func TestStageHistoryIncludeOnListAndQuery(t *testing.T) {
 	if !ok || sh["rejected"] != "2026-09-06" {
 		t.Fatalf("views query stage_history = %#v", page.Items[0]["stage_history"])
 	}
+}
+
+// Backfilled business times: the timeline must carry the user-entered
+// 投递时间, never the DB write clock — whether the entry was created today
+// with a past submission date, or moved to 已投递 today with only 实际投递
+// 时间 filled in.
+func TestStageHistoryUsesUserEnteredTimes(t *testing.T) {
+	ctx := context.Background()
+	db, svc, repo, owner := setup(t)
+	today := time.Now().UTC()
+	yesterday := today.AddDate(0, 0, -1)
+
+	// (a) create today, already applied yesterday.
+	created, err := svc.Create(ctx, owner, &appservice.CreateInput{
+		CompanyName: "BackfillCo", Position: "Role", Status: domain.StatusApplied, SubmittedAt: &yesterday,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var occ time.Time
+	if err := db.Pool().QueryRow(ctx,
+		`SELECT occurred_at FROM application_events WHERE application_id=$1 AND event_type='created'`, created.ID).
+		Scan(&occ); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := occ.UTC().Format("2006-01-02"), yesterday.Format("2006-01-02"); got != want {
+		t.Errorf("created event occurred_at = %s, want the backfilled day %s", got, want)
+	}
+
+	// (b) create as 待投递 today, move to 已投递 with only 实际投递时间.
+	app2 := mustCreate(t, svc, owner, "BackfillCo2", "Role2")
+	if _, err := svc.Transition(ctx, owner, app2.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: &yesterday,
+	}); err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	var occ2 time.Time
+	if err := db.Pool().QueryRow(ctx,
+		`SELECT occurred_at FROM application_events WHERE application_id=$1 AND event_type='status_change' AND to_status=$2`,
+		app2.ID, domain.StatusApplied).Scan(&occ2); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := occ2.UTC().Format("2006-01-02"), yesterday.Format("2006-01-02"); got != want {
+		t.Errorf("applied event occurred_at = %s, want the backfilled day %s", got, want)
+	}
+
+	// Stage history via the HTTP surface: applied renders the user-entered day.
+	srv := newRedesignServer(t, db, owner, "UTC")
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/api/v1/applications?include=stage_history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	decode(t, res, &page)
+	wantDay := yesterday.Format("2006-01-02")
+	found := map[string]bool{}
+	for _, it := range page.Items {
+		sh, _ := it["stage_history"].(map[string]any)
+		if sh == nil {
+			continue
+		}
+		if it["company_name"] == "BackfillCo" || it["company_name"] == "BackfillCo2" {
+			if sh["applied"] != wantDay {
+				t.Errorf("%s applied = %v, want %s", it["company_name"], sh["applied"], wantDay)
+			}
+			found[it["company_name"].(string)] = true
+		}
+	}
+	if len(found) != 2 {
+		t.Errorf("expected both backfilled rows on page 1, found %v (page size may need a bump)", found)
+	}
+	_ = repo
 }
 
 func TestStageHistoryBucketsByUserTimezone(t *testing.T) {

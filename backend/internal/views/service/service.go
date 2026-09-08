@@ -33,8 +33,10 @@ func New(db *database.DB, repo *repository.Repo) *Service { return &Service{db: 
 // StageHistoryProvider computes the per-application stage history map for a
 // batch of ids. Implemented at the wiring layer (bootstrap) so the views
 // module never imports the applications module (which would be a cycle).
+// submittedAt carries each application's user-entered 投递时间, which wins for
+// the applied stage (backfilled submissions must render their real day).
 type StageHistoryProvider interface {
-	StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location) (map[int64]map[string]string, error)
+	StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location, submittedAt map[int64]*time.Time) (map[int64]map[string]string, error)
 }
 
 // WithStageHistory attaches the cross-module stage-history provider used by
@@ -396,14 +398,18 @@ func (s *Service) RunQueryOpts(ctx context.Context, ownerID int64, filters []vie
 	if withStage && len(items) > 0 {
 		if s.stageHistory != nil {
 			ids := make([]int64, 0, len(items))
+			submitted := make(map[int64]*time.Time, len(items))
 			for _, m := range items {
 				if id, ok := m["id"].(int64); ok {
 					ids = append(ids, id)
+					if sub, ok := m["submitted_at"].(*time.Time); ok && sub != nil {
+						submitted[id] = sub
+					}
 				}
 			}
 			loc, _ := timeutil.SafeLocation(opts.Timezone)
 			// Stage history is an enrichment: never fail the page over it.
-			if stage, err := s.stageHistory.StageHistoryFor(ctx, ownerID, ids, loc); err == nil {
+			if stage, err := s.stageHistory.StageHistoryFor(ctx, ownerID, ids, loc, submitted); err == nil {
 				for _, m := range items {
 					if id, ok := m["id"].(int64); ok {
 						if sh, ok := stage[id]; ok && len(sh) > 0 {

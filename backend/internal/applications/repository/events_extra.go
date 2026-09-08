@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -87,7 +88,11 @@ func (r *Repo) ListEventsByApps(ctx context.Context, ownerID int64, appIDs []int
 // result includes terminal statuses too (rejected/withdrawn/closed), so the
 // stage rail can draw how far a dead application actually walked before it
 // stopped.
-func (r *Repo) StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location) (map[int64]map[string]string, error) {
+//
+// submittedAt carries each application's user-entered 投递时间 snapshot: when
+// present it wins for the applied stage — the trail must show when the user
+// actually submitted (possibly backfilled), not when the record was touched.
+func (r *Repo) StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location, submittedAt map[int64]*time.Time) (map[int64]map[string]string, error) {
 	if len(appIDs) == 0 {
 		return map[int64]map[string]string{}, nil
 	}
@@ -95,13 +100,13 @@ func (r *Repo) StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int6
 	if err != nil {
 		return nil, err
 	}
-	return buildStageHistory(events, loc), nil
+	return buildStageHistory(events, loc, submittedAt), nil
 }
 
 // buildStageHistory replays each application's effective timeline (same
 // correction semantics as ResyncStatusFromEvents) and records the FIRST
 // arrival date per status.
-func buildStageHistory(events []*Event, loc *time.Location) map[int64]map[string]string {
+func buildStageHistory(events []*Event, loc *time.Location, submittedAt map[int64]*time.Time) map[int64]map[string]string {
 	byApp := map[int64][]*Event{}
 	var order []int64
 	for _, e := range events {
@@ -133,6 +138,12 @@ func buildStageHistory(events []*Event, loc *time.Location) map[int64]map[string
 				first[eff] = ev.OccurredAt
 			}
 		}
+		// The user-entered 投递时间 is the authoritative arrival for 已投递:
+		// it overrides whatever day the events replay produced (legacy rows may
+		// carry a "now" occurred_at while submitted_at holds the backfilled day).
+		if sub, ok := submittedAt[appID]; ok && sub != nil {
+			first[domain.StatusApplied] = *sub
+		}
 		if len(first) == 0 {
 			continue
 		}
@@ -153,6 +164,11 @@ func (r *Repo) ResyncStatusFromEvents(ctx context.Context, q database.Querier, a
 	if err != nil {
 		return err
 	}
+	// Replay in sequence (audit/insertion) order, NOT occurred_at order: a
+	// backfilled transition (今天补录昨天投递) carries an earlier business time
+	// than the created event, and the state machine must still walk the order
+	// in which the transitions were recorded.
+	events = bySequence(events)
 	// correction map: corrected event id → replacement status
 	corrected := map[int64]string{}
 	for _, ev := range events {
@@ -190,4 +206,15 @@ func (r *Repo) ResyncStatusFromEvents(ctx context.Context, q database.Querier, a
 		accepted_at=$4, version=version+1, updated_at=now() WHERE id=$5 AND owner_id=$6`,
 		status, sub, rej, acc, appID, ownerID)
 	return err
+}
+
+// bySequence returns the events sorted by their per-application sequence —
+// the order in which they were recorded. Status-machine replays (correction
+// simulation, resync) must use this order; occurred_at only drives display.
+func bySequence(evs []*Event) []*Event {
+	out := append([]*Event(nil), evs...)
+	slices.SortStableFunc(out, func(a, b *Event) int {
+		return a.Sequence - b.Sequence
+	})
+	return out
 }
