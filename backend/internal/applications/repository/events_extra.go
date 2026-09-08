@@ -9,6 +9,7 @@ import (
 
 	"offerlog/backend/internal/applications/domain"
 	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/timeutil"
 )
 
 // HadOffer reports whether the application ever reached offer (either the
@@ -53,6 +54,95 @@ func (r *Repo) RecordIdempotency(ctx context.Context, q database.Querier, ownerI
 					  WHERE application_id = $1 AND event_type='status_change')`,
 		appID, ownerID, key)
 	return err
+}
+
+// ListEventsByApps returns every timeline event for the given application ids
+// (owner-scoped) ordered by (application_id, occurred_at, sequence), so one
+// round-trip can feed the stage-history computation for a whole list page.
+func (r *Repo) ListEventsByApps(ctx context.Context, ownerID int64, appIDs []int64) ([]*Event, error) {
+	rows, err := r.db.Pool().Query(ctx, `SELECT id, application_id, sequence, event_type, from_status, to_status,
+		note, reason, occurred_at, recorded_at, corrects_event_id, actor_id
+		FROM application_events WHERE owner_id=$1 AND application_id = ANY($2::bigint[])
+		ORDER BY application_id, occurred_at ASC, sequence ASC`, ownerID, appIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.Sequence, &e.EventType, &e.FromStatus,
+			&e.ToStatus, &e.Note, &e.Reason, &e.OccurredAt, &e.RecordedAt, &e.CorrectsEventID, &e.ActorID); err != nil {
+			return nil, err
+		}
+		out = append(out, &e)
+	}
+	return out, rows.Err()
+}
+
+// StageHistoryFor returns, per application id, the earliest calendar day
+// (YYYY-MM-DD in the user's timezone) at which each effective status was
+// reached. Corrections replace the status of the event they point at (later
+// corrections win); correction events themselves contribute no arrival. The
+// result includes terminal statuses too (rejected/withdrawn/closed), so the
+// stage rail can draw how far a dead application actually walked before it
+// stopped.
+func (r *Repo) StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location) (map[int64]map[string]string, error) {
+	if len(appIDs) == 0 {
+		return map[int64]map[string]string{}, nil
+	}
+	events, err := r.ListEventsByApps(ctx, ownerID, appIDs)
+	if err != nil {
+		return nil, err
+	}
+	return buildStageHistory(events, loc), nil
+}
+
+// buildStageHistory replays each application's effective timeline (same
+// correction semantics as ResyncStatusFromEvents) and records the FIRST
+// arrival date per status.
+func buildStageHistory(events []*Event, loc *time.Location) map[int64]map[string]string {
+	byApp := map[int64][]*Event{}
+	var order []int64
+	for _, e := range events {
+		if _, ok := byApp[e.ApplicationID]; !ok {
+			order = append(order, e.ApplicationID)
+		}
+		byApp[e.ApplicationID] = append(byApp[e.ApplicationID], e)
+	}
+	out := map[int64]map[string]string{}
+	for _, appID := range order {
+		evs := byApp[appID]
+		// corrected: original event id → replacement status (later wins).
+		corrected := map[int64]string{}
+		for _, ev := range evs {
+			if ev.EventType == "correction" && ev.CorrectsEventID != nil && ev.ToStatus != nil {
+				corrected[*ev.CorrectsEventID] = *ev.ToStatus
+			}
+		}
+		first := map[string]time.Time{}
+		for _, ev := range evs {
+			if ev.EventType == "correction" || ev.ToStatus == nil {
+				continue
+			}
+			eff := *ev.ToStatus
+			if repl, ok := corrected[ev.ID]; ok {
+				eff = repl
+			}
+			if t, ok := first[eff]; !ok || ev.OccurredAt.Before(t) {
+				first[eff] = ev.OccurredAt
+			}
+		}
+		if len(first) == 0 {
+			continue
+		}
+		m := make(map[string]string, len(first))
+		for st, t := range first {
+			m[st] = timeutil.DateOnly(t, loc)
+		}
+		out[appID] = m
+	}
+	return out
 }
 
 // ResyncStatusFromEvents recomputes the current status by replaying the

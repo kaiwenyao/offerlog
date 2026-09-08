@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -191,6 +192,31 @@ func (h *Handler) upload(c *gin.Context) {
 			return
 		}
 	}
+	// Optional interview round the attachment belongs to (截图/附件按轮次归档):
+	// validated for ownership up-front so a foreign or mismatched interview is
+	// a clean 400 and a row can never be linked to someone else's round.
+	interviewID := int64(0)
+	if v := c.PostForm("interview_id"); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &interviewID); err != nil || interviewID <= 0 {
+			httpx.WriteErr(c, httpx.BadRequest("bad_interview", "无效的面试轮次 ID"))
+			return
+		}
+		var ownerOfInterview int64
+		err := h.db.QueryRow(c.Request.Context(), `SELECT owner_id FROM interviews WHERE id=$1`, interviewID).Scan(&ownerOfInterview)
+		if err != nil || ownerOfInterview != user.ID {
+			httpx.WriteErr(c, httpx.BadRequest("bad_interview", "无效的面试轮次 ID"))
+			return
+		}
+		if usedBy > 0 {
+			var matches bool
+			err := h.db.QueryRow(c.Request.Context(), `SELECT EXISTS(SELECT 1 FROM interviews WHERE id=$1 AND owner_id=$2 AND application_id=$3)`,
+				interviewID, user.ID, usedBy).Scan(&matches)
+			if err != nil || !matches {
+				httpx.WriteErr(c, httpx.BadRequest("bad_interview", "面试轮次不属于该申请记录"))
+				return
+			}
+		}
+	}
 	// quota check + pending record (reserve)
 	fid := uuid.NewString()
 	finalKey := fmt.Sprintf("owners/%d/files/%s/content", user.ID, fid)
@@ -260,14 +286,14 @@ func (h *Handler) upload(c *gin.Context) {
 	// link to application if provided
 	if usedBy > 0 {
 		if _, err := h.db.Exec(c.Request.Context(),
-			`INSERT INTO application_files(application_id, file_id, owner_id, purpose, is_resume)
-			 VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-			usedBy, fid, user.ID, category, category == "resume"); err != nil {
+			`INSERT INTO application_files(application_id, file_id, owner_id, purpose, is_resume, interview_id)
+			 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+			usedBy, fid, user.ID, category, category == "resume", nilOrID(interviewID)); err != nil {
 			httpx.WriteErr(c, err)
 			return
 		}
 	}
-	c.JSON(http.StatusCreated, gin.H{"id": fid, "status": "ready", "sha256": digest, "size_bytes": size, "name": origName})
+	c.JSON(http.StatusCreated, gin.H{"id": fid, "status": "ready", "sha256": digest, "size_bytes": size, "name": origName, "interview_id": nilOrID(interviewID)})
 }
 
 func (h *Handler) promote(ctx context.Context, ownerID int64, fid, finalKey, stagingKey string) error {
@@ -289,8 +315,9 @@ func (h *Handler) list(c *gin.Context) {
 		args = append(args, appID)
 		where += " AND used_by_application=$2"
 	}
-	rows, err := h.db.Query(c.Request.Context(), `SELECT id, owner_id, original_name, content_type, size_bytes, sha256, status, category, used_by_application, created_at
-		FROM files WHERE `+where+` ORDER BY created_at DESC`, args...)
+	rows, err := h.db.Query(c.Request.Context(), `SELECT id, owner_id, original_name, content_type, size_bytes, sha256, status, category, used_by_application, created_at,
+		(SELECT af.interview_id FROM application_files af WHERE af.file_id = f.id LIMIT 1) AS interview_id
+		FROM files f WHERE `+where+` ORDER BY created_at DESC`, args...)
 	if err != nil {
 		httpx.WriteErr(c, err)
 		return
@@ -305,6 +332,7 @@ func (h *Handler) list(c *gin.Context) {
 		Status      string    `json:"status"`
 		Category    string    `json:"category"`
 		UsedByApp   *int64    `json:"application_id"`
+		InterviewID *int64    `json:"interview_id"`
 		CreatedAt   time.Time `json:"created_at"`
 	}
 	var items []fDTO
@@ -312,7 +340,7 @@ func (h *Handler) list(c *gin.Context) {
 		var f fDTO
 		var owner int64
 		if err := rows.Scan(&f.ID, &owner, &f.Name, &f.ContentType, &f.SizeBytes, &f.SHA256,
-			&f.Status, &f.Category, &f.UsedByApp, &f.CreatedAt); err != nil {
+			&f.Status, &f.Category, &f.UsedByApp, &f.CreatedAt, &f.InterviewID); err != nil {
 			httpx.WriteErr(c, err)
 			return
 		}
@@ -360,20 +388,16 @@ func (h *Handler) delete(c *gin.Context) {
 		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的文件 ID"))
 		return
 	}
-	// refs check: still linked to any application? plan: removing association
-	// != deleting file; if other apps reference it, refuse.
-	var refCount int
-	if err := h.db.QueryRow(c.Request.Context(), `SELECT count(*) FROM application_files WHERE file_id=$1 AND owner_id=$2`, fid, user.ID).Scan(&refCount); err != nil {
-		httpx.WriteErr(c, err)
-		return
-	}
-	if refCount > 0 {
-		httpx.WriteErr(c, httpx.Conflict("file_in_use", "文件仍被申请记录引用，请先移除关联"))
-		return
-	}
 	var finalKey string
-	if err := h.db.QueryRow(c.Request.Context(), `SELECT final_key FROM files WHERE id=$1 AND owner_id=$2`, fid, user.ID).Scan(&finalKey); err != nil {
+	if err := h.db.QueryRow(c.Request.Context(), `SELECT final_key FROM files WHERE id=$1 AND owner_id=$2 AND status <> 'deleted'`, fid, user.ID).Scan(&finalKey); err != nil {
 		httpx.WriteErr(c, httpx.NotFound("文件不存在"))
+		return
+	}
+	// 删除关联（截图按轮次归档后，从详情抽屉删除 = 连关联一起删）。
+	// 单 owner 私有文件，不存在跨用户共享，因此无需「先移除关联再删文件」的
+	// 两步语义；一次删除即清理 application_files 关联 + 对象 + 记录。
+	if _, err := h.db.Exec(c.Request.Context(), `DELETE FROM application_files WHERE file_id=$1 AND owner_id=$2`, fid, user.ID); err != nil {
+		httpx.WriteErr(c, err)
 		return
 	}
 	// delete object then record (idempotent S3 delete)
@@ -385,7 +409,80 @@ func (h *Handler) delete(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
+	// Image custom-field values store file ids (JSONB arrays under
+	// property_definitions.data_type='image'); scrub the deleted id from every
+	// owner application so the UI never renders a dangling file tile. Best
+	// effort — a failure must not turn a successful delete into a 500.
+	if err := h.scrubCustomValues(c.Request.Context(), user.ID, fid); err != nil {
+		slog.Warn("files: scrub custom_values after delete", "file_id", fid, "error", err)
+	}
 	httpx.Ok(c)
+}
+
+// scrubCustomValues removes the file id from every image-typed custom field
+// array across the owner's applications.
+func (h *Handler) scrubCustomValues(ctx context.Context, ownerID int64, fid string) error {
+	rows, err := h.db.Query(ctx, `SELECT id, custom_values FROM applications WHERE owner_id=$1 AND deleted_at IS NULL`, ownerID)
+	if err != nil {
+		return err
+	}
+	type upd struct {
+		id     int64
+		values map[string]any
+	}
+	var pending []upd
+	for rows.Next() {
+		var id int64
+		var raw json.RawMessage
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var m map[string]any
+		if len(raw) == 0 {
+			continue
+		}
+		if err := json.Unmarshal(raw, &m); err != nil {
+			continue // malformed custom_values: leave untouched
+		}
+		dirty := false
+		for k, v := range m {
+			arr, ok := v.([]any)
+			if !ok {
+				continue
+			}
+			kept := arr[:0]
+			changed := false
+			for _, item := range arr {
+				if s, ok := item.(string); ok && s == fid {
+					changed = true
+					continue
+				}
+				kept = append(kept, item)
+			}
+			if changed {
+				m[k] = kept
+				dirty = true
+			}
+		}
+		if dirty {
+			pending = append(pending, upd{id: id, values: m})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, p := range pending {
+		b, err := json.Marshal(p.values)
+		if err != nil {
+			return err
+		}
+		if _, err := h.db.Exec(ctx, `UPDATE applications SET custom_values=$2, updated_at=now() WHERE id=$1`, p.id, b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // -- helpers --

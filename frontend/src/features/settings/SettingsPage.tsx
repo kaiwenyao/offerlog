@@ -5,7 +5,7 @@ import type { Me, Preferences } from '../../lib/types'
 import { Button, Card, Input, PanelTitle, Select, Switch } from '../../ds'
 import { ErrorText, Num, Spinner } from '../../components/ui'
 
-const PROPERTY_TYPES = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'url']
+const PROPERTY_TYPES = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'url', 'image']
 
 interface ImportPreview {
   batch_id: number

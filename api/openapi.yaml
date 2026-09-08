@@ -85,9 +85,30 @@ paths:
                 timezone: { type: string }
   /applications:
     get:
-      summary: 分页列表（status/search/trash/archived 查询参数）
+      summary: 分页列表（status/search/trash/archived 查询参数；include=stage_history 附加每行最早到达日期）
+      parameters:
+        - name: include
+          in: query
+          schema: { type: string }
+          description: CSV，如 include=stage_history —— 行对象附加 stage_history（状态 → 用户时区最早日历日）
     post:
       summary: 创建（仅 company_name/position 必填；同公司同名仅提示不禁止）
+  /applications/parse-url:
+    post:
+      summary: 解析 JD 链接预填公司/岗位/城市（SSRF 防护；失败返回 200 + 空字段）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string }
+      responses:
+        '200':
+          description: 解析成功或解析失败均 200（空字段表示未能预填）
+        '400': { description: 链接非 http/https 或缺 url }
+        '429': { description: 超过每分钟解析次数 }
   /applications/{id}:
     get: { summary: 详情 }
     patch:
@@ -128,13 +149,13 @@ paths:
     get: { summary: 今日待办用的跨申请开放行动项（open=1） }
   /files:
     post:
-      summary: 流式上传（multipart file + category + 可选 application_id）
-      description: 单文件 ≤20MiB；允许 PDF/DOCX/TXT/PNG/JPEG
-    get: { summary: 文件列表（可 filter application_id） }
+      summary: 流式上传（multipart file + category + 可选 application_id / interview_id）
+      description: 单文件 ≤20MiB；允许 PDF/DOCX/TXT/PNG/JPEG。interview_id 需归属当前用户且属于该 application_id
+    get: { summary: 文件列表（可 filter application_id；每行含 interview_id） }
   /files/{id}/download:
     get: { summary: 鉴权后下载（校验 owner） }
   /files/{id}:
-    delete: { summary: 删除（被引用则 409） }
+    delete: { summary: 删除文件（清理申请关联与引用它的自定义字段；单用户私有无共享） }
   /views:
     get: {}
     post:
@@ -162,9 +183,20 @@ paths:
                 sort: { type: array, items: { type: object } }
                 page: { type: integer }
                 page_size: { type: integer }
+                include: { type: array, items: { type: string, enum: [stage_history] }, description: 附加每行 stage_history（状态 → 用户时区最早日历日） }
+  /search:
+    get:
+      summary: ⌘K 命令面板跨实体搜索（岗位/公司/文件，仅当前 owner；空 q 返回最近记录）
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, maximum: 50 }
   /properties:
     get: {}
-    post: { summary: 创建自定义属性（text/number/select/multi_select/date/checkbox/url） }
+    post: { summary: 创建自定义属性（text/number/select/multi_select/date/checkbox/url/image） }
   /analytics/summary:
     post: { summary: 指标（§5.2 口径） }
   /analytics/sankey:

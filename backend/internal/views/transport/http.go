@@ -190,6 +190,7 @@ func (h *Handler) query(c *gin.Context) {
 		Sort     []map[string]any `json:"sort"`
 		Page     int              `json:"page"`
 		PageSize int              `json:"page_size"`
+		Include  []string         `json:"include"`
 	}
 	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.WriteErr(c, err)
@@ -200,7 +201,13 @@ func (h *Handler) query(c *gin.Context) {
 		httpx.WriteErr(c, httpx.BadRequest("bad_filter", err.Error()))
 		return
 	}
-	items, total, applied, err := h.svc.RunQuery(c.Request.Context(), user.ID, filters, sorts, req.Page, req.PageSize)
+	opts := vservice.QueryOptions{Timezone: user.Timezone}
+	for _, inc := range req.Include {
+		if inc == "stage_history" {
+			opts.IncludeStageHistory = true
+		}
+	}
+	items, total, applied, err := h.svc.RunQueryOpts(c.Request.Context(), user.ID, filters, sorts, req.Page, req.PageSize, opts)
 	if err != nil {
 		// filter DSL errors are client problems: 400, not 500
 		code := "bad_filter"

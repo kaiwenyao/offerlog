@@ -66,6 +66,18 @@ func Auth(auth *authservice.Store) gin.HandlerFunc {
 // CSRF requires a valid CSRF token for state-changing methods; the token
 // travels in the X-CSRF-Token header and must match the session cookie.
 func CSRF(auth *authservice.Store) gin.HandlerFunc {
+	return CSRFWithAllowedOrigins(auth, nil)
+}
+
+// CSRFWithAllowedOrigins behaves exactly like CSRF, except that origins in
+// extraOrigins are treated as same-origin during the Origin check. It exists
+// for the local dev workflow: through the Vite proxy (:5173) the browser keeps
+// sending Origin: http://localhost:5173 while the request Host is rewritten to
+// the API's target, so the strict sameOrigin check rejects every write with
+// 403. Setting DEV_ALLOWED_ORIGINS only in development unblocks local write
+// verification without weakening production (production never sets the
+// variable, so the behavior is byte-for-byte the original).
+func CSRFWithAllowedOrigins(auth *authservice.Store, extraOrigins []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		m := c.Request.Method
 		if m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions {
@@ -92,7 +104,7 @@ func CSRF(auth *authservice.Store) gin.HandlerFunc {
 		}
 		// SameSite=Lax already stops cross-site POSTs; Origin check adds
 		// defense in depth.
-		if origin := c.GetHeader("Origin"); origin != "" && !sameOrigin(origin, c.Request) {
+		if origin := c.GetHeader("Origin"); origin != "" && !sameOrigin(origin, c.Request, extraOrigins) {
 			WriteErr(c, Forbidden("Origin 校验失败"))
 			c.Abort()
 			return
@@ -107,9 +119,19 @@ func CSRF(auth *authservice.Store) gin.HandlerFunc {
 	}
 }
 
-func sameOrigin(origin string, r *http.Request) bool {
+func sameOrigin(origin string, r *http.Request, extraOrigins []string) bool {
 	host := r.Host
-	return strings.HasPrefix(origin, "http://"+host) || strings.HasPrefix(origin, "https://"+host)
+	if strings.HasPrefix(origin, "http://"+host) || strings.HasPrefix(origin, "https://"+host) {
+		return true
+	}
+	for _, o := range extraOrigins {
+		// Trim a trailing slash so "http://localhost:5173/" matches too.
+		o = strings.TrimRight(o, "/")
+		if o != "" && origin == o {
+			return true
+		}
+	}
+	return false
 }
 
 // SecurityHeaders sets baseline headers.

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/timeutil"
 	"offerlog/backend/internal/views"
 	"offerlog/backend/internal/views/repository"
 )
@@ -22,11 +23,26 @@ var (
 )
 
 type Service struct {
-	db   *database.DB
-	repo *repository.Repo
+	db           *database.DB
+	repo         *repository.Repo
+	stageHistory StageHistoryProvider
 }
 
 func New(db *database.DB, repo *repository.Repo) *Service { return &Service{db: db, repo: repo} }
+
+// StageHistoryProvider computes the per-application stage history map for a
+// batch of ids. Implemented at the wiring layer (bootstrap) so the views
+// module never imports the applications module (which would be a cycle).
+type StageHistoryProvider interface {
+	StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location) (map[int64]map[string]string, error)
+}
+
+// WithStageHistory attaches the cross-module stage-history provider used by
+// the rich query endpoint when include=stage_history is requested.
+func (s *Service) WithStageHistory(p StageHistoryProvider) *Service {
+	s.stageHistory = p
+	return s
+}
 
 func (s *Service) Repo() *repository.Repo { return s.repo }
 
@@ -47,7 +63,7 @@ func (s *Service) CreateProperty(ctx context.Context, ownerID int64, name, key, 
 		return nil, errors.New("属性键与内置字段冲突")
 	}
 	switch dataType {
-	case views.TypeText, views.TypeNumber, views.TypeSelect, views.TypeMultiSelect, views.TypeDate, views.TypeCheckbox, views.TypeURL:
+	case views.TypeText, views.TypeNumber, views.TypeSelect, views.TypeMultiSelect, views.TypeDate, views.TypeCheckbox, views.TypeURL, views.TypeImage:
 	default:
 		return nil, fmt.Errorf("不支持的类型 %s", dataType)
 	}
@@ -251,6 +267,24 @@ func filterFromMap(m map[string]any) (views.FilterNode, error) {
 // RunQuery lists applications through the shared filter/sort/group machinery.
 // It mirrors POST /applications/query but supports full filter trees.
 func (s *Service) RunQuery(ctx context.Context, ownerID int64, filters []views.FilterNode, sorts []views.SortItem, page, pageSize int) ([]map[string]any, int64, int, error) {
+	return s.RunQueryOpts(ctx, ownerID, filters, sorts, page, pageSize, QueryOptions{})
+}
+
+// QueryOptions carries the optional enrichments of the rich query endpoint.
+type QueryOptions struct {
+	// IncludeStageHistory adds a "stage_history" map to every row: each
+	// reached status → earliest user-zone calendar day (YYYY-MM-DD), so a
+	// whole list page renders stage rails (including terminal dead-ends) in
+	// one round-trip.
+	IncludeStageHistory bool
+	// Timezone is the owner's IANA zone used to bucket event instants into
+	// calendar days; defaults to the app fallback when empty.
+	Timezone string
+}
+
+// RunQueryOpts is RunQuery with explicit enrichment options.
+func (s *Service) RunQueryOpts(ctx context.Context, ownerID int64, filters []views.FilterNode, sorts []views.SortItem, page, pageSize int, opts QueryOptions) ([]map[string]any, int64, int, error) {
+	withStage := opts.IncludeStageHistory
 	if page < 1 {
 		page = 1
 	}
@@ -356,7 +390,31 @@ func (s *Service) RunQuery(ctx context.Context, ownerID int64, filters []views.F
 		}
 		items = append(items, m)
 	}
-	return items, total, compiled.Count, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, 0, err
+	}
+	if withStage && len(items) > 0 {
+		if s.stageHistory != nil {
+			ids := make([]int64, 0, len(items))
+			for _, m := range items {
+				if id, ok := m["id"].(int64); ok {
+					ids = append(ids, id)
+				}
+			}
+			loc, _ := timeutil.SafeLocation(opts.Timezone)
+			// Stage history is an enrichment: never fail the page over it.
+			if stage, err := s.stageHistory.StageHistoryFor(ctx, ownerID, ids, loc); err == nil {
+				for _, m := range items {
+					if id, ok := m["id"].(int64); ok {
+						if sh, ok := stage[id]; ok && len(sh) > 0 {
+							m["stage_history"] = sh
+						}
+					}
+				}
+			}
+		}
+	}
+	return items, total, compiled.Count, nil
 }
 
 // dayString renders a DATE-derived time.Time as a date-only string (nil → nil).

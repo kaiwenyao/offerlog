@@ -16,6 +16,10 @@ type HTTP struct {
 	Addr         string
 	PublicBase   string // e.g. https://offerlog.example.com
 	SessionHours int
+	// DevAllowedOrigins lists extra origins the CSRF Origin check treats as
+	// same-origin. Only for local development behind the Vite proxy (dev
+	// Origin vs proxied Host mismatch); production never sets it.
+	DevAllowedOrigins []string
 }
 
 type ObjectStore struct {
@@ -91,13 +95,30 @@ func getenvBool(key string, def bool) bool {
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
+// splitList parses a comma/space separated env list into trimmed entries.
+func splitList(v string) []string {
+	if v == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		Database: Database{URL: getenv("DATABASE_URL", "postgres://offerlog:offerlog@localhost:5432/offerlog?sslmode=disable")},
 		HTTP: HTTP{
-			Addr:         getenv("HTTP_ADDR", ":8080"),
-			PublicBase:   strings.TrimRight(getenv("PUBLIC_BASE", "http://localhost:8080"), "/"),
-			SessionHours: getenvInt("SESSION_HOURS", 24*14),
+			Addr:              getenv("HTTP_ADDR", ":8080"),
+			PublicBase:        strings.TrimRight(getenv("PUBLIC_BASE", "http://localhost:8080"), "/"),
+			SessionHours:      getenvInt("SESSION_HOURS", 24*14),
+			DevAllowedOrigins: splitList(getenv("DEV_ALLOWED_ORIGINS", "")),
 		},
 		ObjectStore: ObjectStore{
 			Provider:     getenv("OBJECTSTORE_PROVIDER", "local"),

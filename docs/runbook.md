@@ -8,6 +8,11 @@ cd backend && go run ./cmd/api     # :8080，静态由 frontend/dist 提供
 cd frontend && npm run dev         # 可选：vite dev 代理 /api
 ```
 
+> Vite 代理下写操作（POST/PATCH/DELETE）被 CSRF Origin 校验拦 403 的解法：
+> vite.config.ts 的 /api 代理已默认把转发请求的 Origin 改写成后端目标（生产不受影响）；
+> 若直接连外部 API 主机跑 dev，可在后端设 `DEV_ALLOWED_ORIGINS=http://localhost:5173`
+> （仅开发环境设置；生产不设该变量，行为不变）。
+
 ## 部署（单机 Docker Compose，自包含 SeaweedFS）
 ```bash
 cd deploy

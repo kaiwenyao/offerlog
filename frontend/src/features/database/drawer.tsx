@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { api, ApiError, fmtDate, fmtDay } from '../../lib/api'
+import { api, ApiError, fmtDate, fmtDay, toDayString } from '../../lib/api'
+import { effectiveZone } from '../../lib/tz'
 import type { AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
 import { ENDED } from '../../lib/status'
 import { Button, Card, Eyebrow, IconButton, Tabs } from '../../ds'
@@ -61,6 +62,24 @@ export function AppDetailContent({
         .map((e) => e.to_status as string),
     [events],
   )
+
+  // Earliest user-zone calendar day per reached status, replaying the same
+  // correction semantics as the server's include=stage_history (the drawer has
+  // the full event list already, so no extra round-trip).
+  const stageDates = useMemo(() => {
+    const corrected = new Map<number, string>()
+    for (const e of events) {
+      if (e.event_type === 'correction' && e.corrects_event_id != null && e.to_status) corrected.set(e.corrects_event_id, e.to_status)
+    }
+    const first: Record<string, string> = {}
+    for (const e of events) {
+      if (e.event_type === 'correction' || !e.to_status) continue
+      const eff = corrected.get(e.id) ?? e.to_status
+      const day = toDayString(e.occurred_at, effectiveZone() ?? undefined) ?? ''
+      if (!first[eff] || day < first[eff]) first[eff] = day
+    }
+    return first
+  }, [events])
 
   if (!app) {
     if (appQ.isError) {
@@ -138,7 +157,7 @@ export function AppDetailContent({
     <>
       <div>
         <Eyebrow style={{ marginBottom: 10 }}>阶段轨迹</Eyebrow>
-        <StageTrail current={app.status} path={path} />
+        <StageTrail current={app.status} path={path} dates={stageDates} />
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -175,7 +194,7 @@ export function AppDetailContent({
           }}
         />
       )}
-      {tab === 'files' && <FilesTab appId={app.id} files={files} />}
+      {tab === 'files' && <FilesTab appId={app.id} files={files} interviews={interviews} />}
       {tab === 'timeline' && <TimelineTab appId={app.id} events={events} status={app.status} />}
     </>
   )
