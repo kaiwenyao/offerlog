@@ -21,11 +21,13 @@ export interface AppRow {
   saved_at: string | null
   submitted_at: string | null
   first_response_at: string | null
+  /** calendar day YYYY-MM-DD (DATE column) — render as a day, never new Date() */
   deadline: string | null
   accepted_at: string | null
   rejected_at: string | null
   reason: string
   next_action: string
+  /** calendar day YYYY-MM-DD (DATE column) — render as a day, never new Date() */
   next_action_due_at: string | null
   version: number
   archived: boolean
@@ -71,16 +73,20 @@ export interface Interview {
   feedback: string
   notes: string
   created_at: string
+  schedule?: InterviewSchedule | null
 }
 
 export interface ActionItem {
   id: number
   application_id: number | null
   title: string
+  /** calendar day YYYY-MM-DD (DATE column) — render as a day, never new Date() */
   due_date: string | null
+  /** precise instant (TIMESTAMPTZ column) */
   due_ts: string | null
   done_at: string | null
   remind_me: boolean
+  priority: string
   created_at: string
 }
 
@@ -116,9 +122,10 @@ export interface PropertyDef {
 export interface ChannelRow {
   channel: string
   submitted: number
-  response_rate: number
-  interview_rate: number
-  offer_rate: number
+  responded: number
+  response_rate: number | null
+  interview_rate: number | null
+  offer_rate: number | null
 }
 
 export interface Metrics {
@@ -129,9 +136,12 @@ export interface Metrics {
   with_result: number
   by_status: Record<string, number>
   by_channel: ChannelRow[]
-  response_rate: number
-  interview_rate: number
-  offer_rate: number
+  response_rate: number | null
+  interview_rate: number | null
+  offer_rate: number | null
+  responded: number
+  reached_interview: number
+  received_offer: number
   response_median_hours: number
   pending_response: number
   replied_sample: number
@@ -157,4 +167,127 @@ export interface Me {
   timezone: string
   locale: string
   csrf_token?: string
+}
+
+// Preferences is the persisted account + reminder preference set from
+// /api/v1/preferences (plan §5.1).
+export interface Preferences {
+  user_id: number
+  display_name: string
+  timezone: string
+  week_start: number
+  remind_overdue: boolean
+  remind_interview: boolean
+  remind_stale_days: number
+  remind_weekly: boolean
+  locale: string
+}
+
+// Notification is one in-app reminder row from /api/v1/notifications.
+export interface Notification {
+  id: number
+  owner_id: number
+  kind: 'overdue' | 'interview' | 'stale' | 'weekly'
+  title: string
+  body: string
+  application_id: number | null
+  read_at: string | null
+  dismissed_at: string | null
+  created_at: string
+}
+
+// HomeSummary is the today dashboard payload (/api/v1/home/summary).
+// Every count is computed server-side over the full dataset — never from a
+// paginated page — and weeks are half-open [start, end) in the user's zone.
+export interface HomeSummary {
+  total: number
+  active: number
+  to_apply: number
+  in_progress: number
+  with_result: number
+  archived: number
+  submitted_week: number
+  replied_week: number
+  awaiting_reply: number
+  interviews_week: number
+  interviews_done_week: number
+  todos: { open: number; overdue: number; due_today: number }
+  todo_items: Array<{
+    id: number
+    action_id: number | null
+    application_id: number
+    title: string
+    company_name: string
+    position: string
+    status: string
+    /** calendar day YYYY-MM-DD when date-only due */
+    due_day: string | null
+    due_ts: string | null
+  }>
+  week: { start: string; end: string }
+  /** user's 每周起始日 preference (0=周日..6=周六); strip day 0 = this weekday */
+  week_start: number
+  week_items: Array<{ day: number; kind: string; who: string; tone: 'info' | 'warn' | 'good' | 'acc' | 'bad' }>
+  upcoming: Array<{
+    id: number
+    application_id: number
+    company_name: string
+    position: string
+    round_name: string
+    format: string
+    scheduled_at: string
+    timezone: string
+    duration_minutes: number | null
+    location: string
+    meeting_url: string
+    cancelled: boolean
+    result: string
+  }>
+  recent: Array<{
+    id: number
+    company_name: string
+    position: string
+    status: string
+    next_action: string
+    updated_at: string
+  }>
+  as_of: string
+  timezone: string
+  scope_note: string
+}
+
+// InterviewSchedule is the per-interview scheduling metadata attached to an
+// interview (meeting URL, contacts, cancellation).
+export interface InterviewSchedule {
+  meeting_url: string
+  location: string
+  contact_name: string
+  contact_email: string
+  notes: string
+  cancelled: boolean
+  cancelled_reason: string
+  original_timezone: string
+}
+
+// CalendarEvent is one cross-application agenda row (/api/v1/calendar).
+// `start` is the event instant (RFC3339). For all-day rows the server emits it
+// at the *user's* local midnight of the calendar day, so the client can bucket
+// it in the user zone consistently; date-only display should go through
+// fmtDay/toDayString (never new Date() on a bare day).
+export interface CalendarEvent {
+  id: number
+  kind: 'interview' | 'action' | 'deadline' | 'offer_decision'
+  application_id: number
+  company_name: string
+  position: string
+  title: string
+  start: string | null
+  timezone: string
+  all_day: boolean
+  location: string
+  meeting_url: string
+  cancelled: boolean
+  done: boolean
+  round_name: string
+  format: string
 }

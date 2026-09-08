@@ -1,5 +1,8 @@
 backend/bin/
 bin/
+backend/worker
+backend/api
+backend/api-admin
 frontend/node_modules/
 frontend/dist/
 deploy/.env

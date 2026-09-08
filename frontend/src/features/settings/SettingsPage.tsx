@@ -1,11 +1,10 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
-import type { Me, PropertyDef } from '../../lib/types'
+import type { Me, Preferences } from '../../lib/types'
 import { Button, Card, Input, PanelTitle, Select, Switch } from '../../ds'
 import { ErrorText, Num, Spinner } from '../../components/ui'
 
-const TIMEZONES = ['Europe/Berlin', 'Europe/Stockholm', 'Europe/London', 'Asia/Shanghai', 'America/New_York', 'UTC']
 const PROPERTY_TYPES = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'url']
 
 interface ImportPreview {
@@ -16,11 +15,29 @@ interface ImportPreview {
   duplicate_candidates: number[]
 }
 
+/** Common selectable timezones (any IANA name is accepted server-side). */
+const TIMEZONE_PRESETS = [
+  'Europe/Dublin',
+  'Europe/London',
+  'Europe/Berlin',
+  'Europe/Stockholm',
+  'Asia/Shanghai',
+  'America/New_York',
+  'UTC',
+]
+
+const REMINDER_HINTS: Record<string, string> = {
+  overdue: '逾期待办会在你打开应用时置顶提醒',
+  interview: '面试前一天提醒（按你的时区换算）',
+  stale: '投递满 N 天未回复时提醒跟进；对方回复后自动停止，不自动判定拒绝',
+  weekly: '每周一生成上一周复盘快照',
+}
+
 export function SettingsPage({ me }: { me: Me | null }) {
   return (
     <section className="split-grid">
       <AccountPanel me={me} />
-      <RemindersPanel />
+      <RemindersPanel me={me} />
       <DataPanel />
       <PropertiesPanel />
     </section>
@@ -28,84 +45,236 @@ export function SettingsPage({ me }: { me: Me | null }) {
 }
 
 function AccountPanel({ me }: { me: Me | null }) {
-  const [displayName, setDisplayName] = useState(me?.display_name ?? '')
-  const [timezone, setTimezone] = useState(me?.timezone || 'UTC')
+  const qc = useQueryClient()
+  const q = useQuery({
+    queryKey: ['preferences'],
+    queryFn: () => api.get<Preferences>('/api/v1/preferences'),
+  })
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState('')
+
+  const prefs = q.data
+
+  const save = useMutation({
+    mutationFn: (b: { display_name?: string; timezone?: string }) =>
+      api.put('/api/v1/preferences', {
+        display_name: b.display_name ?? undefined,
+        timezone: b.timezone ?? undefined,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['preferences'] })
+      qc.invalidateQueries({ queryKey: ['me'] })
+      setSaved(true)
+      window.dispatchEvent(new Event('offerlog:profile-changed'))
+      window.setTimeout(() => setSaved(false), 2500)
+    },
+    onError: (e: unknown) => {
+      setErr(e instanceof ApiError ? e.message : '保存失败')
+      setSaved(false)
+    },
+  })
+
+  if (q.isLoading) return null
 
   return (
     <Card padding="18px">
       <PanelTitle style={{ marginBottom: 14 }}>账户</PanelTitle>
+      {err && <ErrorText>{err}</ErrorText>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <Input label="显示名称" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-        <Input label="邮箱" value={me?.email ?? ''} readOnly disabled hint="邮箱由管理员通过 admin CLI 维护" />
-        <Select
-          label="时区"
-          options={TIMEZONES.includes(timezone) ? TIMEZONES : [timezone, ...TIMEZONES]}
-          value={timezone}
-          onChange={(e) => setTimezone(e.target.value)}
+        <ProfileField
+          label="显示名称"
+          defaultValue={prefs?.display_name ?? me?.display_name ?? ''}
+          onSave={(v) => save.mutate({ display_name: v })}
+          saving={save.isPending}
         />
-        <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-          个人资料写接口尚未开放；当前显示的是会话中的值，改动不会持久化。
-        </p>
+        <Input label="邮箱" value={me?.email ?? ''} readOnly disabled hint="邮箱由管理员通过 admin CLI 维护" />
+        <TimezoneField
+          value={prefs?.timezone ?? me?.timezone ?? 'Europe/Dublin'}
+          onSave={(v) => save.mutate({ timezone: v })}
+          saving={save.isPending}
+        />
+        {saved && (
+          <span role="status" style={{ fontSize: 13, color: 'var(--positive)' }}>
+            已保存 ✓ 刷新或换设备会读到相同设置
+          </span>
+        )}
       </div>
     </Card>
   )
 }
 
-/**
- * Reminder preferences are stored per browser until the backend exposes a
- * preferences endpoint — the design's copy already scopes them to in-app hints.
- */
-const REMINDER_KEY = 'offerlog.reminders'
-
-const REMINDERS: Array<{ key: string; label: string; hint: string; fallback: boolean }> = [
-  { key: 'overdue', label: '逾期待办提醒', hint: '打开应用时置顶显示', fallback: true },
-  { key: 'interview', label: '面试前一天提示', hint: '含时区换算', fallback: true },
-  { key: 'stale', label: '投递满 14 天未回复', hint: '提示发跟进邮件', fallback: true },
-  { key: 'weekly', label: '周报汇总', hint: '每周一生成本周进展快照', fallback: false },
-]
-
-function readReminders(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(REMINDER_KEY)
-    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {}
-  } catch {
-    return {}
-  }
+function ProfileField({
+  label,
+  defaultValue,
+  onSave,
+  saving,
+}: {
+  label: string
+  defaultValue: string
+  onSave: (v: string) => void
+  saving: boolean
+}) {
+  const [value, setValue] = useState(defaultValue)
+  const dirty = value !== defaultValue
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+      <div style={{ flex: 1 }}>
+        <Input label={label} value={value} onChange={(e) => setValue(e.target.value)} />
+      </div>
+      <Button
+        variant="primary"
+        size="sm"
+        disabled={!dirty || saving || !value.trim()}
+        onClick={() => onSave(value.trim())}
+        style={{ height: 'var(--control-h-md)' }}
+      >
+        {saving ? <Spinner size={14} /> : '保存'}
+      </Button>
+    </div>
+  )
 }
 
-function RemindersPanel() {
-  const [state, setState] = useState<Record<string, boolean>>(() => {
-    const stored = readReminders()
-    return Object.fromEntries(REMINDERS.map((r) => [r.key, stored[r.key] ?? r.fallback]))
+function TimezoneField({
+  value,
+  onSave,
+  saving,
+}: {
+  value: string
+  onSave: (v: string) => void
+  saving: boolean
+}) {
+  const [tz, setTz] = useState(value)
+  const dirty = tz !== value
+  const options = TIMEZONE_PRESETS.includes(tz) ? TIMEZONE_PRESETS : [tz, ...TIMEZONE_PRESETS]
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+      <div style={{ flex: 1 }}>
+        <Select
+          label="时区"
+          options={options}
+          value={tz}
+          onChange={(e) => setTz(e.target.value)}
+          aria-label="时区（IANA 名称）"
+        />
+      </div>
+      <Button
+        variant="primary"
+        size="sm"
+        disabled={!dirty || saving}
+        onClick={() => onSave(tz)}
+        style={{ height: 'var(--control-h-md)' }}
+      >
+        {saving ? <Spinner size={14} /> : '保存'}
+      </Button>
+    </div>
+  )
+}
+
+function RemindersPanel({ me }: { me: Me | null }) {
+  const qc = useQueryClient()
+  const q = useQuery({
+    queryKey: ['preferences'],
+    queryFn: () => api.get<Preferences>('/api/v1/preferences'),
+  })
+  const [err, setErr] = useState('')
+  const [savingKey, setSavingKey] = useState('')
+
+  const prefs = q.data
+
+  const save = useMutation({
+    mutationFn: (patch: Partial<Record<string, boolean | number>>) => api.put('/api/v1/preferences', patch),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['preferences'] })
+      setSavingKey('')
+    },
+    onError: (e: unknown) => {
+      setErr(e instanceof ApiError ? e.message : '保存失败')
+      setSavingKey('')
+    },
   })
 
-  const toggle = (key: string, next: boolean) => {
-    const updated = { ...state, [key]: next }
-    setState(updated)
-    try {
-      localStorage.setItem(REMINDER_KEY, JSON.stringify(updated))
-    } catch {
-      /* private mode — the toggle still applies for this session */
-    }
+  const toggle = (key: string, next: boolean | number, label: string) => {
+    setSavingKey(key)
+    setErr('')
+    save.mutate({ [key]: next } as never)
   }
+
+  const remindRows: Array<{ key: string; label: string; hint: string; value: boolean; control: 'switch' }> = [
+    { key: 'remind_overdue', label: '逾期待办提醒', hint: REMINDER_HINTS.overdue, value: prefs?.remind_overdue ?? true, control: 'switch' },
+    { key: 'remind_interview', label: '面试前一天提示', hint: REMINDER_HINTS.interview, value: prefs?.remind_interview ?? true, control: 'switch' },
+    { key: 'remind_weekly', label: '周报汇总', hint: REMINDER_HINTS.weekly, value: prefs?.remind_weekly ?? false, control: 'switch' },
+  ]
+
+  if (q.isLoading) return null
 
   return (
     <Card padding="18px">
       <PanelTitle style={{ marginBottom: 6 }}>提醒</PanelTitle>
-      <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-        只在你打开应用时提示，不发邮件。
+      <p style={{ margin: '0 0 4px', fontSize: 12, color: 'var(--text-muted)' }}>
+        由服务端在你打开应用时生成站内提醒，不发邮件。关闭某个开关后不再生成
+        对应新提醒；已生成的提醒保留，可在通知中心处理。每个事件（如某个逾期待办、
+        某天的面试提醒）只提醒一次，重复扫描不会再次生成同一提醒；「已读」/「忽略」
+        只改变该提醒的显示状态，不影响这个「一次」承诺。改期或延期后会产生新的提醒。
       </p>
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {REMINDERS.map((r) => (
+      {err && <ErrorText>{err}</ErrorText>}
+      <div style={{ display: 'flex', flexDirection: 'column', marginTop: 8 }}>
+        {remindRows.map((r) => (
           <div key={r.key} className="panel-row" style={{ padding: '10px 0' }}>
             <span className="grow">
               <span style={{ display: 'block', fontSize: 14 }}>{r.label}</span>
               <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{r.hint}</span>
             </span>
-            <Switch ariaLabel={r.label} checked={state[r.key]} onChange={(next) => toggle(r.key, next)} />
+            {savingKey === r.key ? (
+              <Spinner size={14} />
+            ) : (
+              <Switch ariaLabel={r.label} checked={r.value} onChange={(next) => toggle(r.key, next, r.label)} />
+            )}
           </div>
         ))}
+        <div className="panel-row" style={{ padding: '10px 0' }}>
+          <span className="grow">
+            <span style={{ display: 'block', fontSize: 14 }}>每周起始日</span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              首页“本周进展”与统计的周窗口按此起算
+            </span>
+          </span>
+          {savingKey === 'week_start' ? (
+            <Spinner size={14} />
+          ) : (
+            <Select
+              aria-label="每周起始日"
+              options={[
+                { value: '1', label: '周一' },
+                { value: '0', label: '周日' },
+                { value: '6', label: '周六' },
+              ]}
+              value={String(prefs?.week_start ?? 1)}
+              onChange={(e) => toggle('week_start', Number(e.target.value), 'week_start')}
+              fullWidth={false}
+              style={{ width: 110 }}
+            />
+          )}
+        </div>
+        <div className="panel-row" style={{ padding: '10px 0' }}>
+          <span className="grow">
+            <span style={{ display: 'block', fontSize: 14 }}>投递满 N 天未回复提醒</span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              {REMINDER_HINTS.stale}（0 = 关闭）
+            </span>
+          </span>
+          <Select
+            aria-label="未回复提醒天数"
+            options={[0, 7, 14, 21, 30].map((n) => ({ value: String(n), label: n === 0 ? '关闭' : `${n} 天` }))}
+            value={String(prefs?.remind_stale_days ?? 14)}
+            onChange={(e) => toggle('remind_stale_days', Number(e.target.value), 'stale')}
+            fullWidth={false}
+            style={{ width: 110 }}
+          />
+        </div>
       </div>
+      <p style={{ margin: '12px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
+        偏好存于服务端（{me?.timezone || 'Europe/Dublin'}），与账号绑定，换设备一致。
+      </p>
     </Card>
   )
 }
@@ -151,6 +320,7 @@ function DataPanel() {
       setInfoTone('ok')
       setInfo(`导入完成：成功写入 ${r.inserted} 条。当前状态按 CSV 记录，不伪造历史。`)
       qc.invalidateQueries({ queryKey: ['apps'] })
+      qc.invalidateQueries({ queryKey: ['home'] })
     },
     onError: (e: unknown) => {
       setInfoTone('err')
@@ -239,7 +409,7 @@ function PropertiesPanel() {
 
   const q = useQuery({
     queryKey: ['properties'],
-    queryFn: () => api.get<{ items: PropertyDef[] }>('/api/v1/properties'),
+    queryFn: () => api.get<{ items: import('../../lib/types').PropertyDef[] }>('/api/v1/properties'),
   })
 
   const create = useMutation({

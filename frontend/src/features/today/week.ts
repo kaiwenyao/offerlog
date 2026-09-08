@@ -1,9 +1,13 @@
-import type { ActionItem, AppRow } from '../../lib/types'
+import type { ActionItem, HomeSummary } from '../../lib/types'
+import { dayToInstant, toDayString } from '../../lib/api'
+import { effectiveZone } from '../../lib/tz'
 
 export interface TodoItem extends ActionItem {
   company_name?: string
   position?: string
   status?: string
+  /** Set for standalone actions; absent for legacy derived next_actions. */
+  action_id?: number | null
 }
 
 export interface TodoGroup {
@@ -14,13 +18,26 @@ export interface TodoGroup {
 
 const DAY_MS = 86_400_000
 
+/** Local midnight (ms) of “today” in the user's zone (browser zone fallback). */
 export function startOfDay(d: Date = new Date()): number {
+  const zone = effectiveZone()
+  if (zone) {
+    const ds = toDayString(d.toISOString(), zone)
+    const inst = ds ? dayToInstant(ds, zone) : null
+    if (inst != null) return inst
+  }
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
+/**
+ * Due as an instant: due_ts is already one; date-only due_date is interpreted
+ * as midnight of that calendar day in the user's zone (matching the server).
+ */
 export function dueTime(item: Pick<TodoItem, 'due_ts' | 'due_date'>): number {
-  const iso = item.due_ts ?? item.due_date
-  return iso ? new Date(iso).getTime() : Number.POSITIVE_INFINITY
+  if (item.due_ts) return new Date(item.due_ts).getTime()
+  const day = toDayString(item.due_date, effectiveZone())
+  const inst = day ? dayToInstant(day, effectiveZone()) : null
+  return inst ?? Number.POSITIVE_INFINITY
 }
 
 /** Split open work into the design's 已逾期 / 今天 / 未来 7 天 / 更晚 buckets. */
@@ -51,7 +68,7 @@ export interface WeekDay {
   items: Array<{ kind: string; who: string; tone: 'info' | 'warn' | 'good' | 'acc' | 'bad' }>
 }
 
-const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
 export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; fg: string }> = {
   info: { bg: 'var(--info-soft)', fg: 'var(--info-strong)' },
@@ -61,46 +78,64 @@ export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; 
   bad: { bg: 'var(--danger-soft)', fg: 'var(--danger-strong)' },
 }
 
-function toneForStatus(status: string, overdue: boolean): WeekDay['items'][number]['tone'] {
-  if (overdue) return 'bad'
-  switch (status) {
-    case 'offer':
-    case 'accepted':
-      return 'good'
-    case 'assessment':
-      return 'warn'
-    case 'interviewing':
-      return 'acc'
-    default:
-      return 'info'
-  }
-}
+/**
+ * Build the 7-column week strip from the server-computed week. The week's
+ * start (summary.week.start) is the user-zone midnight of the user's chosen
+ * week-start day (week_start preference: 0=周日..6=周六); each column's
+ * weekday label and day number are derived from that instant + column index in
+ * the user zone, and week_items' day index is relative to the same start
+ * (server already normalized day 0 = the week-start day). The client therefore
+ * never assumes Monday — for a Sunday-start user the strip reads 周日→周六 and
+ * every chip lands on the correct calendar day.
+ */
+export function buildWeek(
+  summary: Pick<HomeSummary, 'week' | 'week_start' | 'week_items'>,
+  now: Date = new Date(),
+): WeekDay[] {
+  const zone = effectiveZone()
+  const todayKey = toDayString(now.toISOString(), zone)
+  const startIso = summary.week.start
+  // Instant of the week-start day (user-zone midnight).
+  const startMs = startIso ? dayToInstant(toDayString(startIso, zone), zone) : null
+  // 0=周日..6=周六 (server preference value). The labels follow actual calendar
+  // weekdays, so for week_start=0 column 0 is 周日 and chips (day 0) sit there.
+  const weekStart = summary.week_start ?? 1
 
-/** The Monday→Sunday strip around today, filled from real deadlines. */
-export function buildWeek(rows: AppRow[], now: Date = new Date()): WeekDay[] {
-  const todayStart = startOfDay(now)
-  // JS weeks start on Sunday; the design starts on Monday.
-  const offsetToMonday = (now.getDay() + 6) % 7
-  const monday = todayStart - offsetToMonday * DAY_MS
-
-  const days: WeekDay[] = WEEKDAYS.map((weekday, i) => {
-    const ts = monday + i * DAY_MS
-    return { weekday, dayNum: new Date(ts).getDate(), isToday: ts === todayStart, items: [] }
-  })
-
-  for (const row of rows) {
-    const iso = row.next_action_due_at ?? row.deadline
-    if (!iso) continue
-    const at = startOfDay(new Date(iso))
-    const idx = Math.round((at - monday) / DAY_MS)
-    if (idx < 0 || idx > 6) continue
-    days[idx].items.push({
-      kind: row.next_action ? '待办' : '截止',
-      who: row.company_name,
-      tone: toneForStatus(row.status, at < todayStart),
+  const days: WeekDay[] = []
+  for (let i = 0; i < 7; i++) {
+    let key: string | null = null
+    if (startMs != null) {
+      const ts = addDaysUtc(startMs, i, zone)
+      key = toDayString(new Date(ts).toISOString(), zone)
+    }
+    const dow = (weekStart + i) % 7 // actual weekday 0=Sunday..6=Saturday
+    days.push({
+      weekday: WEEKDAY_LABELS[dow],
+      dayNum: key ? Number(key.slice(8, 10)) : 0,
+      isToday: key != null && key === todayKey,
+      items: [],
     })
   }
+
+  const items = summary.week_items ?? []
+  for (const it of items) {
+    const day = it.day
+    if (day < 0 || day > 6) continue
+    days[day].items.push({ kind: it.kind, who: it.who, tone: it.tone })
+  }
   return days
+}
+
+/** Add n calendar days to a user-zone midnight instant (DST-safe). */
+function addDaysUtc(ms: number, n: number, zone?: string): number {
+  // Work on the day key, then resolve back to a user-zone midnight.
+  const startKey = toDayString(new Date(ms).toISOString(), zone)
+  if (!startKey) return ms + n * DAY_MS
+  const [y, m, d] = startKey.split('-').map(Number)
+  const t = new Date(Date.UTC(y, m - 1, d + n))
+  const key = t.toISOString().slice(0, 10)
+  const inst = dayToInstant(key, zone)
+  return inst ?? ms + n * DAY_MS
 }
 
 export interface Kpis {
@@ -112,19 +147,17 @@ export interface Kpis {
 
 const IN_PROGRESS = new Set(['applied', 'screening', 'assessment', 'interviewing'])
 
-export function buildKpis(rows: AppRow[], now: Date = new Date()): Kpis {
-  const todayStart = startOfDay(now)
-  const weekStart = todayStart - ((now.getDay() + 6) % 7) * DAY_MS
+/** Compatibility helper — the dashboard now reads its KPIs from /home/summary. */
+export function buildKpis(rows: HomeSummary['recent']): Kpis {
+  const todayStart = startOfDay()
+  const weekStart = todayStart - ((new Date().getDay() + 6) % 7) * DAY_MS
   let inProgress = 0
   let submittedThisWeek = 0
   let awaitingReply = 0
   let overdue = 0
-  for (const r of rows) {
-    if (r.archived || r.deleted) continue
+  for (const r of rows as Array<{ status: string; submitted_at?: string | null; next_action?: string }>) {
     if (IN_PROGRESS.has(r.status)) inProgress += 1
     if (r.submitted_at && new Date(r.submitted_at).getTime() >= weekStart) submittedThisWeek += 1
-    if (r.submitted_at && !r.first_response_at && IN_PROGRESS.has(r.status)) awaitingReply += 1
-    if (r.next_action && r.next_action_due_at && new Date(r.next_action_due_at).getTime() < todayStart) overdue += 1
   }
   return { inProgress, submittedThisWeek, awaitingReply, overdue }
 }

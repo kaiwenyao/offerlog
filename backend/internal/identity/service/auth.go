@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	_ "time/tzdata"
+
 	"golang.org/x/crypto/argon2"
 
 	"offerlog/backend/internal/platform/database"
@@ -42,6 +44,8 @@ type Repo interface {
 	FindUserByEmail(ctx context.Context, email string) (*UserRow, error)
 	FindUserByID(ctx context.Context, id int64) (*UserRow, error)
 	CreateUser(ctx context.Context, u *UserRow) error
+	UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*UserRow, error)
+	UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*UserRow, error)
 }
 
 type Store struct {
@@ -130,8 +134,12 @@ func (s *Store) Register(ctx context.Context, email, password, displayName, tz s
 	if err := validateSignup(email, password, displayName); err != nil {
 		return nil, err
 	}
+	tz = strings.TrimSpace(tz)
 	if tz == "" {
 		tz = "Europe/Dublin"
+	}
+	if err := ValidateTimezone(tz); err != nil {
+		return nil, err
 	}
 	hash, err := hashPassword(password)
 	if err != nil {
@@ -149,6 +157,37 @@ func (s *Store) Register(ctx context.Context, email, password, displayName, tz s
 		return nil, err
 	}
 	return u, nil
+}
+
+// ValidateTimezone verifies the value is a usable IANA zone for the users row
+// (an invalid/pseudo zone would otherwise flow into SQL AT TIME ZONE and make
+// that user's home/calendar queries fail forever). It shares NormalizeTimezone's
+// rules: empty → the app default is accepted, "Local" is rejected.
+func ValidateTimezone(tz string) error {
+	_, err := NormalizeTimezone(tz)
+	return err
+}
+
+// DefaultTimezone is the app fallback zone applied when a profile update
+// carries an empty/non-IANA value (Register also defaults to it).
+const DefaultTimezone = "Europe/Dublin"
+
+// NormalizeTimezone trims whitespace, rejects the pseudo-zone "Local" (Go
+// resolves it to the server's own zone, which is meaningless to the user and
+// would be persisted verbatim), and collapses an empty value to the app
+// default. Returns the normalized zone or an error describing the problem.
+func NormalizeTimezone(tz string) (string, error) {
+	tz = strings.TrimSpace(tz)
+	if tz == "" {
+		tz = DefaultTimezone
+	}
+	if strings.EqualFold(tz, "Local") {
+		return "", fmt.Errorf("无效的时区 %q（需 IANA 名称，如 Europe/Dublin）", tz)
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return "", fmt.Errorf("无效的时区 %q（需 IANA 名称，如 Europe/Dublin）", tz)
+	}
+	return tz, nil
 }
 
 // validateSignup enforces the same input rules for CLI-created and
@@ -229,6 +268,20 @@ func (s *Store) ValidateToken(ctx context.Context, token string) (*UserRow, erro
 	}
 	_, _ = s.db.Pool().Exec(ctx, `UPDATE sessions SET last_seen = now() WHERE token_hash = $1`, th)
 	return &u, nil
+}
+
+// UpdateProfile saves the user's display name + timezone and returns the
+// refreshed row.
+func (s *Store) UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*UserRow, error) {
+	return s.users.UpdateProfile(ctx, id, displayName, timezone)
+}
+
+// UpdateProfileTx persists the profile fields on the users row inside an
+// existing transaction (see Repo.UpdateProfileTx). Used by PUT /preferences so
+// the users-row write and the preferences-row write commit or roll back
+// together.
+func (s *Store) UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*UserRow, error) {
+	return s.users.UpdateProfileTx(ctx, q, id, displayName, timezone)
 }
 
 func (s *Store) Logout(ctx context.Context, token string) error {

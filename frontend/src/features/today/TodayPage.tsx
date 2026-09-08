@@ -1,71 +1,97 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { api, ApiError, fmtDate, fmtDateTime } from '../../lib/api'
-import type { ActionItem, AppRow, Interview } from '../../lib/types'
+import { api, ApiError, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
+import type { HomeSummary } from '../../lib/types'
 import { statusMeta } from '../../lib/status'
 import { Button, Card, PanelTitle } from '../../ds'
 import { Dot, EmptyHint, ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
-import { buildKpis, buildWeek, CHIP_TONES, dueTime, groupActions, startOfDay, type TodoItem } from './week'
+import { effectiveZone } from '../../lib/tz'
+import { buildWeek, CHIP_TONES, groupActions, type TodoItem } from './week'
 
 const PANEL: React.CSSProperties = { padding: 0, overflow: 'hidden' }
 
+/**
+ * Today dashboard backed by /api/v1/home/summary (server-side full-data
+ * aggregates). Counts are never extrapolated from a 200-row page; upcoming
+ * interviews are cross-application and sorted by actual scheduled time; the
+ * todo badge and the checklist are the SAME data source — summary.todo_items
+ * (standalone actions + legacy derived next_actions), so the rendered list can
+ * never disagree with the sidebar count. Error states show a retry entry
+ * rather than a misleading "nothing here".
+ */
 export function TodayPage() {
   const nav = useNavigate()
   const qc = useQueryClient()
   const [toast, setToast] = useState('')
 
-  const actionsQ = useQuery({
-    queryKey: ['actions', 'open'],
-    queryFn: () => api.get<{ items: Array<ActionItem & { company_name?: string }> }>('/api/v1/actions?open=1'),
-  })
-  const appsQ = useQuery({
-    queryKey: ['apps', 'list', { page: 1, size: 200 }],
-    queryFn: () => api.get<{ items: AppRow[] }>('/api/v1/applications?page=1&page_size=200'),
+  const summaryQ = useQuery({
+    queryKey: ['home', 'summary', { limit: 5 }],
+    queryFn: () => api.get<HomeSummary>('/api/v1/home/summary?limit=5'),
   })
 
   const doneMut = useMutation({
-    mutationFn: (id: number) => api.post(`/api/v1/actions/${id}/done`, { done: true }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['actions'] })
-      qc.invalidateQueries({ queryKey: ['apps'] })
-    },
+    mutationFn: ({ id, actionId }: { id: number; actionId: number | null }) =>
+      actionId != null
+        ? api.post(`/api/v1/actions/${actionId}/done`, { done: true })
+        : Promise.reject(new ApiError('derived_todo', '该待办来自岗位记录，请到岗位详情更新', 409)),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['home', 'summary'] }),
     onError: (e: unknown) => setToast(e instanceof ApiError ? e.message : '操作失败'),
   })
 
-  const rows = useMemo(() => appsQ.data?.items ?? [], [appsQ.data])
+  const postponeMut = useMutation({
+    mutationFn: (actionId: number) => api.post(`/api/v1/actions/${actionId}/postpone`, { days: 1 }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['home', 'summary'] }),
+    onError: (e: unknown) => setToast(e instanceof ApiError ? e.message : '延期失败'),
+  })
 
+  const summary = summaryQ.data
+
+  // The checklist renders the same unified rows the badge counts. Server rows
+  // with an action_id are standalone actions (complete/postpone live on
+  // /actions/:id); rows without one are legacy derived from the application's
+  // next_action and can only be edited via the application.
   const groups = useMemo(() => {
-    const soon = Date.now() + 8 * 86_400_000
-    const fromApps: TodoItem[] = rows
-      .filter((a) => a.next_action && !a.archived)
-      .filter((a) => dueTime({ due_ts: null, due_date: a.next_action_due_at }) < soon)
-      .map((a) => ({
-        id: -a.id,
-        application_id: a.id,
-        title: a.next_action,
-        due_date: a.next_action_due_at,
-        due_ts: null,
-        done_at: null,
-        remind_me: false,
-        created_at: a.created_at,
-        company_name: a.company_name,
-        position: a.position,
-        status: a.status,
-      }))
-    return groupActions([...fromApps, ...(actionsQ.data?.items ?? [])])
-  }, [rows, actionsQ.data])
+    const items: TodoItem[] = (summary?.todo_items ?? []).map((r) => ({
+      id: r.id,
+      application_id: r.application_id,
+      action_id: r.action_id,
+      title: r.title,
+      due_ts: r.due_ts,
+      due_date: r.due_day,
+      done_at: null,
+      remind_me: false,
+      priority: 'medium',
+      created_at: '',
+      company_name: r.company_name,
+      position: r.position,
+      status: r.status,
+    }))
+    return groupActions(items)
+  }, [summary?.todo_items])
 
-  const week = useMemo(() => buildWeek(rows), [rows])
-  const kpis = useMemo(() => buildKpis(rows), [rows])
+  const week = useMemo(() => (summary ? buildWeek(summary) : []), [summary])
 
-  if (appsQ.isLoading || actionsQ.isLoading) return <PageSpinner />
+  if (summaryQ.isLoading) return <PageSpinner />
+  if (summaryQ.isError) {
+    return (
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Card padding="18px">
+          <ErrorText>首页数据加载失败，请检查网络后重试。</ErrorText>
+          <Button variant="primary" size="sm" onClick={() => summaryQ.refetch()} style={{ marginTop: 12 }}>
+            重新加载
+          </Button>
+        </Card>
+      </section>
+    )
+  }
+  if (!summary) return <PageSpinner />
 
   const weekTotals = {
-    submitted: kpis.submittedThisWeek,
-    interviews: rows.filter((r) => r.status === 'interviewing').length,
-    replied: rows.filter((r) => r.first_response_at).length,
-    overdue: kpis.overdue,
+    submitted: summary.submitted_week,
+    interviews: summary.interviews_week,
+    replied: summary.replied_week,
+    overdue: summary.todos.overdue,
   }
 
   return (
@@ -75,21 +101,21 @@ export function TodayPage() {
       <WeekStrip week={week} totals={weekTotals} />
 
       <div className="metric-grid">
-        <Kpi label="进行中" value={kpis.inProgress} delta="applied…interviewing" />
-        <Kpi label="本周投递" value={kpis.submittedThisWeek} delta="按投递时间统计" />
-        <Kpi label="待回复" value={kpis.awaitingReply} delta="已投递且尚无首次回复" deltaColor="var(--text-muted)" />
+        <Kpi label="进行中" value={summary.in_progress} delta="applied…interviewing（不含归档）" />
+        <Kpi label="本周投递" value={summary.submitted_week} delta="本周内发生的投递" />
+        <Kpi label="待回复" value={summary.awaiting_reply} delta="已投递且尚无首次回复（不含归档）" />
         <Kpi
           label="逾期待办"
-          value={kpis.overdue}
-          delta={kpis.overdue > 0 ? '需要今天处理' : '没有逾期'}
-          deltaColor={kpis.overdue > 0 ? 'var(--danger)' : 'var(--positive)'}
+          value={summary.todos.overdue}
+          delta={summary.todos.overdue > 0 ? '需要今天处理' : '没有逾期'}
+          deltaColor={summary.todos.overdue > 0 ? 'var(--danger)' : 'var(--positive)'}
         />
       </div>
 
       {groups.length === 0 && (
         <EmptyHint>
           <p style={{ margin: 0, font: 'var(--type-body-sm)' }}>今天没有待办 🎉</p>
-          <p style={{ margin: 0, fontSize: 13 }}>在数据库中给岗位填写“下一步行动”与截止时间，就会出现在这里。</p>
+          <p style={{ margin: 0, fontSize: 13 }}>在岗位详情添加“下一步行动”或独立待办，就会出现在这里。</p>
           <Button variant="primary" size="sm" onClick={() => nav('/database')}>
             去添加岗位
           </Button>
@@ -109,9 +135,10 @@ export function TodayPage() {
                 <TodoRow
                   key={t.id}
                   item={t}
-                  busy={doneMut.isPending}
+                  busy={doneMut.isPending || postponeMut.isPending}
                   onOpen={() => t.application_id && nav(`/apps/${t.application_id}`)}
-                  onDone={() => doneMut.mutate(t.id)}
+                  onDone={() => doneMut.mutate({ id: t.id, actionId: t.action_id ?? null })}
+                  onPostpone={() => t.action_id != null && postponeMut.mutate(t.action_id)}
                 />
               ))}
             </Card>
@@ -119,10 +146,16 @@ export function TodayPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <UpcomingInterviews rows={rows} onOpen={(id) => nav(`/apps/${id}`)} />
-          <ActivityFeed rows={rows} onOpen={(id) => nav(`/apps/${id}`)} />
+          <UpcomingInterviews
+            upcoming={summary.upcoming}
+            loading={summaryQ.isLoading}
+            onOpen={(id) => nav(`/apps/${id}`)}
+          />
+          <ActivityFeed rows={summary.recent} onOpen={(id) => nav(`/apps/${id}`)} />
         </div>
       </div>
+
+      <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>{summary.scope_note}</p>
     </section>
   )
 }
@@ -225,17 +258,25 @@ function TodoRow({
   busy,
   onOpen,
   onDone,
+  onPostpone,
 }: {
   item: TodoItem
   busy: boolean
   onOpen: () => void
   onDone: () => void
+  onPostpone: () => void
 }) {
   const due = item.due_ts ?? item.due_date
-  const overdue = due != null && new Date(due).getTime() < startOfDay()
-  // Negative ids are synthesised from an application's next_action; they are
-  // resolved by editing the application, not by ticking a standalone action.
-  const isDerived = item.id < 0
+  const dueDay = item.due_date || null
+  // “today” is taken in the user's configured zone; an instant due is compared
+  // by its user-zone calendar day (never browser-local midnight), and a
+  // date-only due by day-key — both agree with the server's overdue window.
+  const todayStr = toDayString(new Date().toISOString(), effectiveZone()) ?? ''
+  const overdue =
+    item.due_ts != null
+      ? (toDayString(item.due_ts, effectiveZone()) ?? '') < todayStr
+      : dueDay != null && dueDay < todayStr
+  const derived = item.action_id == null
   return (
     <div className="panel-row">
       <span className="grow" onClick={onOpen} style={{ cursor: 'pointer' }}>
@@ -253,42 +294,30 @@ function TodoRow({
         <span style={{ display: 'block', fontSize: 13, marginTop: 2 }}>{item.title}</span>
       </span>
       <Num color={overdue ? 'var(--danger)' : 'var(--text-muted)'}>
-        {overdue ? `逾期 ${fmtDate(due)}` : fmtDate(due)}
+        {overdue ? `逾期 ${fmtDay(due)}` : fmtDay(due)}
       </Num>
-      <Button variant="secondary" size="sm" disabled={busy} onClick={isDerived ? onOpen : onDone}>
-        {isDerived ? '更新' : '完成'}
+      {overdue && !derived && (
+        <Button variant="ghost" size="sm" disabled={busy} onClick={onPostpone} title="延期一天">
+          延期
+        </Button>
+      )}
+      <Button variant="secondary" size="sm" disabled={busy} onClick={derived ? onOpen : onDone}>
+        {derived ? '查看' : '完成'}
       </Button>
     </div>
   )
 }
 
-function UpcomingInterviews({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: number) => void }) {
-  const candidates = rows.filter((r) => r.status === 'interviewing' || r.status === 'screening').slice(0, 6)
-  const ids = candidates.map((r) => r.id)
-
-  const q = useQuery({
-    queryKey: ['interviews', 'upcoming', ids],
-    enabled: ids.length > 0,
-    queryFn: async () => {
-      const lists = await Promise.all(
-        ids.map((id) =>
-          api
-            .get<{ items: Interview[] }>(`/api/v1/applications/${id}/interviews`)
-            .then((r) => (r.items ?? []).map((i) => ({ ...i, application_id: id })))
-            .catch(() => [] as Interview[]),
-        ),
-      )
-      return lists.flat()
-    },
-  })
-
-  const upcoming = (q.data ?? [])
-    .filter((i) => i.scheduled_at && new Date(i.scheduled_at).getTime() >= startOfDay())
-    .sort((a, b) => new Date(a.scheduled_at!).getTime() - new Date(b.scheduled_at!).getTime())
-    .slice(0, 4)
-
-  const nameOf = (id: number) => rows.find((r) => r.id === id)?.company_name ?? `#${id}`
-
+function UpcomingInterviews({
+  upcoming,
+  loading,
+  onOpen,
+}: {
+  upcoming: HomeSummary['upcoming']
+  loading: boolean
+  onOpen: (id: number) => void
+}) {
+  if (loading) return null
   return (
     <Card style={PANEL}>
       <div className="panel-head">
@@ -300,7 +329,15 @@ function UpcomingInterviews({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: num
         </div>
       ) : (
         upcoming.map((i) => {
-          const at = new Date(i.scheduled_at!)
+          // The date badge must show the USER-zone calendar day: the home feed
+          // and calendar column bucket events in the user's configured zone, so
+          // rendering the day with the browser's local getters would disagree
+          // when the browser zone differs (e.g. a Dublin browser + Shanghai
+          // user — an interview that is tomorrow in the user's zone would show
+          // the wrong day on the badge). Derive it from the zone day key.
+          const dayKey = toDayString(i.scheduled_at, effectiveZone()) ?? ''
+          const dayNum = dayKey.slice(8, 10) || ''
+          const monthNum = dayKey.slice(5, 7) || ''
           return (
             <button key={i.id} className="panel-row" onClick={() => onOpen(i.application_id)}>
               <span
@@ -315,16 +352,17 @@ function UpcomingInterviews({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: num
                 }}
               >
                 <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>
-                  {String(at.getDate()).padStart(2, '0')}
+                  {String(Number(dayNum)).padStart(2, '0')}
                 </span>
-                <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{at.getMonth() + 1} 月</span>
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{Number(monthNum)} 月</span>
               </span>
               <span className="grow">
                 <span className="ellipsis" style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>
-                  {nameOf(i.application_id)} · {i.round_name || '面试'}
+                  {i.company_name} · {i.round_name || '面试'}
                 </span>
                 <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
                   {fmtDateTime(i.scheduled_at)} · {i.format || '待定'}
+                  {i.location ? ` · ${i.location}` : ''}
                 </span>
               </span>
             </button>
@@ -335,19 +373,15 @@ function UpcomingInterviews({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: num
   )
 }
 
-function ActivityFeed({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: number) => void }) {
-  const recent = [...rows]
-    .filter((r) => !r.deleted)
-    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-    .slice(0, 6)
+function ActivityFeed({ rows, onOpen }: { rows: HomeSummary['recent']; onOpen: (id: number) => void }) {
   return (
     <Card style={PANEL}>
       <div className="panel-head">
         <PanelTitle>最近动态</PanelTitle>
       </div>
       <div style={{ padding: '12px 16px 14px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {recent.length === 0 && <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>还没有记录</span>}
-        {recent.map((r) => (
+        {rows.length === 0 && <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>还没有记录</span>}
+        {rows.map((r) => (
           <button
             key={r.id}
             className="menu-item"

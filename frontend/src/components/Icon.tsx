@@ -26,6 +26,7 @@ import {
   Trash2,
   Upload,
   X,
+  Bell,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -67,6 +68,7 @@ const GLYPHS = {
   forward: ArrowRight,
   prev: ChevronLeft,
   next: ChevronRight,
+  bell: Bell,
 } satisfies Record<string, LucideIcon>
 
 export type IconName = keyof typeof GLYPHS

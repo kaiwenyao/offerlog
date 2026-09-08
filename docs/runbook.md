@@ -30,7 +30,9 @@ docker compose --profile seaweedfs up -d   # 需要时一并启动 SeaweedFS
 
 ## 健康与任务
 - `/health/live` 进程存活；`/health/ready` 检查 DB + schema。
-- worker 自动清理过期 pending/staging（宽限 24h）与任务重试（lease/attempts）。
+- worker 自动清理过期 pending/staging（宽限 24h）；任务按 kind 分发，未知类型标记失败
+  （不误报成功）；租约过期（进程崩溃）后可由其它副本重新领取，配合幂等键不重复执行。
+  每日提醒任务（逾期待办 / 面试前一天 / 投递满 N 天未回复）由 worker 生成站内通知。
 - 查看失败任务：`docker compose exec api /app/api-admin jobs`。
 
 ## 备份与恢复（RPO≤24h, RTO≤2h 目标，需演练）

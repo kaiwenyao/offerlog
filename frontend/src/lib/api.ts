@@ -1,5 +1,6 @@
 // Thin fetch wrapper: attaches session cookie (same-origin), CSRF header on
 // writes, and unwraps the canonical {code,message} error envelope.
+import { effectiveZone } from './tz'
 import type { Me } from './types'
 
 const CSRF_KEY = 'offerlog.csrf'
@@ -78,6 +79,7 @@ export const api = {
   get: <T>(p: string) => request<T>('GET', p),
   post: <T>(p: string, b?: unknown, isForm = false) => request<T>('POST', p, b, isForm),
   patch: <T>(p: string, b: unknown) => request<T>('PATCH', p, b),
+  put: <T>(p: string, b: unknown) => request<T>('PUT', p, b),
   del: <T>(p: string) => request<T>('DELETE', p),
 }
 
@@ -153,18 +155,201 @@ export function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
-export function fmtDate(s: string | null | undefined): string {
+/** YYYY-MM-DD (a calendar day) or a full ISO instant? */
+const DAY_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Local calendar day (YYYY-MM-DD) for a date-only string *or* an instant.
+ *
+ * A date-only string is a calendar day and must never be routed through
+ * `new Date(...)` (UTC-midnight parses shift the day in west-of-UTC
+ * browsers). An instant is converted to the user's local calendar day.
+ */
+export function toDayString(s: string | null | undefined, zone?: string): string | null {
+  if (!s) return null
+  const trimmed = s.trim()
+  if (DAY_ONLY.test(trimmed)) return trimmed
+  const d = new Date(trimmed)
+  if (isNaN(d.getTime())) return null
+  if (zone) {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(d)
+    } catch {
+      /* fall through to local */
+    }
+  }
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/**
+ * Shared zone formatter + wall-clock reader used by dayToInstant and
+ * localDateTimeToInstant: read() renders a UTC instant as the zone's wall
+ * clock expressed as a "naive-as-UTC" ms value, so wall-clock deltas between
+ * two instants can be compared without any browser-zone involvement.
+ */
+function zoneWallReader(zone: string): { wallAt: (utcMs: number) => number } {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+  const wallAt = (utcMs: number) => {
+    const parts = fmt.formatToParts(utcMs)
+    const map: Record<string, string> = {}
+    for (const p of parts) map[p.type] = p.value
+    return Date.UTC(
+      Number(map.year),
+      Number(map.month) - 1,
+      Number(map.day),
+      Number(map.hour),
+      Number(map.minute),
+      Number(map.second),
+    )
+  }
+  return { wallAt }
+}
+
+/**
+ * UTC instant of a naive wall clock (Y/M/D h:m) interpreted in the given zone,
+ * via a two-pass fixpoint: guess the instant (naive-as-UTC), read the zone
+ * wall clock there, then shift by the wall-clock delta. Two passes converge
+ * even across a DST transition (the offset only changes by ≤1h), unlike a
+ * single "read the offset elsewhere in the day" shortcut: on a spring-forward
+ * day the offset at local noon already differs from the offset at local
+ * midnight, so an offset sampled away from the target wall time lands 1h off.
+ */
+function zoneWallToInstant(y: number, mo: number, d: number, h: number, mi: number, zone: string): number {
+  const { wallAt } = zoneWallReader(zone)
+  const targetWall = Date.UTC(y, mo - 1, d, h, mi, 0)
+  let utc = targetWall
+  for (let i = 0; i < 2; i++) {
+    utc += targetWall - wallAt(utc)
+  }
+  return utc
+}
+
+/**
+ * UTC instant of local midnight (00:00) for a calendar-day string in the
+ * given zone. Example: 2026-09-10 in America/Los_Angeles → 2026-09-10T07:00Z;
+ * in Europe/Dublin (summer, UTC+1) → 2026-09-09T23:00Z. On DST transition
+ * days the answer is the first (earliest) 00:00 wall clock of that day, e.g.
+ * 2026-03-29 in Europe/Dublin → 2026-03-29T00:00Z (midnight exists before the
+ * 01:00 spring-forward) and 2026-10-25 → 2026-10-24T23:00Z (the single 00:00
+ * is still on summer time). Returns null for malformed input; without a zone
+ * it falls back to the browser's local midnight.
+ */
+export function dayToInstant(dayStr: string | null | undefined, zone?: string): number | null {
+  if (!dayStr) return null
+  const s = dayStr.trim()
+  if (!DAY_ONLY.test(s)) return null
+  const [y, m, d] = s.split('-').map(Number)
+  if (zone) {
+    try {
+      return zoneWallToInstant(y, m, d, 0, 0, zone)
+    } catch {
+      /* fall through to browser-local */
+    }
+  }
+  return new Date(y, m - 1, d).getTime()
+}
+
+// Matches the value emitted by <input type="datetime-local">: a naive
+// YYYY-MM-DDTHH:mm wall-clock string with NO timezone suffix.
+const DATETIME_LOCAL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
+
+/**
+ * Interpret a naive datetime-local wall-clock string (YYYY-MM-DDTHH:mm, the
+ * value of <input type="datetime-local">) as local time in the given zone and
+ * return the UTC instant (ms). Returns null for malformed input.
+ *
+ * Why not `new Date(s).toISOString()`: per the ES spec a date-time string
+ * without a zone suffix is parsed as BROWSER-local time. When the browser zone
+ * differs from the user's configured zone (a Dublin browser + Shanghai user,
+ * say), typing 14:30 would be stored as 14:30 in Dublin = 21:30 in Shanghai —
+ * an instant that then pollutes the "明天有面试" reminder day and calendar
+ * buckets. This interprets the input as wall-clock in the user's zone instead
+ * (same contract as dayToInstant for date-only inputs). Without a zone it
+ * falls back to the browser's own interpretation, matching legacy behavior.
+ */
+export function localDateTimeToInstant(s: string | null | undefined, zone?: string): number | null {
+  if (!s) return null
+  const v = s.trim()
+  if (!DATETIME_LOCAL.test(v)) return null
+  const [datePart, timePart] = v.split('T')
+  const [y, mo, d] = datePart.split('-').map(Number)
+  const [h, mi] = timePart.split(':').map(Number)
+  if (zone) {
+    try {
+      return zoneWallToInstant(y, mo, d, h, mi, zone)
+    } catch {
+      /* fall through to browser-local */
+    }
+  }
+  return new Date(y, mo - 1, d, h, mi).getTime()
+}
+
+/**
+ * Render a date-only string (or instant) as a local calendar day without
+ * letting a UTC-midnight parse shift it. Date-only values pass through
+ * untouched; instants are formatted in the given zone (default: browser).
+ */
+export function fmtDay(s: string | null | undefined, zone?: string): string {
+  if (!s) return '—'
+  const trimmed = s.trim()
+  if (DAY_ONLY.test(trimmed)) {
+    const [y, m, d] = trimmed.split('-').map(Number)
+    return `${y}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`
+  }
+  const ds = toDayString(s, zone)
+  if (!ds) return '—'
+  const [y, m, d] = ds.split('-').map(Number)
+  return `${y}/${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}`
+}
+
+/**
+ * Render an instant as a local calendar day in the given zone (default: the
+ * user's configured zone via effectiveZone, falling back to the browser zone).
+ * Passing an explicit zone keeps this pure/testable; instants must never be
+ * rendered through the browser's local getters when the user zone differs.
+ */
+export function fmtDate(s: string | null | undefined, zone?: string): string {
   if (!s) return '—'
   const d = new Date(s)
   if (isNaN(d.getTime())) return '—'
-  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', year: 'numeric' })
+  return d.toLocaleDateString('zh-CN', {
+    timeZone: zone ?? effectiveZone(),
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  })
 }
 
-export function fmtDateTime(s: string | null | undefined): string {
+/**
+ * Render an instant with date + time in the given zone (default: the user's
+ * configured zone via effectiveZone, falling back to the browser zone). The
+ * UI buckets events by the user's zone, so the displayed time string must be
+ * rendered in that same zone or a Dublin browser + Shanghai user would see
+ * the wrong local time next to the correct calendar day.
+ */
+export function fmtDateTime(s: string | null | undefined, zone?: string): string {
   if (!s) return '—'
   const d = new Date(s)
   if (isNaN(d.getTime())) return '—'
   return d.toLocaleString('zh-CN', {
+    timeZone: zone ?? effectiveZone(),
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',

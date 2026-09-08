@@ -4,6 +4,7 @@ package transport
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -12,14 +13,43 @@ import (
 	appdomain "offerlog/backend/internal/applications/domain"
 	apprepo "offerlog/backend/internal/applications/repository"
 	appservice "offerlog/backend/internal/applications/service"
+	notifrepo "offerlog/backend/internal/notifications"
+	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
+	"offerlog/backend/internal/platform/observability"
 )
 
 type Handler struct {
-	svc *appservice.Service
+	svc  *appservice.Service
+	nots *notifrepo.Repo
 }
 
 func New(svc *appservice.Service) *Handler { return &Handler{svc: svc} }
+
+// WithNotifications attaches the in-app notification store so application
+// lifecycle endpoints (soft delete / archive / first response / ended status)
+// can retire the application's reminders instead of leaving dead links.
+func (h *Handler) WithNotifications(n *notifrepo.Repo) *Handler {
+	h.nots = n
+	return h
+}
+
+// clearAppReminders deletes every notification that references the application
+// (soft-deleted/archived/ended records must not keep producing stale alerts).
+// System-side retirement is a DELETE, not a dismiss: the row's idempotency key
+// must be released so restore / unarchive / terminal-reopen re-arms the next
+// reminder (a dismiss-only row would mute overdue:<action>/stale:<app>:<N>
+// forever). Failures are logged and swallowed so they never fail the
+// already-successful primary operation or write a second HTTP response.
+func (h *Handler) clearAppReminders(c *gin.Context, ownerID, appID int64) {
+	if h.nots == nil {
+		return
+	}
+	if err := h.nots.ClearByApplication(c.Request.Context(), ownerID, appID); err != nil {
+		observability.L(c.Request.Context()).Warn("clear app reminders",
+			"application_id", appID, "error", err)
+	}
+}
 
 // appDTO is the wire representation of an application row.
 type appDTO struct {
@@ -44,12 +74,12 @@ type appDTO struct {
 	SavedAt         *time.Time      `json:"saved_at"`
 	SubmittedAt     *time.Time      `json:"submitted_at"`
 	FirstResponseAt *time.Time      `json:"first_response_at"`
-	Deadline        *time.Time      `json:"deadline"`
+	Deadline        *string         `json:"deadline"` // calendar day YYYY-MM-DD (DATE column)
 	AcceptedAt      *time.Time      `json:"accepted_at"`
 	RejectedAt      *time.Time      `json:"rejected_at"`
 	Reason          string          `json:"reason"`
 	NextAction      string          `json:"next_action"`
-	NextActionDueAt *time.Time      `json:"next_action_due_at"`
+	NextActionDueAt *string         `json:"next_action_due_at"` // calendar day YYYY-MM-DD (DATE column)
 	Version         int             `json:"version"`
 	Archived        bool            `json:"archived"`
 	Deleted         bool            `json:"deleted"`
@@ -58,19 +88,48 @@ type appDTO struct {
 }
 
 func toDTO(r *apprepo.Row) *appDTO {
-	return &appDTO{
+	d := &appDTO{
 		ID: r.ID, CompanyID: r.CompanyID, CompanyName: r.CompanyName, Position: r.Position,
 		JobURL: r.JobURL, JDSnapshot: r.JDSnapshot, Location: r.Location,
 		RemotePolicy: r.RemotePolicy, EmploymentType: r.EmploymentType,
 		SalaryMin: r.SalaryMin, SalaryMax: r.SalaryMax, SalaryCurrency: r.SalaryCurrency,
 		Channel: r.Channel, Status: r.Status, Priority: r.Priority, Tags: r.Tags,
 		CustomValues: r.CustomValues, Notes: r.Notes, SavedAt: r.SavedAt,
-		SubmittedAt: r.SubmittedAt, FirstResponseAt: r.FirstResponseAt, Deadline: r.Deadline,
+		SubmittedAt: r.SubmittedAt, FirstResponseAt: r.FirstResponseAt,
 		AcceptedAt: r.AcceptedAt, RejectedAt: r.RejectedAt, Reason: r.Reason,
-		NextAction: r.NextAction, NextActionDueAt: r.NextActionDueAt, Version: r.Version,
+		NextAction: r.NextAction, Version: r.Version,
 		Archived: r.ArchivedAt != nil, Deleted: r.DeletedAt != nil,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
+	if r.Deadline != nil {
+		v := day.Format(*r.Deadline)
+		d.Deadline = &v
+	}
+	if r.NextActionDueAt != nil {
+		v := day.Format(*r.NextActionDueAt)
+		d.NextActionDueAt = &v
+	}
+	return d
+}
+
+// parseDayPtr converts an optional date-only wire string into a UTC-midnight
+// time.Time for the DATE column.
+func parseDayPtr(v *string) (*time.Time, error) {
+	if v == nil {
+		return nil, nil
+	}
+	s := day.Normalize(*v)
+	if s == "" {
+		return nil, nil
+	}
+	if !day.Valid(s) {
+		return nil, fmt.Errorf("日期格式需为 YYYY-MM-DD")
+	}
+	t, err := day.Parse(s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // Routes returns a group that must be mounted under /api/v1/applications with
@@ -129,7 +188,7 @@ type createReq struct {
 	Status         string     `json:"status"`
 	Priority       string     `json:"priority"`
 	Tags           []string   `json:"tags"`
-	Deadline       *time.Time `json:"deadline"`
+	Deadline       *string    `json:"deadline"` // YYYY-MM-DD
 	Notes          string     `json:"notes"`
 	SubmittedAt    *time.Time `json:"submitted_at"`
 }
@@ -141,12 +200,17 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 	user := httpx.UserFrom(c)
+	deadline, err := parseDayPtr(req.Deadline)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_deadline", err.Error()))
+		return
+	}
 	in := &appservice.CreateInput{
 		CompanyName: req.CompanyName, Position: req.Position, JobURL: req.JobURL,
 		Location: req.Location, RemotePolicy: req.RemotePolicy, EmploymentType: req.EmploymentType,
 		SalaryMin: req.SalaryMin, SalaryMax: req.SalaryMax, SalaryCurrency: req.SalaryCurrency,
 		Channel: req.Channel, Status: req.Status, Priority: req.Priority, Tags: req.Tags,
-		Deadline: req.Deadline, Notes: req.Notes, SubmittedAt: req.SubmittedAt,
+		Deadline: deadline, Notes: req.Notes, SubmittedAt: req.SubmittedAt,
 	}
 	row, err := h.svc.Create(c.Request.Context(), user.ID, in)
 	if err != nil {
@@ -210,10 +274,10 @@ type patchReq struct {
 	Channel         *string         `json:"channel"`
 	Priority        *string         `json:"priority"`
 	Tags            []string        `json:"tags"`
-	Deadline        *time.Time      `json:"deadline"`
+	Deadline        *string         `json:"deadline"` // YYYY-MM-DD
 	Notes           *string         `json:"notes"`
 	NextAction      *string         `json:"next_action"`
-	NextActionDueAt *time.Time      `json:"next_action_due_at"`
+	NextActionDueAt *string         `json:"next_action_due_at"` // YYYY-MM-DD
 	CustomValues    json.RawMessage `json:"custom_values"`
 }
 
@@ -240,14 +304,26 @@ func (h *Handler) patch(c *gin.Context) {
 	if req.Tags != nil {
 		in.Tags = req.Tags
 	}
+	deadline, err := parseDayPtr(req.Deadline)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_deadline", err.Error()))
+		return
+	}
 	if req.Deadline != nil {
-		in.Deadline = req.Deadline
+		in.Deadline = deadline
+	}
+	naDue, err := parseDayPtr(req.NextActionDueAt)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_next_action_due_at", err.Error()))
+		return
+	}
+	if req.NextActionDueAt != nil {
+		in.NextActionDueAt = naDue
 	}
 	if req.Notes != nil {
 		in.Notes = req.Notes
 	}
 	in.NextAction = req.NextAction
-	in.NextActionDueAt = req.NextActionDueAt
 	if len(req.CustomValues) > 0 && string(req.CustomValues) != "null" {
 		var cv map[string]any
 		if err := json.Unmarshal(req.CustomValues, &cv); err != nil {
@@ -271,6 +347,7 @@ func (h *Handler) softDelete(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
+	h.clearAppReminders(c, user.ID, id)
 	httpx.Ok(c)
 }
 
@@ -281,6 +358,10 @@ func (h *Handler) restore(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
+	// Restoring re-arms reminders: the lifecycle DELETE (soft delete) freed the
+	// idempotency keys, so the next generator pass recreates whatever is again
+	// applicable (e.g. an action still overdue). Nothing to clear here — the
+	// removal already happened when the record went into the trash.
 	httpx.Ok(c)
 }
 
@@ -291,6 +372,7 @@ func (h *Handler) archive(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
+	h.clearAppReminders(c, user.ID, id)
 	httpx.Ok(c)
 }
 
@@ -301,6 +383,11 @@ func (h *Handler) unarchive(c *gin.Context) {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
 	}
+	// Un-archiving restores the application to the reminder-eligible set. The
+	// archive-time DELETE freed the idempotency keys, so the next generator
+	// pass re-arms reminders for whatever is again applicable (overdue actions
+	// / stale applications / upcoming interviews) instead of staying muted
+	// forever under a dismissed row that still occupies its key.
 	httpx.Ok(c)
 }
 
@@ -336,6 +423,15 @@ func (h *Handler) transition(c *gin.Context) {
 	if err != nil {
 		httpx.WriteErr(c, mapConflict(err))
 		return
+	}
+	// A first response (stale-follow-up no longer applies) or an ended status
+	// retires the application's reminders; the UI then won't show alerts for an
+	// application that has moved on. System retirement DELETEs the rows (not a
+	// dismiss) so the idempotency keys are freed: if the record is later
+	// reopened to a non-terminal status or the first response is cleared, the
+	// next generator pass re-arms whatever is again applicable.
+	if req.FirstResponseAt != nil || appdomain.IsTerminal(req.ToStatus) {
+		h.clearAppReminders(c, user.ID, id)
 	}
 	c.JSON(http.StatusOK, toDTO(row))
 }

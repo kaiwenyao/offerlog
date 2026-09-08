@@ -17,15 +17,23 @@ import (
 	apprepo "offerlog/backend/internal/applications/repository"
 	appservice "offerlog/backend/internal/applications/service"
 	apptransport "offerlog/backend/internal/applications/transport"
+	calrepo "offerlog/backend/internal/calendar"
+	caltransport "offerlog/backend/internal/calendar/transport"
 	filetransport "offerlog/backend/internal/files/transport"
+	homerepo "offerlog/backend/internal/home"
+	hometransport "offerlog/backend/internal/home/transport"
 	idrepo "offerlog/backend/internal/identity/repository"
 	idservice "offerlog/backend/internal/identity/service"
 	idtransport "offerlog/backend/internal/identity/transport"
+	notifrepo "offerlog/backend/internal/notifications"
+	notiftransport "offerlog/backend/internal/notifications/transport"
 	"offerlog/backend/internal/platform/config"
 	"offerlog/backend/internal/platform/database"
 	"offerlog/backend/internal/platform/httpx"
 	"offerlog/backend/internal/platform/jobs"
 	"offerlog/backend/internal/platform/objectstore"
+	prefsrepo "offerlog/backend/internal/prefs"
+	prefstransport "offerlog/backend/internal/prefs/transport"
 	trrepo "offerlog/backend/internal/transfers"
 	trtransport "offerlog/backend/internal/transfers/transport"
 	vrepo "offerlog/backend/internal/views/repository"
@@ -43,6 +51,10 @@ type App struct {
 
 	appsSvc  *appservice.Service
 	viewsSvc *vservice.Service
+
+	Prefs *prefsrepo.Repo
+	Nots  *notifrepo.Repo
+	Home  *homerepo.Repo
 }
 
 // New builds the dependency graph and applies migrations.
@@ -70,9 +82,14 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	viewsSvc := vservice.New(db, viewsRepo)
 	jobStore := jobs.NewStore(db)
 
+	prefsRepo := prefsrepo.New(db)
+	notifRepo := notifrepo.New(db)
+	homeRepo := homerepo.New(db)
+
 	return &App{
 		Cfg: cfg, DB: db, Store: obj, Auth: auth, Jobs: jobStore,
 		appsSvc: appsSvc, viewsSvc: viewsSvc,
+		Prefs: prefsRepo, Nots: notifRepo, Home: homeRepo,
 	}, nil
 }
 
@@ -83,9 +100,13 @@ func (a *App) Handler() http.Handler {
 	r.Use(gin.Recovery(), httpx.RequestID(), httpx.SecurityHeaders(), httpx.Auth(a.Auth))
 
 	api := r.Group("/api/v1", httpx.CSRF(a.Auth))
-	// Auth endpoints live OUTSIDE the CSRF-protected group: login/register
-	// have no session yet (nothing to protect), and logout only clears the
-	// cookie. A dedicated Origin check middleware guards them.
+	// Auth endpoints live inside the api group (so CSRF sees them), but the
+	// CSRF middleware itself exempts exactly login/register/logout — endpoints
+	// that bootstrap or tear down the session and therefore have no CSRF token
+	// to anchor on. They are protected by SameSite=Lax cookies + the Origin
+	// check in the middleware. Authenticated profile writes (PATCH /auth/me)
+	// carry a live session and must NOT be exempt; the middleware allowlists
+	// precisely, so /auth/me requires the CSRF token like every other mutation.
 	authH := idtransport.New(a.Auth, idtransport.Config{
 		Secure:           a.Cfg.HTTP.PublicBase != "" && strings.HasPrefix(a.Cfg.HTTP.PublicBase, "https"),
 		RegistrationOpen: a.Cfg.App.RegistrationOpen,
@@ -95,12 +116,12 @@ func (a *App) Handler() http.Handler {
 	authH.Routes(authRoutes)
 
 	// applications
-	appH := apptransport.New(a.appsSvc)
+	appH := apptransport.New(a.appsSvc).WithNotifications(a.Nots)
 	appH.Routes(api.Group("/applications"))
 
 	// activities under /applications/:id
 	actRepo := actrepo.New(a.DB)
-	actH := acttransport.New(actRepo)
+	actH := acttransport.New(actRepo).WithNotifications(a.Nots)
 	actH.Routes(api.Group("/applications/:id"))
 	// standalone actions list for “今日待办” (all applications)
 	actH.ActionsRoot(api.Group("/actions"))
@@ -126,6 +147,22 @@ func (a *App) Handler() http.Handler {
 	trH := trtransport.New(trRepo)
 	trH.Routes(api.Group("/imports"))
 	trH.ExportRoutes(api.Group("/exports"))
+
+	// calendar (cross-application agenda for the configured user week)
+	calH := caltransport.New(calrepo.New(a.DB))
+	calH.Routes(api.Group("/calendar"))
+
+	// preferences (account profile + reminder prefs)
+	prefsH := prefstransport.NewWithProfile(a.Prefs, a.Auth)
+	prefsH.Routes(api.Group("/preferences"))
+
+	// notifications (in-app reminder list)
+	notifH := notiftransport.New(a.Nots)
+	notifH.Routes(api.Group("/notifications"))
+
+	// home dashboard aggregates (server-side counts + upcoming)
+	homeH := hometransport.New(a.Home).WithPrefs(a.Prefs)
+	homeH.Routes(api.Group("/home"))
 
 	// health (no auth)
 	r.GET("/health/live", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })

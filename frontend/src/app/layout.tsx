@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api, logout } from '../lib/api'
-import type { AppRow, FileItem, Me } from '../lib/types'
+import type { FileItem, HomeSummary, Me } from '../lib/types'
 import { Icon, SealMark, type IconName } from '../components/Icon'
 import { Button, Eyebrow } from '../ds'
 import { Dot } from '../components/ui'
+import { NotificationsBell } from '../features/notifications/Bell'
 
 interface NavEntry {
   to: string
@@ -20,6 +21,7 @@ interface NavEntry {
 const NAV: NavEntry[] = [
   { to: '/', label: '今日待办', short: '今日', icon: 'today', end: true, count: 'open' },
   { to: '/database', label: '求职数据库', short: '岗位', icon: 'database', count: 'apps' },
+  { to: '/calendar', label: '面试日历', short: '日历', icon: 'calendar' },
   { to: '/analytics', label: '统计分析', short: '统计', icon: 'analytics' },
   { to: '/files', label: '文件库', short: '文件', icon: 'files', count: 'files' },
   { to: '/settings', label: '设置', short: '设置', icon: 'settings' },
@@ -32,9 +34,15 @@ const SAVED_VIEWS: Array<{ label: string; dot: string; view: number; layout: str
   { label: '已归档', dot: 'var(--neutral)', view: -5, layout: 'table' },
 ]
 
+/** Extra sidebar entries below saved views (reachability for full pages). */
+const SIDEBAR_LINKS: Array<{ to: string; label: string; icon: IconName; countKey?: 'open' }> = [
+  { to: '/notifications', label: '通知中心', icon: 'bell' },
+]
+
 const PAGE_META: Record<string, { eyebrow: string; title: string }> = {
   '/': { eyebrow: 'TODAY', title: '今日待办' },
   '/database': { eyebrow: 'DATABASE', title: '求职数据库' },
+  '/calendar': { eyebrow: 'CALENDAR · 跨岗位日程', title: '面试日历' },
   '/analytics': { eyebrow: 'ANALYTICS', title: '统计分析' },
   '/files': { eyebrow: 'FILES · 私有存储', title: '文件库' },
   '/settings': { eyebrow: 'SETTINGS', title: '设置' },
@@ -48,9 +56,12 @@ function pageMeta(pathname: string) {
 
 /** Counts shown beside the nav entries — cheap queries the pages already cache. */
 function useSidebarCounts() {
-  const apps = useQuery({
-    queryKey: ['apps', 'list', { page: 1, size: 200 }],
-    queryFn: () => api.get<{ items: AppRow[]; total?: number }>('/api/v1/applications?page=1&page_size=200'),
+  // Server-side aggregates (full data set) — the badge next to 今日待办 is the
+  // unified open-action count, and the 岗位 badge is the real total; neither is
+  // derived from a 200-row page.
+  const home = useQuery({
+    queryKey: ['home', 'summary', { limit: 1 }],
+    queryFn: () => api.get<HomeSummary>('/api/v1/home/summary?limit=1'),
     staleTime: 30_000,
   })
   const files = useQuery({
@@ -58,12 +69,10 @@ function useSidebarCounts() {
     queryFn: () => api.get<{ items: FileItem[] }>('/api/v1/files'),
     staleTime: 30_000,
   })
-  const rows = apps.data?.items ?? []
-  const open = rows.filter((a) => a.next_action && !a.archived).length
   return {
-    apps: apps.data?.total ?? rows.length,
+    apps: home.data?.total ?? home.data?.active ?? 0,
     files: (files.data?.items ?? []).length,
-    open,
+    open: home.data?.todos.open ?? 0,
   }
 }
 
@@ -145,6 +154,18 @@ export function AppLayout({ me }: { me: Me | null }) {
                 </button>
               ))}
             </div>
+            <nav className="nav" aria-label="更多">
+              {SIDEBAR_LINKS.map((l) => (
+                <NavLink
+                  key={l.to}
+                  to={l.to}
+                  className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}
+                >
+                  <Icon name={l.icon} size={16} />
+                  <span className="grow">{l.label}</span>
+                </NavLink>
+              ))}
+            </nav>
           </div>
 
           <div className="sidebar-foot">
@@ -195,6 +216,7 @@ export function AppLayout({ me }: { me: Me | null }) {
                 </span>
               </form>
             </div>
+            <NotificationsBell />
           </header>
 
           <main className="content">

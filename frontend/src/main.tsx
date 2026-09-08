@@ -12,6 +12,7 @@ import '@fontsource/noto-sans-sc/500.css'
 import '@fontsource/noto-sans-sc/700.css'
 import './styles/app.css'
 import { fetchMe, setCsrf } from './lib/api'
+import { setUserZone } from './lib/tz'
 import type { Me } from './lib/types'
 import { AppLayout } from './app/layout'
 import { PageSpinner } from './components/ui'
@@ -20,6 +21,8 @@ import { DatabasePage } from './features/database/DatabasePage'
 import { DetailPage } from './features/detail/DetailPage'
 import { FilesPage } from './features/files/FilesPage'
 import { SettingsPage } from './features/settings/SettingsPage'
+import { NotificationsPage } from './features/notifications/Page'
+import { CalendarPage } from './features/calendar/CalendarPage'
 import { LoginPage } from './features/auth/LoginPage'
 
 const AnalyticsPage = React.lazy(() => import('./features/analytics/AnalyticsPage'))
@@ -40,6 +43,7 @@ export default function App() {
     fetchMe()
       .then((m) => {
         if (m) {
+          setUserZone(m.timezone)
           setMe(m)
           setState('authed')
         } else {
@@ -53,7 +57,20 @@ export default function App() {
   useEffect(() => {
     const onUnauthorized = () => setState('anon')
     window.addEventListener('offerlog:unauthorized', onUnauthorized)
-    return () => window.removeEventListener('offerlog:unauthorized', onUnauthorized)
+    // After a profile/preferences save, re-read /auth/me so the sidebar and
+    // session name reflect the new display name/timezone immediately.
+    const onProfile = () =>
+      fetchMe().then((m) => {
+        if (m) {
+          setUserZone(m.timezone)
+          setMe(m)
+        }
+      })
+    window.addEventListener('offerlog:profile-changed', onProfile)
+    return () => {
+      window.removeEventListener('offerlog:unauthorized', onUnauthorized)
+      window.removeEventListener('offerlog:profile-changed', onProfile)
+    }
   }, [])
 
   if (state === 'loading') {
@@ -70,6 +87,7 @@ export default function App() {
     return (
       <LoginPage
         onLoggedIn={(m) => {
+          setUserZone(m.timezone)
           setMe(m)
           setState('authed')
         }}
@@ -86,6 +104,7 @@ export default function App() {
             <Route path="/database" element={<DatabasePage />} />
             <Route path="/database/:id" element={<DatabasePage />} />
             <Route path="/apps/:id" element={<DetailPage />} />
+            <Route path="/calendar" element={<CalendarPage />} />
             <Route
               path="/analytics"
               element={
@@ -95,6 +114,7 @@ export default function App() {
               }
             />
             <Route path="/files" element={<FilesPage />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/settings" element={<SettingsPage me={me} />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

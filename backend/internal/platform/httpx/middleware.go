@@ -72,9 +72,15 @@ func CSRF(auth *authservice.Store) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		// Login/logout bootstrap or tear down the session itself; they are
-		// protected by SameSite cookies + the Origin check below.
-		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth/") {
+		// Login/register bootstrap the session itself (nothing to anchor a CSRF
+		// token to before login), and logout only clears the cookie. They are
+		// protected by SameSite=Lax + the Origin check below. NOTE: this is a
+		// precise allowlist of the pre-session/self-teardown endpoints — it must
+		// NOT exempt authenticated profile mutations like PATCH /api/v1/auth/me,
+		// which carry a live session and therefore must present the CSRF token
+		// (the frontend attaches it to every non-GET via the api wrapper).
+		switch c.Request.URL.Path {
+		case "/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/logout":
 			c.Next()
 			return
 		}

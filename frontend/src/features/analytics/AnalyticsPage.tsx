@@ -4,7 +4,7 @@ import * as echarts from 'echarts'
 import { api, fmtDate } from '../../lib/api'
 import type { ChannelRow, Metrics, SankeyData } from '../../lib/types'
 import { Button, Card, PanelTitle, Tabs } from '../../ds'
-import { Num, PageSpinner, Spinner } from '../../components/ui'
+import { ErrorText, Num, PageSpinner, Spinner } from '../../components/ui'
 
 type SankeyMode = 'current' | 'history'
 
@@ -43,8 +43,15 @@ function nodeColor(name: string): string {
   return NODE_COLORS[suffix] ?? DROPPED
 }
 
-function pct(x: number): string {
-  return x === 0 ? '—' : `${(x * 100).toFixed(1)}%`
+function pct(x: number | null | undefined): string {
+  if (x === null || x === undefined) return '—'
+  return `${(x * 100).toFixed(1)}%`
+}
+
+/** 分母>0 且分子=0 时显示 0%（而非 —）；无样本由调用方按 denominator=0 显式处理。 */
+function rateOrDash(rate: number | null | undefined, denominator: number): string {
+  if (denominator === 0) return '—' // 暂无样本
+  return pct(rate ?? 0)
 }
 
 export function AnalyticsPage() {
@@ -64,7 +71,18 @@ export function AnalyticsPage() {
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {summaryQ.isLoading ? <PageSpinner /> : metrics && <MetricGrid metrics={metrics} />}
+      {summaryQ.isError ? (
+        <Card padding="18px">
+          <ErrorText>指标加载失败，请稍后重试</ErrorText>
+          <Button variant="secondary" size="sm" onClick={() => summaryQ.refetch()} style={{ marginTop: 10 }}>
+            重试
+          </Button>
+        </Card>
+      ) : summaryQ.isLoading ? (
+        <PageSpinner />
+      ) : metrics ? (
+        <MetricGrid metrics={metrics} />
+      ) : null}
 
       <SankeyPanel mode={mode} setMode={setMode} data={sankeyQ.data} loading={sankeyQ.isLoading} />
 
@@ -82,13 +100,13 @@ function MetricGrid({ metrics }: { metrics: Metrics }) {
     { label: '进行中', value: metrics.in_progress, def: 'applied…interviewing' },
     { label: '有结果', value: metrics.with_result, def: '含主动撤回等管理结果' },
     { label: '已投递', value: metrics.submitted_count, def: '去重申请数' },
-    { label: '有效回复率', value: pct(metrics.response_rate), def: `样本 ${metrics.denominator}` },
+    { label: '有效回复率', value: rateOrDash(metrics.response_rate, metrics.denominator), def: `已回复 ${metrics.responded} / 样本 ${metrics.denominator}` },
     {
       label: '面试到达率',
-      value: pct(metrics.interview_rate),
-      def: metrics.small_sample ? '样本偏少（<10），仅供参考' : '投递 cohort',
+      value: rateOrDash(metrics.interview_rate, metrics.denominator),
+      def: metrics.denominator === 0 ? '暂无样本' : `到达面试 ${metrics.reached_interview} / 样本 ${metrics.denominator}`,
     },
-    { label: 'Offer 率', value: pct(metrics.offer_rate), def: '曾收到 Offer / 投递数' },
+    { label: 'Offer 率', value: rateOrDash(metrics.offer_rate, metrics.denominator), def: metrics.denominator === 0 ? '暂无样本' : `曾收 Offer ${metrics.received_offer} / 样本 ${metrics.denominator}` },
     {
       label: '回复中位耗时',
       value: metrics.replied_sample ? `${(metrics.response_median_hours ?? 0).toFixed(0)}h` : '—',
@@ -298,7 +316,7 @@ function SankeyTable({ data }: { data?: SankeyData }) {
 
 function ChannelPanel({ rows }: { rows: ChannelRow[] }) {
   if (rows.length === 0) return null
-  const max = Math.max(...rows.map((r) => r.response_rate), 0.0001)
+  const max = Math.max(...rows.map((r) => r.response_rate ?? 0), 0.0001)
   return (
     <Card padding="16px">
       <PanelTitle style={{ marginBottom: 12 }}>各渠道表现</PanelTitle>
@@ -313,14 +331,15 @@ function ChannelPanel({ rows }: { rows: ChannelRow[] }) {
         ))}
       </div>
       <p style={{ marginTop: 12, marginBottom: 0, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-        “有结果”包含主动撤回等管理结果，不等同于招聘方回复。分母为零显示 —。
+        “有结果”包含主动撤回等管理结果，不等同于招聘方回复。分母为零（该渠道尚无投递）显示 — 表示暂无样本。
       </p>
     </Card>
   )
 }
 
 function Row({ channel, max }: { channel: ChannelRow; max: number }) {
-  const color = channel.response_rate >= max * 0.9 ? GOOD : channel.response_rate > 0 ? FLOW_BLUE : DROPPED
+  const rate = channel.response_rate
+  const color = rate != null && rate >= max * 0.9 ? GOOD : rate != null && rate > 0 ? FLOW_BLUE : DROPPED
   return (
     <>
       <span style={{ fontSize: 13 }}>{channel.channel || '—'}</span>
@@ -329,10 +348,12 @@ function Row({ channel, max }: { channel: ChannelRow; max: number }) {
       </span>
       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span className="meter">
-          <span style={{ width: `${Math.min(100, channel.response_rate * 100)}%`, background: color }} />
+          <span style={{ width: `${Math.min(100, (rate ?? 0) * 100)}%`, background: color }} />
         </span>
         <span style={{ width: 44, textAlign: 'right' }}>
-          <Num color="var(--text-muted)">{pct(channel.response_rate)}</Num>
+          <Num color="var(--text-muted)">
+            {channel.submitted === 0 ? '—' : rateOrDash(rate, channel.submitted)}
+          </Num>
         </span>
       </span>
     </>
@@ -342,15 +363,20 @@ function Row({ channel, max }: { channel: ChannelRow; max: number }) {
 function OutcomePanel({ metrics }: { metrics: Metrics }) {
   const by = metrics.by_status ?? {}
   const accepted = by.accepted ?? 0
-  const rejected = (by.rejected ?? 0) + (by.withdrawn ?? 0) + (by.closed ?? 0)
+  // 分别展示被拒 / 主动撤回 / 岗位关闭，不把招聘方拒绝归入「婉拒」。
+  const rejected = by.rejected ?? 0
+  const withdrawn = by.withdrawn ?? 0
+  const closed = by.closed ?? 0
   const pending = by.offer ?? 0
-  const total = accepted + rejected + pending
+  const total = accepted + rejected + withdrawn + closed + pending
 
   const split = [
     { label: '已接受', value: accepted, color: GOOD },
-    { label: '婉拒 / 结束', value: rejected, color: DROPPED },
+    { label: '被拒绝', value: rejected, color: 'var(--danger)' },
+    { label: '主动撤回', value: withdrawn, color: 'var(--neutral)' },
+    { label: '岗位关闭', value: closed, color: DROPPED },
     { label: '待答复', value: pending, color: 'var(--warning)' },
-  ]
+  ].filter((s) => s.value > 0)
 
   return (
     <Card padding="16px">
