@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -297,19 +298,24 @@ func (r *Repo) GetEventByID(ctx context.Context, q database.Querier, appID, owne
 	return &e, nil
 }
 
-// idempotencyMarker is appended to note by RecordIdempotency so the guard query
+// idempotencyMarker is APPENDED to note by RecordIdempotency so the guard query
 // can find a replayed request. It is storage bookkeeping, never user content.
-const idempotencyMarker = "|idem:"
+//
+// Matched only in the shape it is generated in: at the very END of the note and
+// with a whitespace-free key. Notes are unrestricted user text, so an occurrence
+// inside what someone typed is theirs to keep — an unanchored strip silently
+// returned content different from what is stored.
+//
+// A note ending in a literal "|idem:token" is inherently indistinguishable from
+// the generated suffix; moving the key to its own column would settle that for
+// good, but the strip has to stay for rows written before this change anyway.
+var idempotencySuffix = regexp.MustCompile(`\|idem:[^|\s]*$`)
 
-// StripIdempotencyMarker removes the internal marker from a note before it
-// leaves the repository. Reading it back is the only place that must know the
-// marker exists — otherwise a user's own note renders as
+// StripIdempotencyMarker removes the generated marker from a note before it
+// leaves the repository, so a user's own note never renders as
 // 「内推直接进面|idem:ui-1788884884229」.
 func StripIdempotencyMarker(note string) string {
-	if i := strings.LastIndex(note, idempotencyMarker); i >= 0 {
-		return note[:i]
-	}
-	return note
+	return idempotencySuffix.ReplaceAllString(note, "")
 }
 
 // SoftDelete / Restore / Archive set visibility flags.

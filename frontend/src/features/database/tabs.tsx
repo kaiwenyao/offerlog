@@ -626,6 +626,14 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '纠正失败'),
   })
 
+  // Events a later correction supersedes. Their own row keeps the wrong time
+  // (the audit trail is append-only), so it has to READ as superseded —
+  // otherwise a user who just fixed a date still sees the old one sitting there.
+  const supersededBy = new Map<number, number>()
+  for (const e of events) {
+    if (e.event_type === 'correction' && e.corrects_event_id) supersededBy.set(e.corrects_event_id, e.id)
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
       {err && <ErrorText>{err}</ErrorText>}
@@ -655,10 +663,12 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
                 </span>
                 <span
                   style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 6 }}
-                  title="实际发生时间（你填写的业务时间）"
+                  title={supersededBy.has(e.id) ? '这条记录已被纠正，以纠正行为准' : '实际发生时间（你填写的业务时间）'}
                 >
-                  <Num color="var(--text-muted)">{fmtDateTime(e.occurred_at)}</Num>
-                  {relativeDayLabel(e.occurred_at) && (
+                  <span style={supersededBy.has(e.id) ? { textDecoration: 'line-through', opacity: 0.6 } : undefined}>
+                    <Num color="var(--text-muted)">{fmtDateTime(e.occurred_at)}</Num>
+                  </span>
+                  {!supersededBy.has(e.id) && relativeDayLabel(e.occurred_at) && (
                     <span style={{ font: 'var(--type-caption)', fontWeight: 400, color: 'var(--text-muted)' }}>
                       · {relativeDayLabel(e.occurred_at)}
                     </span>
@@ -676,6 +686,11 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
               {e.corrects_event_id && (
                 <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
                   纠正了事件 #{e.corrects_event_id}
+                </span>
+              )}
+              {supersededBy.has(e.id) && (
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
+                  已被事件 #{supersededBy.get(e.id)} 纠正
                 </span>
               )}
               {sysInfo.has(e.id) && (

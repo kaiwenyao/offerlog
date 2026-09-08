@@ -168,21 +168,32 @@ func (s *Service) Create(ctx context.Context, ownerID int64, in *CreateInput) (*
 		row.ID = id
 		out = row
 
-		// 建档 means "I started tracking this", so its business time is the
-		// creation instant. It used to borrow submitted_at, which made the row
-		// claim the user created the record on the day they had applied.
-		ev := &repository.Event{
-			ApplicationID: id, OwnerID: ownerID, EventType: "created",
-			FromStatus: nil, ToStatus: &row.Status, OccurredAt: *in.SavedAt,
-		}
-		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
-			return err
-		}
 		// Created straight into 已投递 with a real 投递时间: that submission is a
 		// separate business fact and gets its own row. Restricted to exactly
 		// applied so the event replay (which walks to_status by sequence) still
 		// lands on the status the record was created with.
-		if userSubmitted != nil && row.Status == domain.StatusApplied {
+		emitApplied := userSubmitted != nil && row.Status == domain.StatusApplied
+		// 建档 means "I started tracking this", so its business time is the
+		// creation instant. It used to borrow submitted_at, which made the row
+		// claim the user created the record on the day they had applied.
+		//
+		// When the submission gets its own row, 建档 must describe the state
+		// BEFORE it: the replay takes submitted_at from the first event whose
+		// effective status is applied, so a 建档 row also claiming applied would
+		// hand it the creation clock and silently overwrite the backfilled 投递
+		// 时间 that feeds analytics and reminders.
+		createdTo := row.Status
+		if emitApplied {
+			createdTo = domain.StatusSaved
+		}
+		ev := &repository.Event{
+			ApplicationID: id, OwnerID: ownerID, EventType: "created",
+			FromStatus: nil, ToStatus: &createdTo, OccurredAt: *in.SavedAt,
+		}
+		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
+			return err
+		}
+		if emitApplied {
 			return s.insertAppliedEvent(ctx, tx, id, ownerID, domain.StatusSaved, *userSubmitted)
 		}
 		return nil

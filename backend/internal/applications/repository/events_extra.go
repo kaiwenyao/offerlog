@@ -103,6 +103,39 @@ func (r *Repo) StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int6
 	return buildStageHistory(events, loc, submittedAt), nil
 }
 
+// effectiveEvent is what a correction replaces on the event it corrects: both
+// the target status AND the business time. Time matters because repairing a
+// mistyped date is the main reason to correct anything — replacing only the
+// status left the timeline showing the fix while submitted_at and the stage
+// rail kept the wrong day.
+type effectiveEvent struct {
+	status string
+	at     time.Time
+}
+
+// correctionsByEvent indexes corrections by the event they correct; a later
+// correction of the same event wins.
+func correctionsByEvent(evs []*Event) map[int64]effectiveEvent {
+	out := map[int64]effectiveEvent{}
+	for _, ev := range evs {
+		if ev.EventType == "correction" && ev.CorrectsEventID != nil && ev.ToStatus != nil {
+			out[*ev.CorrectsEventID] = effectiveEvent{status: *ev.ToStatus, at: ev.OccurredAt}
+		}
+	}
+	return out
+}
+
+// effectiveOf resolves an event to the status and time that actually count.
+func effectiveOf(ev *Event, corrected map[int64]effectiveEvent) (string, time.Time, bool) {
+	if c, ok := corrected[ev.ID]; ok {
+		return c.status, c.at, true
+	}
+	if ev.ToStatus == nil {
+		return "", time.Time{}, false
+	}
+	return *ev.ToStatus, ev.OccurredAt, true
+}
+
 // buildStageHistory replays each application's effective timeline (same
 // correction semantics as ResyncStatusFromEvents) and records the FIRST
 // arrival date per status.
@@ -118,24 +151,18 @@ func buildStageHistory(events []*Event, loc *time.Location, submittedAt map[int6
 	out := map[int64]map[string]string{}
 	for _, appID := range order {
 		evs := byApp[appID]
-		// corrected: original event id → replacement status (later wins).
-		corrected := map[int64]string{}
-		for _, ev := range evs {
-			if ev.EventType == "correction" && ev.CorrectsEventID != nil && ev.ToStatus != nil {
-				corrected[*ev.CorrectsEventID] = *ev.ToStatus
-			}
-		}
+		corrected := correctionsByEvent(evs)
 		first := map[string]time.Time{}
 		for _, ev := range evs {
-			if ev.EventType == "correction" || ev.ToStatus == nil {
+			if ev.EventType == "correction" {
 				continue
 			}
-			eff := *ev.ToStatus
-			if repl, ok := corrected[ev.ID]; ok {
-				eff = repl
+			eff, at, ok := effectiveOf(ev, corrected)
+			if !ok {
+				continue
 			}
-			if t, ok := first[eff]; !ok || ev.OccurredAt.Before(t) {
-				first[eff] = ev.OccurredAt
+			if t, seen := first[eff]; !seen || at.Before(t) {
+				first[eff] = at
 			}
 		}
 		// The user-entered 投递时间 is the authoritative arrival for 已投递:
@@ -169,36 +196,27 @@ func (r *Repo) ResyncStatusFromEvents(ctx context.Context, q database.Querier, a
 	// than the created event, and the state machine must still walk the order
 	// in which the transitions were recorded.
 	events = bySequence(events)
-	// correction map: corrected event id → replacement status
-	corrected := map[int64]string{}
-	for _, ev := range events {
-		if ev.EventType == "correction" && ev.CorrectsEventID != nil && ev.ToStatus != nil {
-			corrected[*ev.CorrectsEventID] = *ev.ToStatus
-		}
-	}
+	corrected := correctionsByEvent(events)
 	status := domain.StatusSaved
 	var sub, rej, acc *time.Time
 	for _, ev := range events {
 		if ev.EventType == "correction" {
 			continue
 		}
-		eff := ev.ToStatus
-		if repl, ok := corrected[ev.ID]; ok {
-			eff = &repl
-		}
-		if eff == nil {
+		eff, at, ok := effectiveOf(ev, corrected)
+		if !ok {
 			continue
 		}
-		status = *eff
+		status = eff
 		switch {
-		case *eff == domain.StatusApplied && sub == nil:
-			t := ev.OccurredAt
+		case eff == domain.StatusApplied && sub == nil:
+			t := at
 			sub = &t
-		case *eff == domain.StatusRejected && rej == nil:
-			t := ev.OccurredAt
+		case eff == domain.StatusRejected && rej == nil:
+			t := at
 			rej = &t
-		case *eff == domain.StatusAccepted && acc == nil:
-			t := ev.OccurredAt
+		case eff == domain.StatusAccepted && acc == nil:
+			t := at
 			acc = &t
 		}
 	}

@@ -677,6 +677,90 @@ func TestTimelineCarriesUserEnteredBusinessTime(t *testing.T) {
 	})
 }
 
+// Created straight into 已投递: the 建档 row must describe the pre-submission
+// state, because the replay takes submitted_at from the FIRST event whose
+// effective status is applied. With 建档 also claiming applied, a later resync
+// (any correction triggers one) silently replaced the user's backfilled 投递时间
+// with the creation clock — and that value feeds analytics and reminders.
+func TestResyncKeepsBackfilledSubmittedAt(t *testing.T) {
+	ctx := context.Background()
+	db, svc, _, owner := setup(t)
+	today := time.Now().UTC()
+	twoDaysAgo := today.AddDate(0, 0, -2)
+
+	created, err := svc.Create(ctx, owner, &appservice.CreateInput{
+		CompanyName: "ResyncCo", Position: "Role", Status: domain.StatusApplied, SubmittedAt: &twoDaysAgo,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	day := func(ts *time.Time) string {
+		if ts == nil {
+			return "<nil>"
+		}
+		return ts.UTC().Format("2006-01-02")
+	}
+	if got, want := day(created.SubmittedAt), twoDaysAgo.Format("2006-01-02"); got != want {
+		t.Fatalf("submitted_at right after create = %s, want %s", got, want)
+	}
+
+	// Force a replay the way the product does: correct the applied event.
+	var appliedID int64
+	if err := db.Pool().QueryRow(ctx, `SELECT id FROM application_events
+		WHERE application_id=$1 AND event_type='status_change' AND to_status=$2`,
+		created.ID, domain.StatusApplied).Scan(&appliedID); err != nil {
+		t.Fatalf("the backfilled submission needs its own event: %v", err)
+	}
+	if err := svc.Correct(ctx, owner, created.ID, &appservice.CorrectionInput{
+		EventID: appliedID, NewStatus: domain.StatusApplied, OccurredAt: twoDaysAgo, Reason: "确认投递日",
+	}); err != nil {
+		t.Fatalf("correct: %v", err)
+	}
+	after, err := svc.Get(ctx, owner, created.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := day(after.SubmittedAt), twoDaysAgo.Format("2006-01-02"); got != want {
+		t.Errorf("submitted_at after resync = %s, want the user's backfilled %s", got, want)
+	}
+}
+
+// Correcting an event's TIME has to move the snapshot too, not just add an
+// audit row — otherwise the timeline shows the repair while submitted_at and
+// the stage rail keep the mistyped day.
+func TestCorrectingATimeMovesTheSnapshot(t *testing.T) {
+	ctx := context.Background()
+	db, svc, _, owner := setup(t)
+	today := time.Now().UTC()
+	twoDaysAgo := today.AddDate(0, 0, -2)
+
+	app := mustCreate(t, svc, owner, "MoveSnapshot", "Role")
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: &today,
+	}); err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	var appliedID int64
+	if err := db.Pool().QueryRow(ctx, `SELECT id FROM application_events
+		WHERE application_id=$1 AND event_type='status_change' AND to_status=$2`,
+		app.ID, domain.StatusApplied).Scan(&appliedID); err != nil {
+		t.Fatal(err)
+	}
+	// "I typed today by mistake, it was actually 前天."
+	if err := svc.Correct(ctx, owner, app.ID, &appservice.CorrectionInput{
+		EventID: appliedID, NewStatus: domain.StatusApplied, OccurredAt: twoDaysAgo, Reason: "时间填错了",
+	}); err != nil {
+		t.Fatalf("correct: %v", err)
+	}
+	after, err := svc.Get(ctx, owner, app.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.SubmittedAt == nil || after.SubmittedAt.UTC().Format("2006-01-02") != twoDaysAgo.Format("2006-01-02") {
+		t.Errorf("submitted_at = %v, want the corrected %s", after.SubmittedAt, twoDaysAgo.Format("2006-01-02"))
+	}
+}
+
 // The idempotency marker is an internal storage detail; it must never reach a
 // client (it used to render inside the user's own note text).
 func TestEventNotesDoNotLeakIdempotencyMarker(t *testing.T) {

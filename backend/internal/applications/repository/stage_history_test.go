@@ -46,14 +46,17 @@ func TestBuildStageHistoryCorrectionReplacesStatus(t *testing.T) {
 	corr := testEvent(1, "correction", ptr("applied"), ptr("screening"), time.Date(2026, 9, 6, 0, 0, 0, 0, loc), &first.ID)
 	_ = corr
 	first.ID = 11
-	corr2 := testEvent(1, "correction", ptr("applied"), ptr("screening"), time.Date(2026, 9, 6, 0, 0, 0, 0, loc), &first.ID)
+	// A status-only fix: the correction carries the SAME occurred_at as the
+	// event it corrects (what the 纠正 dialog sends when only the status is
+	// changed), so the arrival day must not move.
+	corr2 := testEvent(1, "correction", ptr("applied"), ptr("screening"), time.Date(2026, 9, 5, 10, 0, 0, 0, loc), &first.ID)
 	appliedAgain := testEvent(1, "status_change", ptr("screening"), ptr("applied"), time.Date(2026, 9, 8, 12, 0, 0, 0, loc), nil)
 	got := buildStageHistory([]*Event{first, corr2, appliedAgain}, loc, nil)[1]
 	if got["applied"] != "2026-09-08" {
 		t.Errorf("corrected first applied should be dropped; applied = %q, want 2026-09-08", got["applied"])
 	}
 	if got["screening"] != "2026-09-05" {
-		t.Errorf("screening should take the corrected event's date; got %q, want 2026-09-05", got["screening"])
+		t.Errorf("screening should keep the corrected event's day; got %q, want 2026-09-05", got["screening"])
 	}
 }
 
@@ -101,5 +104,44 @@ func TestBuildStageHistorySubmittedAtOverridesApplied(t *testing.T) {
 	got = buildStageHistory(evs, loc, nil)[1]
 	if got["applied"] != "2026-09-08" {
 		t.Errorf("applied without override = %q, want 2026-09-08", got["applied"])
+	}
+}
+
+// A note is unrestricted user text. The idempotency marker is always APPENDED,
+// so only a trailing occurrence is bookkeeping — an occurrence inside what the
+// user typed must survive, or the API returns something other than what is
+// stored.
+func TestStripIdempotencyMarkerOnlyRemovesTheGeneratedSuffix(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"generated suffix on an empty note", "|idem:ui-123", ""},
+		{"generated suffix after real text", "内推直接进面|idem:ui-123", "内推直接进面"},
+		{"no marker at all", "内推直接进面", "内推直接进面"},
+		{"marker text typed by the user mid-note", "讨论了 |idem: 这个前缀的设计", "讨论了 |idem: 这个前缀的设计"},
+		{"marker text typed by the user at the end", "前缀写作 |idem: 加上 key", "前缀写作 |idem: 加上 key"},
+		{"user text plus a real generated suffix", "聊到 |idem: 前缀|idem:ui-123", "聊到 |idem: 前缀"},
+		{"only the last suffix is bookkeeping", "a|idem:x1|idem:ui-2", "a|idem:x1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StripIdempotencyMarker(tc.in); got != tc.want {
+				t.Errorf("StripIdempotencyMarker(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// A correction exists to repair a wrong time, so the replay must adopt the
+// correction's occurred_at — otherwise the timeline shows the fix while the
+// stage rail and submitted_at keep the mistyped day.
+func TestBuildStageHistoryCorrectionReplacesTime(t *testing.T) {
+	loc := time.UTC
+	orig := testEvent(1, "status_change", ptr("saved"), ptr("applied"), time.Date(2026, 9, 8, 10, 0, 0, 0, loc), nil)
+	orig.ID = 21
+	corr := testEvent(1, "correction", ptr("applied"), ptr("applied"), time.Date(2026, 9, 6, 10, 0, 0, 0, loc), &orig.ID)
+	got := buildStageHistory([]*Event{orig, corr}, loc, nil)[1]
+	if got["applied"] != "2026-09-06" {
+		t.Errorf("applied = %q, want the corrected day 2026-09-06", got["applied"])
 	}
 }
