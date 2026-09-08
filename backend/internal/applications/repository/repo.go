@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -260,7 +261,11 @@ func (r *Repo) ListEvents(ctx context.Context, q database.Querier, appID, ownerI
 	rows, err := q.Query(ctx, `SELECT id, application_id, sequence, event_type, from_status, to_status,
 		note, reason, occurred_at, recorded_at, corrects_event_id, actor_id
 		FROM application_events WHERE application_id=$1 AND owner_id=$2
-		ORDER BY occurred_at ASC, sequence ASC`, appID, ownerID)
+		-- Business-time order, but the 建档 row is pinned first: a backfilled
+		-- 投递 carries an EARLIER occurred_at than the creation instant, and a
+		-- timeline that opens with 「已投递」 above 「建档」 reads as broken.
+		-- Safe for the correction simulation, which re-sorts by sequence itself.
+		ORDER BY (event_type = 'created') DESC, occurred_at ASC, sequence ASC`, appID, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +277,7 @@ func (r *Repo) ListEvents(ctx context.Context, q database.Querier, appID, ownerI
 			&e.ToStatus, &e.Note, &e.Reason, &e.OccurredAt, &e.RecordedAt, &e.CorrectsEventID, &e.ActorID); err != nil {
 			return nil, err
 		}
+		e.Note = StripIdempotencyMarker(e.Note)
 		out = append(out, &e)
 	}
 	return out, rows.Err()
@@ -288,7 +294,28 @@ func (r *Repo) GetEventByID(ctx context.Context, q database.Querier, appID, owne
 	if err != nil {
 		return nil, err
 	}
+	e.Note = StripIdempotencyMarker(e.Note)
 	return &e, nil
+}
+
+// idempotencyMarker is APPENDED to note by RecordIdempotency so the guard query
+// can find a replayed request. It is storage bookkeeping, never user content.
+//
+// Matched only in the shape it is generated in: at the very END of the note and
+// with a whitespace-free key. Notes are unrestricted user text, so an occurrence
+// inside what someone typed is theirs to keep — an unanchored strip silently
+// returned content different from what is stored.
+//
+// A note ending in a literal "|idem:token" is inherently indistinguishable from
+// the generated suffix; moving the key to its own column would settle that for
+// good, but the strip has to stay for rows written before this change anyway.
+var idempotencySuffix = regexp.MustCompile(`\|idem:[^|\s]*$`)
+
+// StripIdempotencyMarker removes the generated marker from a note before it
+// leaves the repository, so a user's own note never renders as
+// 「内推直接进面|idem:ui-1788884884229」.
+func StripIdempotencyMarker(note string) string {
+	return idempotencySuffix.ReplaceAllString(note, "")
 }
 
 // SoftDelete / Restore / Archive set visibility flags.

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
-import { toInstantInUserZone } from '../../lib/tz'
+import { toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
 import { ENDED, statusMeta } from '../../lib/status'
 import {
   needsReason as reasonRequired,
@@ -43,7 +43,10 @@ export function TransitionModal({
 }: TransitionModalProps) {
   const qc = useQueryClient()
   const [to, setTo] = useState('')
-  const [occurredAt, setOccurredAt] = useState('')
+  // Prefilled, not blank: the field used to say 「留空默认为现在」 and then
+  // silently write the server clock, so a user who meant 前天 got today with no
+  // sign anything had been chosen for them.
+  const [occurredAt, setOccurredAt] = useState(() => toLocalDateTimeInput())
   const [submitted, setSubmitted] = useState('')
   const [noFormalSubmission, setNoFormalSubmission] = useState(false)
   const [reason, setReason] = useState('')
@@ -227,7 +230,7 @@ export function TransitionModal({
           type="datetime-local"
           value={occurredAt}
           onChange={(e) => setOccurredAt(e.target.value)}
-          hint="这件事什么时候发生的；留空默认为现在"
+          hint="这件事什么时候发生的 —— 时间线按它显示；已预填现在，可改成实际发生的时间"
         />
 
         {needsSubmitted && (

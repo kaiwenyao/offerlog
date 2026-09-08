@@ -153,6 +153,16 @@ async function pickTarget(page, value) {
   const overviewTxt = (await page.locator('.drawer').textContent()) || '';
   console.log('8b inline round created (一面):', overviewTxt.includes('一面'));
 
+  // 8c. The timeline must show the BUSINESS times the user typed, not the DB
+  //     write clock: 投递 was entered as 2026-09-02, so a 已投递 row has to carry
+  //     that day even though the record was created and advanced just now.
+  await page.click('.drawer >> text=时间线');
+  await page.waitForTimeout(600);
+  const tlTxt = (await page.locator('.drawer').textContent()) || '';
+  console.log('8c timeline has 建档 row:', tlTxt.includes('建档'));
+  console.log('8c timeline shows the entered 投递 day (09/02):',
+    /待投递\s*→\s*已投递/.test(tlTxt) && tlTxt.includes('09/02'));
+
   // 9. ended records stay editable: the button becomes 重开 / 更正.
   //    Close the open drawer first — its backdrop swallows row clicks.
   await page.click('.drawer button[aria-label="关闭"]');

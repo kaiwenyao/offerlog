@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, ApiError, fmtBytes, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
-import { effectiveZone } from '../../lib/tz'
+import { api, ApiError, fmtBytes, fmtDate, fmtDateTime, fmtDay, relativeDayLabel, toDayString } from '../../lib/api'
+import { effectiveZone, toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
 import type { ActionItem, AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
 import { NEXT_STEP_SUGGESTION, STATUSES, statusMeta } from '../../lib/status'
-import { Button, Card, Eyebrow, LinkButton, PanelTitle, Select } from '../../ds'
+import { Button, Card, Eyebrow, Input, LinkButton, PanelTitle, Select } from '../../ds'
 import { Icon } from '../../components/Icon'
 import { Dot, ErrorText, Modal, Num, Spinner } from '../../components/ui'
 import { ActionForm, InterviewForm, NoteForm } from './forms'
@@ -593,6 +593,7 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
   const [err, setErr] = useState('')
   const [pick, setPick] = useState<AppEvent | null>(null)
   const [newStatus, setNewStatus] = useState('')
+  const [newOccurred, setNewOccurred] = useState('')
   // 系统信息（录入时间等数据库时间）默认隐藏，点击逐条展开。
   const [sysInfo, setSysInfo] = useState<Set<number>>(new Set())
   const toggleSys = (id: number) =>
@@ -606,10 +607,14 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
   const correctMut = useMutation({
     mutationFn: async () => {
       if (!pick) return
+      // The typed time is the point of a correction — the backend used to stamp
+      // its own clock, which left a wrong timestamp unfixable through the UI.
+      const edited = newOccurred ? toInstantInUserZone(newOccurred).iso : null
+      if (newOccurred && edited == null) throw new ApiError('bad_occurred_at', '时间格式不正确', 400)
       await api.post(`/api/v1/applications/${appId}/corrections`, {
         event_id: pick.id,
         new_status: newStatus,
-        occurred_at: pick.occurred_at,
+        occurred_at: edited ?? pick.occurred_at,
         reason: '纠错',
       })
     },
@@ -620,6 +625,14 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '纠正失败'),
   })
+
+  // Events a later correction supersedes. Their own row keeps the wrong time
+  // (the audit trail is append-only), so it has to READ as superseded —
+  // otherwise a user who just fixed a date still sees the old one sitting there.
+  const supersededBy = new Map<number, number>()
+  for (const e of events) {
+    if (e.event_type === 'correction' && e.corrects_event_id) supersededBy.set(e.corrects_event_id, e.id)
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
@@ -640,7 +653,7 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
             <span className="grow" style={{ paddingBottom: 14, minWidth: 0 }}>
               <span style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>
-                  {e.event_type === 'created' && '创建记录'}
+                  {e.event_type === 'created' && '建档（开始追踪）'}
                   {e.event_type === 'correction' && '纠正'}
                   {e.event_type === 'status_change' &&
                     `${e.from_status ? statusMeta(e.from_status).label : '—'} → ${
@@ -648,13 +661,23 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
                     }`}
                   {!['created', 'correction', 'status_change'].includes(e.event_type) && e.event_type}
                 </span>
-                <span style={{ marginLeft: 'auto' }} title="实际发生时间">
-                  <Num color="var(--text-muted)">{fmtDateTime(e.occurred_at)}</Num>
+                <span
+                  style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 6 }}
+                  title={supersededBy.has(e.id) ? '这条记录已被纠正，以纠正行为准' : '实际发生时间（你填写的业务时间）'}
+                >
+                  <span style={supersededBy.has(e.id) ? { textDecoration: 'line-through', opacity: 0.6 } : undefined}>
+                    <Num color="var(--text-muted)">{fmtDateTime(e.occurred_at)}</Num>
+                  </span>
+                  {!supersededBy.has(e.id) && relativeDayLabel(e.occurred_at) && (
+                    <span style={{ font: 'var(--type-caption)', fontWeight: 400, color: 'var(--text-muted)' }}>
+                      · {relativeDayLabel(e.occurred_at)}
+                    </span>
+                  )}
                 </span>
               </span>
               {e.note && (
                 <span style={{ display: 'block', fontSize: 13, color: 'var(--text-muted)', marginTop: 3, lineHeight: 1.45 }}>
-                  {e.note.replace(/^\|idem:.*/, '')}
+                  {e.note}
                 </span>
               )}
               {e.reason && (
@@ -663,6 +686,11 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
               {e.corrects_event_id && (
                 <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
                   纠正了事件 #{e.corrects_event_id}
+                </span>
+              )}
+              {supersededBy.has(e.id) && (
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
+                  已被事件 #{supersededBy.get(e.id)} 纠正
                 </span>
               )}
               {sysInfo.has(e.id) && (
@@ -685,13 +713,19 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
                 </span>
               )}
               <span style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                {e.event_type === 'status_change' && e.to_status && status !== e.to_status && (
+                {/* Every status_change is correctable, the newest included: the
+                    row a user most often needs to repair is the one they just
+                    recorded with the wrong time, and hiding 纠正 there made that
+                    mistake permanent. The backend re-derives the current status
+                    from the corrected timeline. */}
+                {e.event_type === 'status_change' && e.to_status && (
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => {
                       setPick(e)
                       setNewStatus(e.to_status ?? 'saved')
+                      setNewOccurred(toLocalDateTimeInput(e.occurred_at))
                     }}
                   >
                     <Icon name="edit" size={13} /> 纠正此记录
@@ -716,16 +750,24 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
             </Button>
           }
         >
-          <p style={{ fontSize: 13, marginTop: 0 }}>将事件 #{pick.id} 的目标状态纠正为：</p>
-          <Select
-            options={STATUSES.map((s) => ({ value: s.key, label: s.label }))}
-            value={newStatus}
-            onChange={(e) => setNewStatus(e.target.value)}
-            aria-label="纠正后的状态"
-          />
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 0 }}>
-            纠正会保留审计痕迹（corrects_event_id），并重新计算当前状态。
-          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+            <Select
+              label={`事件 #${pick.id} 的目标状态`}
+              options={STATUSES.map((s) => ({ value: s.key, label: s.label }))}
+              value={newStatus}
+              onChange={(e) => setNewStatus(e.target.value)}
+            />
+            <Input
+              label="实际发生时间"
+              type="datetime-local"
+              value={newOccurred}
+              onChange={(e) => setNewOccurred(e.target.value)}
+              hint="填错了时间就在这里改；时间线按这个时间显示与排序"
+            />
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+              纠正会保留审计痕迹（corrects_event_id），并重新计算当前状态。
+            </p>
+          </div>
         </Modal>
       )}
     </div>

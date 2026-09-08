@@ -48,3 +48,30 @@ export function toInstantInUserZone(value: string): { iso: string | null; zone: 
   const ms = localDateTimeToInstant(value, zone)
   return { iso: ms == null ? null : new Date(ms).toISOString(), zone }
 }
+
+/**
+ * Inverse of toInstantInUserZone: render an instant (or "now") as the naive
+ * `YYYY-MM-DDTHH:mm` string a datetime-local input expects, in the USER's zone.
+ *
+ * Needed so a form can PREFILL a time instead of leaving the field blank and
+ * silently stamping the server clock — the user must see the value that is
+ * about to be written. Built from Intl parts rather than toISOString(), which
+ * would render UTC and shift the day for anyone east or west of it.
+ */
+export function toLocalDateTimeInput(iso?: string | null, now: Date = new Date()): string {
+  const d = iso ? new Date(iso) : now
+  if (isNaN(d.getTime())) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: effectiveZone(),
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  // en-CA renders midnight as 24 in some engines; datetime-local needs 00.
+  const hour = get('hour') === '24' ? '00' : get('hour')
+  return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}`
+}
