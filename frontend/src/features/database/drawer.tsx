@@ -207,10 +207,17 @@ export function AppDetailContent({
     </>
   )
 
+  // Ended records are NOT frozen: the backend allows 终态重开 (and 毁约) as long
+  // as a reason is given, so the button stays live and just changes its name.
+  const ended = ENDED.has(app.status)
   const foot = (
     <>
-      <Button variant="primary" size="sm" disabled={ENDED.has(app.status)} onClick={() => setShowTransition(true)}>
-        更新进度
+      <Button
+        variant={ended ? 'secondary' : 'primary'}
+        size="sm"
+        onClick={() => setShowTransition(true)}
+      >
+        {ended ? '重开 / 更正' : '更新进度'}
       </Button>
       <span style={{ marginLeft: 'auto' }}>
         <Num color="var(--text-muted)">版本 {app.version}</Num>
@@ -223,6 +230,8 @@ export function AppDetailContent({
       appId={app.id}
       currentStatus={app.status}
       version={app.version}
+      submittedAt={app.submitted_at ?? null}
+      interviews={interviews}
       onClose={() => setShowTransition(false)}
     />
   )

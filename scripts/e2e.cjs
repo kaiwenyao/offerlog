@@ -1,6 +1,15 @@
 // Full E2E acceptance: 新增岗位 → 准备材料 → 上传简历 → 投递 → 沟通 → 面试 →
 // Offer → 接受/撤回 (§2.3 主流程验收) with reload persistence and consistency.
 const { chromium } = require('playwright');
+// The target-status field is a custom blueprint listbox (ds/Listbox), not a
+// native <select>: open the trigger, then click the option by its data-value.
+// The panel is portaled to document.body (so the dialog's overflow can't clip
+// it), hence the option selector is NOT scoped to `.modal`.
+async function pickTarget(page, value) {
+  await page.click('.modal button.status-target-trigger');
+  await page.click(`[role=option][data-value="${value}"]`);
+}
+
 (async () => {
   const browser = await chromium.launch({ ignoreHTTPSErrors: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -54,7 +63,7 @@ const { chromium } = require('playwright');
   await page.waitForSelector('.drawer >> text=更新进度');
   await page.click('.drawer >> text=更新进度');
   await page.waitForSelector('text=目标状态');
-  await page.selectOption('.modal select', 'applied');
+  await pickTarget(page, 'applied');
   await page.fill('.modal input[type=datetime-local] >> nth=1', '2026-09-01T10:00'); // submitted_at (2nd dt field)
   await page.click('.modal button:has-text("确认更新")');
   await page.waitForTimeout(1200);
@@ -83,8 +92,8 @@ const { chromium } = require('playwright');
   async function transition(to, extra) {
     await page.click('.drawer >> text=更新进度');
     await page.waitForSelector('.modal >> text=目标状态');
-    await page.selectOption('.modal select', to);
-    if (extra?.reason) await page.fill('.modal input[placeholder="必填"]', extra.reason);
+    await pickTarget(page, to);
+    if (extra?.reason) await page.fill('.modal textarea[placeholder="必填"]', extra.reason);
     if (extra?.dt) await page.fill('.modal input[type=datetime-local] >> nth=0', extra.dt);
     await page.click('.modal button:has-text("确认更新")');
     await page.waitForTimeout(1400);
@@ -117,6 +126,41 @@ const { chromium } = require('playwright');
   });
   const acceptedLink = sk.links.find(l => l.target === 's_accepted');
   console.log('7 sankey accepted edge value >=1:', acceptedLink ? acceptedLink.value >= 1 : false);
+
+  // 8. skip-ahead: a brand-new record goes 待投递 -> 面试中 in one step, with
+  //    the interview round scheduled inline from the same dialog.
+  const skipCo = 'E2E-Skip-' + Date.now();
+  await page.locator('a:has-text("求职数据库")').first().click();
+  await page.waitForSelector('text=求职数据库');
+  await page.click('button:has-text("＋ 新增岗位")');
+  await page.fill('#cf-company', skipCo);
+  await page.fill('#cf-pos', '数据工程师');
+  await page.click('button:has-text("创建")');
+  await page.waitForSelector(`text=${skipCo}`, { timeout: 7000 });
+  await page.locator(`tbody tr:has-text("${skipCo}")`).first().click();
+  await page.waitForSelector('.drawer >> text=更新进度');
+  await page.click('.drawer >> text=更新进度');
+  await page.waitForSelector('.modal >> text=目标状态');
+  await pickTarget(page, 'interviewing');           // only reachable after the skip-ahead change
+  await page.fill('.modal input[type=datetime-local] >> nth=1', '2026-09-02T09:00'); // submitted_at
+  await page.fill('.modal input[type=datetime-local] >> nth=2', '2026-09-20T14:00'); // inline round
+  await page.click('.modal button:has-text("确认更新")');
+  await page.waitForTimeout(1600);
+  const skipChip = (await page.locator('.drawer .status-chip').textContent()).replace(/\s+/g,' ');
+  console.log('8a skip-ahead chip:', skipChip);
+  await page.click('.drawer >> text=概览');
+  await page.waitForTimeout(600);
+  const overviewTxt = (await page.locator('.drawer').textContent()) || '';
+  console.log('8b inline round created (一面):', overviewTxt.includes('一面'));
+
+  // 9. ended records stay editable: the button becomes 重开 / 更正.
+  //    Close the open drawer first — its backdrop swallows row clicks.
+  await page.click('.drawer button[aria-label="关闭"]');
+  await page.waitForTimeout(400);
+  await page.locator(`tbody tr:has-text("${company}")`).first().click();
+  await page.waitForTimeout(600);
+  const reopenVisible = await page.locator('.drawer button:has-text("重开 / 更正")').count();
+  console.log('9 ended record offers reopen:', reopenVisible > 0);
 
   console.log('E2E JS errors:', errors.length ? errors : 'none');
   await browser.close();

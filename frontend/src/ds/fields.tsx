@@ -1,35 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import type { ControlSize } from './Button'
-
-const HEIGHTS: Record<ControlSize, string> = {
-  sm: 'var(--control-h-sm)',
-  md: 'var(--control-h-md)',
-  lg: 'var(--control-h-lg)',
-}
-
-function labelStyle(): CSSProperties {
-  return { fontSize: 12, color: 'color-mix(in srgb, var(--text) 70%, transparent)' }
-}
-
-/** Square well: filled a step below the ground, edge goes accent on focus. */
-function shellStyle(focus: boolean, invalid: boolean): CSSProperties {
-  const edge = invalid ? 'var(--danger)' : focus ? 'var(--accent)' : 'var(--border)'
-  return {
-    background: 'var(--surface-input)',
-    borderRadius: 0,
-    border: '1px solid ' + edge,
-    transition: 'var(--transition-control)',
-  }
-}
-
-const FIELD_RESET: CSSProperties = {
-  all: 'unset',
-  flex: 1,
-  minWidth: 0,
-  font: 'var(--type-body-sm)',
-  color: 'var(--text)',
-  caretColor: 'var(--accent)',
-}
+import { CONTROL_HEIGHTS as HEIGHTS, FIELD_RESET, labelStyle, shellStyle } from './fieldShell'
 
 export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> {
   label?: ReactNode

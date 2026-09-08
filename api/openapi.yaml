@@ -130,6 +130,9 @@ paths:
                 note: { type: string }
                 submitted_at: { type: string, format: date-time }
                 first_response_at: { type: string, format: date-time }
+                # 未经正式投递（内推 / 猎头直接约面）：满足进入招聘阶段的投递证据
+                # 要求，但不写入 submitted_at，避免污染投递→回复口径。
+                no_formal_submission: { type: boolean }
                 idempotency_key: { type: string }
   /applications/{id}/events:
     get: { summary: 状态时间线 }

@@ -267,8 +267,12 @@ type TransitionInput struct {
 	Note            string     `json:"note"`
 	SubmittedAt     *time.Time `json:"submitted_at"`
 	FirstResponseAt *time.Time `json:"first_response_at"`
-	Version         int        `json:"version"`
-	IdempotencyKey  string     `json:"idempotency_key"`
+	// NoFormalSubmission lets a record enter a recruiter-driven status without a
+	// submitted_at (内推 / 猎头直接约面). It is a per-request assertion, not a
+	// stored column: submitted_at stays NULL so 投递→回复 analytics stay honest.
+	NoFormalSubmission bool   `json:"no_formal_submission"`
+	Version            int    `json:"version"`
+	IdempotencyKey     string `json:"idempotency_key"`
 }
 
 // Transition applies a status change, writes an event and updates the snapshot
@@ -318,7 +322,8 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 		}
 		err = domain.ValidateTransition(domain.Transition{
 			FromStatus: row.Status, ToStatus: in.ToStatus, OccurredAt: occ, Now: now,
-			WasSubmitted: wasSubmitted, HadOffer: hadOffer, Reason: in.Reason, Note: in.Note,
+			WasSubmitted: wasSubmitted, HadOffer: hadOffer, SkipSubmission: in.NoFormalSubmission,
+			Reason: in.Reason, Note: in.Note,
 		})
 		if err != nil {
 			return err

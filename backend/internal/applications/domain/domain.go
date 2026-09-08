@@ -39,6 +39,16 @@ var InProgressStatuses = map[string]bool{
 	StatusApplied: true, StatusScreening: true, StatusAssessment: true, StatusInterviewing: true,
 }
 
+// SkipSubmissionStatuses are the in-progress statuses a record may enter while
+// asserting it never went through a formal submission (内推 / 猎头直接约面).
+// StatusApplied is deliberately absent: 「已投递」 *is* the claim that a
+// submission happened, so a row in that status with a NULL submitted_at would
+// read as submitted in the UI while every analytics and reminder query
+// (submitted_at IS NOT NULL) treats it as not submitted.
+var SkipSubmissionStatuses = map[string]bool{
+	StatusScreening: true, StatusAssessment: true, StatusInterviewing: true,
+}
+
 // Terminal (ended) statuses.
 var TerminalStatuses = map[string]bool{
 	StatusAccepted: true, StatusRejected: true, StatusWithdrawn: true, StatusClosed: true,
@@ -96,8 +106,13 @@ type Transition struct {
 	Now          time.Time
 	WasSubmitted bool // true if a submitted_at already existed
 	HadOffer     bool // true when an offer event exists in the application history
-	Note         string
-	Reason       string
+	// SkipSubmission records that the user declared this application never went
+	// through a formal submission (内推 / 猎头直接约面). It satisfies the
+	// in-progress evidence rule WITHOUT inventing a submitted_at, so
+	// 投递→回复 analytics keep a truthful empty numerator.
+	SkipSubmission bool
+	Note           string
+	Reason         string
 }
 
 // ValidationError is a domain-level violation with a stable code.
@@ -119,12 +134,24 @@ func errf(code, format string, args ...any) *ValidationError {
 
 // allowedDirect lists transitions that do not need special-case validation.
 var allowedDirect = map[[2]string]bool{
+	// 跳阶（用户常见的「面完了才想起来记录」「内推直接约面」）：从准备期可以
+	// 直接落到任一招聘阶段，进入 in-progress 时仍需投递证据 —— 补一个实际投递
+	// 时间，或显式声明未经过正式投递（Transition.SkipSubmission）。
 	{StatusSaved, StatusPreparing}:         true,
 	{StatusSaved, StatusApplied}:           true,
+	{StatusSaved, StatusScreening}:         true,
+	{StatusSaved, StatusAssessment}:        true,
+	{StatusSaved, StatusInterviewing}:      true,
+	{StatusSaved, StatusOffer}:             true,
+	{StatusSaved, StatusRejected}:          true,
 	{StatusSaved, StatusWithdrawn}:         true,
 	{StatusSaved, StatusClosed}:            true,
 	{StatusPreparing, StatusApplied}:       true,
 	{StatusPreparing, StatusScreening}:     true,
+	{StatusPreparing, StatusAssessment}:    true,
+	{StatusPreparing, StatusInterviewing}:  true,
+	{StatusPreparing, StatusOffer}:         true,
+	{StatusPreparing, StatusRejected}:      true,
 	{StatusPreparing, StatusWithdrawn}:     true,
 	{StatusPreparing, StatusClosed}:        true,
 	{StatusApplied, StatusScreening}:       true,
@@ -147,6 +174,7 @@ var allowedDirect = map[[2]string]bool{
 	{StatusAssessment, StatusWithdrawn}:    true,
 	{StatusAssessment, StatusClosed}:       true,
 	{StatusInterviewing, StatusScreening}:  true,
+	{StatusInterviewing, StatusAssessment}: true,
 	{StatusInterviewing, StatusOffer}:      true,
 	{StatusInterviewing, StatusRejected}:   true,
 	{StatusInterviewing, StatusWithdrawn}:  true,
@@ -157,9 +185,12 @@ var allowedDirect = map[[2]string]bool{
 	{StatusOffer, StatusClosed}:            true,
 	// terminal reopen (终态重开) back into the pipeline is allowed and must
 	// carry a reason (enforced by service layer).
-	{StatusAccepted, StatusOffer}:         true,
+	{StatusAccepted, StatusOffer}: true,
+	// 毁约：已接受后又放弃（接了更好的 Offer / 个人原因），需填原因。
+	{StatusAccepted, StatusWithdrawn}:     true,
 	{StatusRejected, StatusApplied}:       true,
 	{StatusRejected, StatusScreening}:     true,
+	{StatusRejected, StatusAssessment}:    true,
 	{StatusRejected, StatusInterviewing}:  true,
 	{StatusRejected, StatusOffer}:         true,
 	{StatusRejected, StatusSaved}:         true,
@@ -168,12 +199,14 @@ var allowedDirect = map[[2]string]bool{
 	{StatusWithdrawn, StatusPreparing}:    true,
 	{StatusWithdrawn, StatusApplied}:      true,
 	{StatusWithdrawn, StatusScreening}:    true,
+	{StatusWithdrawn, StatusAssessment}:   true,
 	{StatusWithdrawn, StatusInterviewing}: true,
 	{StatusWithdrawn, StatusOffer}:        true,
 	{StatusClosed, StatusSaved}:           true,
 	{StatusClosed, StatusPreparing}:       true,
 	{StatusClosed, StatusApplied}:         true,
 	{StatusClosed, StatusScreening}:       true,
+	{StatusClosed, StatusAssessment}:      true,
 	{StatusClosed, StatusInterviewing}:    true,
 	{StatusClosed, StatusOffer}:           true,
 }
@@ -201,9 +234,13 @@ func ValidateTransition(t Transition) error {
 	}
 
 	// Entering a recruiter-driven phase requires evidence of submission.
-	toInProgress := InProgressStatuses[t.ToStatus]
-	if toInProgress && !t.WasSubmitted {
-		return errf("missing_submitted_at", "进入后续招聘阶段需补充实际投递时间或标记未经过正式投递")
+	if InProgressStatuses[t.ToStatus] && !t.WasSubmitted {
+		if !t.SkipSubmission {
+			return errf("missing_submitted_at", "进入后续招聘阶段需补充实际投递时间或标记未经过正式投递")
+		}
+		if !SkipSubmissionStatuses[t.ToStatus] {
+			return errf("missing_submitted_at", "「已投递」必须填写实际投递时间；没走正式投递流程请直接选择对应的招聘阶段")
+		}
 	}
 
 	// accepted requires an offer history or a simultaneous offer event.

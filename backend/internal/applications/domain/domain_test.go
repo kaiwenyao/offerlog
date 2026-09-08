@@ -45,11 +45,63 @@ func TestTransitionValidationTable(t *testing.T) {
 	}{
 		{"saved->preparing valid", base("saved", "preparing"), ""},
 		{"preparing->applied valid", base("preparing", "applied"), ""},
-		{"saved->interviewing without submit: edge itself illegal", func() Transition {
+		// 跳阶：saved -> 任一招聘阶段现在是合法边，但仍要投递证据。
+		{"saved->interviewing without submit rejected", func() Transition {
 			tr := base("saved", "interviewing")
 			tr.WasSubmitted = false
 			return tr
+		}(), "missing_submitted_at"},
+		{"saved->interviewing with backfilled submit valid", func() Transition {
+			tr := base("saved", "interviewing")
+			tr.WasSubmitted = true
+			return tr
+		}(), ""},
+		{"saved->interviewing with no-formal-submission valid", func() Transition {
+			tr := base("saved", "interviewing")
+			tr.WasSubmitted = false
+			tr.SkipSubmission = true
+			return tr
+		}(), ""},
+		{"skip-submission is refused for 已投递 itself", func() Transition {
+			tr := base("saved", "applied")
+			tr.WasSubmitted = false
+			tr.SkipSubmission = true
+			return tr
+		}(), "missing_submitted_at"},
+		{"applied still accepts a real submitted_at", func() Transition {
+			tr := base("saved", "applied")
+			tr.WasSubmitted = true
+			return tr
+		}(), ""},
+		{"skip-submission does not unlock an illegal edge", func() Transition {
+			tr := base("saved", "accepted")
+			tr.WasSubmitted = false
+			tr.SkipSubmission = true
+			return tr
 		}(), "invalid_transition"},
+		{"saved->assessment with submit valid", base("saved", "assessment"), ""},
+		{"saved->offer valid (offer needs no in-progress evidence)", base("saved", "offer"), ""},
+		{"saved->rejected needs reason", func() Transition {
+			tr := base("saved", "rejected")
+			tr.Reason = ""
+			return tr
+		}(), "missing_reason"},
+		{"saved->rejected with reason valid", func() Transition {
+			tr := base("saved", "rejected")
+			tr.Reason = "岗位取消"
+			return tr
+		}(), ""},
+		{"interviewing->assessment rollback ok", base("interviewing", "assessment"), ""},
+		{"accepted->withdrawn 毁约 needs reason", func() Transition {
+			tr := base("accepted", "withdrawn")
+			tr.Reason = ""
+			return tr
+		}(), "missing_reason"},
+		{"accepted->withdrawn with reason valid", func() Transition {
+			tr := base("accepted", "withdrawn")
+			tr.Reason = "接受了其他 Offer"
+			return tr
+		}(), ""},
 		{"preparing->screening without submit rejected", func() Transition {
 			tr := base("preparing", "screening")
 			tr.WasSubmitted = false
