@@ -301,7 +301,11 @@ func (h *Handler) get(c *gin.Context) {
 		return
 	}
 	user := httpx.UserFrom(c)
-	row, err := h.svc.Get(c.Request.Context(), user.ID, id, false)
+	// includeDeleted: 回收站里的记录也要能打开详情——数据库页的回收站点击行
+	// 后打开的就是这个抽屉，RowMenu 依据响应里的 deleted 标识给出「恢复」入口，
+	// 且 events/interviews/notes 等子资源本就对软删除行照常应答。可见性过滤
+	// 由列表接口（trash=1 / 默认排除）负责；按 id 直读对属主返回记录本身。
+	row, err := h.svc.Get(c.Request.Context(), user.ID, id, true)
 	if err != nil {
 		httpx.WriteErr(c, mapNotFound(err))
 		return
