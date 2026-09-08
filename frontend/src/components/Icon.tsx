@@ -98,9 +98,10 @@ export function Icon({ name, size = 18, strokeWidth = 1.75, color = 'currentColo
 }
 
 /**
- * The OfferLog mark: a flat accent square with a subtle inner highlight.
+ * The OfferLog mark: an empty square drawn in the accent — a registration box,
+ * matching the brand lockup in the Industry canvas.
  */
-export function SealMark({ size = 26 }: { size?: number }) {
+export function SealMark({ size = 15, color = 'var(--accent)' }: { size?: number; color?: string }) {
   return (
     <span
       aria-hidden
@@ -108,22 +109,21 @@ export function SealMark({ size = 26 }: { size?: number }) {
         width: size,
         height: size,
         flex: '0 0 auto',
-        borderRadius: Math.round(size * 0.35),
-        background: 'linear-gradient(135deg, var(--accent), var(--accent-hover))',
+        border: '1.5px solid ' + color,
         display: 'block',
       }}
     />
   )
 }
 
-/** Deterministic neutral wash used for company avatars across the app. */
+/** Deterministic flat plate colour for company monograms across the app. */
 const WASH = [
-  'linear-gradient(135deg, oklch(95% 0.03 145), oklch(91% 0.04 145))',
-  'linear-gradient(135deg, oklch(95% 0.012 250), oklch(91% 0.014 250))',
-  'linear-gradient(135deg, oklch(94% 0.03 155), oklch(91% 0.02 240))',
-  'linear-gradient(135deg, oklch(95% 0.012 240), oklch(91% 0.03 145))',
-  'linear-gradient(135deg, oklch(95% 0.025 145), oklch(92% 0.014 250))',
-  'linear-gradient(135deg, oklch(95% 0.014 250), oklch(91% 0.03 155))',
+  'var(--accent-200)',
+  'var(--neutral-200)',
+  'var(--accent-300)',
+  'var(--neutral-300)',
+  'var(--accent-100)',
+  'var(--neutral-100)',
 ]
 
 export function washFor(seed: string | number): string {
@@ -134,7 +134,7 @@ export function washFor(seed: string | number): string {
   return WASH[n % WASH.length]
 }
 
-/** Rounded company monogram tile — used in tables, boards and the drawer head. */
+/** Square company monogram plate — used in tables, boards and the drawer head. */
 export function CompanyMark({ name, size = 22, seed }: { name: string; size?: number; seed?: string | number }) {
   return (
     <span
@@ -143,14 +143,13 @@ export function CompanyMark({ name, size = 22, seed }: { name: string; size?: nu
         width: size,
         height: size,
         flex: '0 0 auto',
-        borderRadius: Math.round(size * 0.32),
         background: washFor(seed ?? name),
-        border: '1px solid var(--border-alt)',
+        fontFamily: 'var(--font-display)',
         fontSize: Math.max(10, Math.round(size * 0.5)),
-        fontWeight: 500,
+        fontWeight: 600,
         display: 'grid',
         placeItems: 'center',
-        color: 'var(--text)',
+        color: 'var(--accent-900)',
       }}
     >
       {name.slice(0, 1).toUpperCase()}

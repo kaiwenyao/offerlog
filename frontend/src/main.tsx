@@ -2,11 +2,14 @@ import React, { useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-// Self-hosted fonts: Inter for body/UI and Noto Sans SC as the Chinese
-// fallback — bundled so Docker deployments work fully offline.
-import '@fontsource/inter/400.css'
-import '@fontsource/inter/500.css'
-import '@fontsource/inter/600.css'
+// Self-hosted fonts (Industry design system): Barlow for body/UI, Barlow
+// Condensed for headings and controls, Noto Sans SC as the Chinese fallback
+// — bundled so Docker deployments work fully offline.
+import '@fontsource/barlow/400.css'
+import '@fontsource/barlow/500.css'
+import '@fontsource/barlow/700.css'
+import '@fontsource/barlow-condensed/400.css'
+import '@fontsource/barlow-condensed/600.css'
 import '@fontsource/noto-sans-sc/400.css'
 import '@fontsource/noto-sans-sc/500.css'
 import '@fontsource/noto-sans-sc/700.css'

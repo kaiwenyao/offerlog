@@ -11,7 +11,7 @@ type SankeyMode = 'current' | 'history'
 /** Sankey palette: blue keeps flowing, grey drops out, green is an Offer.
     Values are design tokens; canvas rendering resolves them via resolve(). */
 const FLOW_BLUE = 'var(--info)'
-const DROPPED = 'oklch(82% 0.012 240)'
+const DROPPED = 'var(--neutral-400)'
 const GOOD = 'var(--positive)'
 
 /** echarts paints to canvas, where var() does not resolve — read the token. */
@@ -116,20 +116,21 @@ function MetricGrid({ metrics }: { metrics: Metrics }) {
   return (
     <div className="metric-grid">
       {cards.map((c) => (
-        <Card key={c.label} padding="14px 16px">
-          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{c.label}</div>
+        <div key={c.label} style={{ padding: '15px 16px' }}>
+          <div className="micro">{c.label}</div>
           <div
             style={{
-              font: 'var(--type-h3)',
               fontFamily: 'var(--font-display)',
-              letterSpacing: 'var(--tracking-display)',
-              marginTop: 4,
+              fontWeight: 600,
+              fontSize: 36,
+              lineHeight: 1.1,
+              marginTop: 6,
             }}
           >
             {c.value}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.4 }}>{c.def}</div>
-        </Card>
+        </div>
       ))}
     </div>
   )
@@ -245,7 +246,7 @@ function SankeyPanel({
 function LegendSwatch({ color, label }: { color: string; label: string }) {
   return (
     <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span aria-hidden style={{ width: 14, height: 8, borderRadius: 4, background: color }} />
+      <span aria-hidden style={{ width: 9, height: 9, background: color }} />
       {label}
     </span>
   )
@@ -260,7 +261,7 @@ function buildOption(d: SankeyData): echarts.EChartsOption {
         type: 'sankey',
         data: d.nodes.map((n) => ({
           name: n.name,
-          itemStyle: { color: resolve(nodeColor(n.name)), borderWidth: 0, borderRadius: 5 },
+          itemStyle: { color: resolve(nodeColor(n.name)), borderWidth: 0, borderRadius: 0 },
         })),
         links: d.links.map((l) => ({ source: l.source, target: l.target, value: l.value })),
         emphasis: { focus: 'adjacency' },
@@ -387,11 +388,9 @@ function OutcomePanel({ metrics }: { metrics: Metrics }) {
       <div
         style={{
           display: 'flex',
-          height: 12,
-          borderRadius: 6,
+          height: 22,
           overflow: 'hidden',
-          boxShadow: 'var(--highlight-inner)',
-          background: 'var(--surface-thin)',
+          background: 'var(--neutral-200)',
         }}
       >
         {total > 0 &&
@@ -402,7 +401,7 @@ function OutcomePanel({ metrics }: { metrics: Metrics }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
         {split.map((s) => (
           <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-            <span aria-hidden style={{ width: 8, height: 8, borderRadius: '50%', background: s.color }} />
+            <span aria-hidden style={{ width: 8, height: 8, background: s.color }} />
             <span style={{ flex: 1 }}>{s.label}</span>
             <Num>{s.value}</Num>
           </div>

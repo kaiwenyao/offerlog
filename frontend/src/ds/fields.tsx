@@ -8,17 +8,16 @@ const HEIGHTS: Record<ControlSize, string> = {
 }
 
 function labelStyle(): CSSProperties {
-  return { font: 'var(--type-caption)', color: 'var(--text-muted)' }
+  return { fontSize: 12, color: 'color-mix(in srgb, var(--text) 70%, transparent)' }
 }
 
+/** Square well: filled a step below the ground, edge goes accent on focus. */
 function shellStyle(focus: boolean, invalid: boolean): CSSProperties {
+  const edge = invalid ? 'var(--danger)' : focus ? 'var(--accent)' : 'var(--border)'
   return {
     background: 'var(--surface-input)',
-    borderRadius: 'var(--radius-control)',
-    border: '1px solid ' + (invalid ? 'var(--danger)' : 'var(--border)'),
-    boxShadow: focus
-      ? `0 0 0 2px var(--surface-strong),0 0 0 4px ${invalid ? 'var(--danger)' : 'var(--focus-ring)'}`
-      : 'none',
+    borderRadius: 0,
+    border: '1px solid ' + edge,
     transition: 'var(--transition-control)',
   }
 }
@@ -29,6 +28,7 @@ const FIELD_RESET: CSSProperties = {
   minWidth: 0,
   font: 'var(--type-body-sm)',
   color: 'var(--text)',
+  caretColor: 'var(--accent)',
 }
 
 export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> {
@@ -72,7 +72,7 @@ export function Input({
           alignItems: 'center',
           gap: 'var(--space-2)',
           height: HEIGHTS[size],
-          padding: '0 var(--space-4)',
+          padding: '0 10px',
           ...shellStyle(focus, invalid),
           ...shellStyleOverride,
         }}
@@ -121,7 +121,7 @@ export function Textarea({ label, hint, invalid = false, disabled, style, ...res
       }}
     >
       {label && <span style={labelStyle()}>{label}</span>}
-      <span style={{ display: 'flex', padding: 'var(--space-3) var(--space-4)', ...shellStyle(focus, invalid) }}>
+      <span style={{ display: 'flex', padding: '8px 10px', ...shellStyle(focus, invalid) }}>
         <textarea
           disabled={disabled}
           onFocus={() => setFocus(true)}
@@ -183,7 +183,7 @@ export function Select({
           style={{
             all: 'unset',
             flex: 1,
-            padding: '0 var(--space-8) 0 var(--space-4)',
+            padding: '0 var(--space-8) 0 10px',
             font: 'var(--type-body-sm)',
             color: 'var(--text)',
             cursor: 'pointer',
@@ -205,7 +205,7 @@ export function Select({
           aria-hidden
           style={{
             position: 'absolute',
-            right: 'var(--space-4)',
+            right: 10,
             color: 'var(--text-muted)',
             fontSize: 10,
             pointerEvents: 'none',
@@ -253,27 +253,27 @@ export function Switch({ label, ariaLabel, checked = false, onChange, disabled =
         style={{
           all: 'unset',
           boxSizing: 'border-box',
-          width: 44,
-          height: 26,
+          width: 42,
+          height: 22,
           flex: '0 0 auto',
-          borderRadius: 'var(--radius-pill)',
-          padding: 3,
+          borderRadius: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: checked ? 'flex-end' : 'flex-start',
           cursor: 'inherit',
-          background: checked ? 'var(--accent)' : 'var(--border)',
-          border: '1px solid ' + (checked ? 'var(--accent)' : 'var(--border-alt)'),
+          background: checked ? 'var(--accent-100)' : 'transparent',
+          border: '1px solid ' + (checked ? 'var(--accent)' : 'var(--border)'),
           transition: 'background var(--dur-base) var(--ease-glass)',
         }}
       >
         <span
           style={{
             display: 'block',
-            width: 20,
-            height: 20,
-            borderRadius: '50%',
-            background: 'var(--surface)',
-            boxShadow: 'var(--shadow-card)',
-            transform: checked ? 'translateX(18px)' : 'translateX(0)',
-            transition: 'transform var(--dur-base) var(--ease-glass)',
+            width: 16,
+            height: 16,
+            margin: '0 2px',
+            background: checked ? 'var(--accent)' : 'var(--neutral-400)',
+            transition: 'background var(--dur-base) var(--ease-glass)',
           }}
         />
       </button>
@@ -309,14 +309,14 @@ export function Checkbox({ label, checked = false, onChange, disabled = false, s
       <span
         aria-hidden
         style={{
-          width: 20,
-          height: 20,
+          width: 18,
+          height: 18,
           flex: '0 0 auto',
-          borderRadius: 'var(--radius-sm)',
+          borderRadius: 0,
           display: 'grid',
           placeItems: 'center',
-          background: checked ? 'var(--accent)' : 'var(--surface)',
-          border: '1px solid ' + (checked ? 'var(--accent)' : 'var(--border)'),
+          background: checked ? 'var(--accent)' : 'transparent',
+          border: '1px solid ' + (checked ? 'var(--accent)' : 'var(--neutral-500)'),
           color: 'var(--text-on-accent)',
           fontSize: 12,
           lineHeight: 1,

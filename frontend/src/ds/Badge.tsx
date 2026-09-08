@@ -2,9 +2,10 @@ import type { CSSProperties, ReactNode } from 'react'
 
 export type Tone = 'neutral' | 'accent' | 'positive' | 'warning' | 'danger' | 'info'
 
+/* Industry tags: flat tonal fill, square, no border. */
 const TONES: Record<Tone, [string, string]> = {
-  neutral: ['var(--surface-thin)', 'var(--text-muted)'],
-  accent: ['var(--accent-soft)', 'var(--accent-hover)'],
+  neutral: ['var(--neutral-100)', 'var(--neutral-800)'],
+  accent: ['var(--accent-100)', 'var(--accent-800)'],
   positive: ['var(--positive-soft)', 'var(--positive-strong)'],
   warning: ['var(--warning-soft)', 'var(--warning-strong)'],
   danger: ['var(--danger-soft)', 'var(--danger-strong)'],
@@ -22,17 +23,19 @@ export function Badge({ tone = 'neutral', dot = false, style, children, ...rest 
   const base: CSSProperties = {
     display: 'inline-flex',
     alignItems: 'center',
-    gap: 'var(--space-2)',
-    height: 22,
-    padding: '0 var(--space-3)',
-    borderRadius: 'var(--radius-pill)',
+    gap: 6,
+    height: 20,
+    padding: '0 10px',
+    borderRadius: 0,
     background: bg,
     color: fg,
-    font: 'var(--type-caption)',
+    fontSize: 11,
+    letterSpacing: '.02em',
+    lineHeight: 1,
   }
   return (
     <span style={{ ...base, ...style }} {...rest}>
-      {dot && <span aria-hidden style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />}
+      {dot && <span aria-hidden style={{ width: 6, height: 6, background: 'currentColor', flex: '0 0 auto' }} />}
       {children}
     </span>
   )
@@ -65,13 +68,13 @@ export function Tag({ selected = false, onRemove, onClick, style, children, ...r
         display: 'inline-flex',
         alignItems: 'center',
         gap: 'var(--space-2)',
-        height: 28,
-        padding: '0 var(--space-3)',
-        borderRadius: 'var(--radius-pill)',
-        background: selected ? 'var(--accent-soft)' : 'var(--surface)',
-        color: selected ? 'var(--accent-hover)' : 'var(--text)',
-        border: '1px solid ' + (selected ? 'var(--accent-border)' : 'var(--border)'),
-        font: 'var(--type-caption)',
+        height: 26,
+        padding: '0 11px',
+        borderRadius: 0,
+        background: selected ? 'var(--accent)' : 'transparent',
+        color: selected ? 'var(--text-on-accent)' : 'var(--text)',
+        border: '1px solid ' + (selected ? 'var(--accent)' : 'var(--border)'),
+        fontSize: 12,
         cursor: onClick ? 'pointer' : 'default',
         transition: 'var(--transition-control)',
         ...style,

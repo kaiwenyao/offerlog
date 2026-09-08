@@ -194,52 +194,93 @@ export function CalendarPage() {
   )
 }
 
+/**
+ * Event chip in the Industry idiom: a flat neutral body with a coloured
+ * leading rule — the same tape treatment as the home week strip.
+ */
+function EventChip({
+  event,
+  onOpen,
+  compact = false,
+}: {
+  event: CalendarEvent
+  onOpen: (id: number) => void
+  compact?: boolean
+}) {
+  const dimmed = event.cancelled || event.done
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(event.application_id)}
+      style={{
+        all: 'unset',
+        boxSizing: 'border-box',
+        cursor: 'pointer',
+        display: 'block',
+        width: '100%',
+        padding: compact ? '3px 5px' : '4px 6px',
+        background: 'var(--neutral-100)',
+        borderLeft: '2px solid ' + toneOf(event),
+        opacity: dimmed ? 0.55 : 1,
+        overflow: 'hidden',
+      }}
+    >
+      <span
+        style={{
+          display: 'block',
+          fontSize: 10,
+          letterSpacing: '.08em',
+          color: 'var(--neutral-700)',
+          fontVariantNumeric: 'tabular-nums',
+          lineHeight: 1.3,
+        }}
+      >
+        {kindLabel(event)} {evTime(event)}
+      </span>
+      <span
+        className="ellipsis"
+        style={{ display: 'block', fontSize: compact ? 11 : 12, fontWeight: 500, lineHeight: 1.3 }}
+      >
+        {event.company_name || event.title}
+      </span>
+    </button>
+  )
+}
+
 function WeekView({ days, onOpen }: { days: ReturnType<typeof weekColumns>; onOpen: (id: number) => void }) {
   return (
-    <div style={{ overflowX: 'auto', paddingBottom: 2 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,minmax(130px,1fr))', gap: 8, minWidth: 920 }}>
+    <div style={{ overflowX: 'auto' }}>
+      <div className="mesh" style={{ gridTemplateColumns: 'repeat(7,minmax(130px,1fr))', minWidth: 920 }}>
         {days.map((d) => (
           <div
             key={d.key}
             style={{
               minHeight: 340,
-              borderRadius: 12,
-              padding: 8,
-              background: d.isToday ? 'var(--accent-soft)' : 'var(--surface-thin)',
-              border: '1px solid ' + (d.isToday ? 'var(--accent-border)' : 'var(--border-alt)'),
+              padding: '9px 9px 11px',
+              background: d.isToday ? 'var(--accent-100)' : 'var(--bg)',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              <span style={{ fontSize: 11, letterSpacing: '.1em', color: 'var(--neutral-600)' }}>
                 {WEEKDAYS[weekdayIdxOf(d.key)]}
               </span>
-              <Num color={d.isToday ? 'var(--accent)' : 'var(--text)'}>{keyDayNum(d.key)}</Num>
+              <span
+                style={{
+                  fontFamily: 'var(--font-display)',
+                  fontWeight: 600,
+                  fontSize: 17,
+                  color: d.isToday ? 'var(--accent-700)' : 'var(--text)',
+                }}
+              >
+                {keyDayNum(d.key)}
+              </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
               {d.events.length === 0 && (
                 <span style={{ fontSize: 12, color: 'var(--text-muted)', opacity: 0.7 }}>—</span>
               )}
               {d.events.map((e) => (
-                <button
-                  key={`${e.kind}-${e.id}`}
-                  className="board-card"
-                  style={{ opacity: e.cancelled || e.done ? 0.55 : 1, textAlign: 'left' }}
-                  onClick={() => onOpen(e.application_id)}
-                >
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
-                    <Dot color={toneOf(e)} size={6} />
-                    <b style={{ fontSize: 11, fontWeight: 600 }}>{kindLabel(e)}</b>
-                    <span style={{ color: 'var(--text-muted)' }}>{evTime(e)}</span>
-                  </span>
-                  <span className="ellipsis" style={{ display: 'block', fontSize: 12, marginTop: 3 }}>
-                    {e.company_name || e.title}
-                  </span>
-                  {e.location && (
-                    <span className="ellipsis" style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>
-                      📍 {e.location}
-                    </span>
-                  )}
-                </button>
+                <EventChip key={`${e.kind}-${e.id}`} event={e} onOpen={onOpen} />
               ))}
             </div>
           </div>
@@ -251,58 +292,50 @@ function WeekView({ days, onOpen }: { days: ReturnType<typeof weekColumns>; onOp
 
 function MonthView({ weeks, onOpen }: { weeks: ReturnType<typeof monthGrid>; onOpen: (id: number) => void }) {
   return (
-    <Card padding={0} style={{ overflow: 'hidden' }}>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(7,1fr)',
-          background: 'var(--surface-thin)',
-          borderBottom: '1px solid var(--border-alt)',
-        }}
-      >
-        {WEEKDAYS.map((d) => (
-          <div key={d} style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-muted)' }}>
-            {d}
-          </div>
-        ))}
-      </div>
-      {weeks.map((row, wi) => (
-        <div key={wi} style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)' }}>
-          {row.map((cell, ci) => (
-            <div
-              key={`${wi}-${ci}`}
-              style={{
-                minHeight: 88,
-                borderRight: ci < 6 ? '1px solid var(--border-alt)' : 0,
-                borderBottom: wi < weeks.length - 1 ? '1px solid var(--border-alt)' : 0,
-                padding: 5,
-                background: cell.inMonth ? 'transparent' : 'var(--surface-thin)',
-                opacity: cell.inMonth ? 1 : 0.5,
-              }}
-            >
-              <div style={{ fontSize: 11, color: cell.isToday ? 'var(--accent)' : 'var(--text-muted)', fontWeight: cell.isToday ? 600 : 400 }}>
-                {keyDayNum(cell.key)}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 3 }}>
-                {cell.events.slice(0, 3).map((e) => (
-                  <button
-                    key={`${e.kind}-${e.id}`}
-                    className="board-card"
-                    onClick={() => onOpen(e.application_id)}
-                    style={{ padding: '2px 4px', fontSize: 10, textAlign: 'left', opacity: e.cancelled ? 0.5 : 1 }}
-                  >
-                    <Dot color={toneOf(e)} size={5} /> {e.company_name || e.title}
-                  </button>
-                ))}
-                {cell.events.length > 3 && (
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>+{cell.events.length - 3}</span>
-                )}
-              </div>
-            </div>
-          ))}
+    <div className="mesh" style={{ gridTemplateColumns: 'repeat(7,minmax(0,1fr))' }}>
+      {WEEKDAYS.map((d) => (
+        <div
+          key={d}
+          className="micro"
+          style={{ background: 'var(--neutral-100)', padding: '6px 9px', letterSpacing: '.14em' }}
+        >
+          {d}
         </div>
       ))}
-    </Card>
+      {weeks.flatMap((row, wi) =>
+        row.map((cell, ci) => (
+          <div
+            key={`${wi}-${ci}`}
+            style={{
+              minHeight: 104,
+              padding: '7px 8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              background: cell.inMonth ? 'var(--bg)' : 'var(--neutral-100)',
+              opacity: cell.inMonth ? 1 : 0.6,
+            }}
+          >
+            <span
+              style={{
+                fontFamily: 'var(--font-display)',
+                fontWeight: 600,
+                fontSize: 15,
+                color: cell.isToday ? 'var(--accent-700)' : 'var(--text)',
+              }}
+            >
+              {keyDayNum(cell.key)}
+            </span>
+            {cell.events.slice(0, 3).map((e) => (
+              <EventChip key={`${e.kind}-${e.id}`} event={e} onOpen={onOpen} compact />
+            ))}
+            {cell.events.length > 3 && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>+{cell.events.length - 3}</span>
+            )}
+          </div>
+        )),
+      )}
+    </div>
   )
 }
 
@@ -315,7 +348,7 @@ function AgendaView({ groups, onOpen }: { groups: Array<{ title: string; items: 
         </EmptyHint>
       )}
       {groups.map((g) => (
-        <Card key={g.title} padding={0} style={{ overflow: 'hidden' }}>
+        <Card key={g.title} padding={0}>
           <div className="panel-head">
             <PanelTitle>{g.title}</PanelTitle>
             <Num color="var(--text-muted)">{g.items.length}</Num>

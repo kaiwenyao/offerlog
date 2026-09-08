@@ -27,6 +27,26 @@ function kindTone(kind: string): string {
   }
 }
 
+/**
+ * Open (unread) notifications. Shared by the header bell and the sidebar's
+ * 通知中心 badge — one react-query entry, so both read the same cache.
+ */
+function useOpenNotifications() {
+  return useQuery({
+    queryKey: ['notifications', 'open'],
+    queryFn: () => api.get<{ items: Notification[] }>('/api/v1/notifications?open=1'),
+    staleTime: 15_000,
+    // The app runs with refetchOnWindowFocus off; poll quietly so a reminder
+    // generated server-side shows up without requiring a manual refresh.
+    refetchInterval: 60_000,
+  })
+}
+
+/** Unread count only — for the sidebar row. */
+export function useUnreadCount(): number {
+  return useOpenNotifications().data?.items.length ?? 0
+}
+
 export function NotificationsBell() {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -42,14 +62,7 @@ export function NotificationsBell() {
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
-  const q = useQuery({
-    queryKey: ['notifications', 'open'],
-    queryFn: () => api.get<{ items: Notification[] }>('/api/v1/notifications?open=1'),
-    staleTime: 15_000,
-    // The app runs with refetchOnWindowFocus off; poll quietly so a reminder
-    // generated server-side shows up without requiring a manual refresh.
-    refetchInterval: 60_000,
-  })
+  const q = useOpenNotifications()
 
   const items = q.data?.items ?? []
   const unread = items.length
@@ -75,14 +88,15 @@ export function NotificationsBell() {
         style={{
           position: 'relative',
           all: 'unset',
+          boxSizing: 'border-box',
           cursor: 'pointer',
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
-          width: 32,
-          height: 32,
-          borderRadius: 8,
-          color: 'var(--text-muted)',
+          width: 34,
+          height: 34,
+          border: '1px solid var(--border)',
+          color: 'var(--text)',
         }}
       >
         <Icon name="bell" size={17} />
@@ -91,16 +105,14 @@ export function NotificationsBell() {
             aria-hidden
             style={{
               position: 'absolute',
-              top: 2,
-              right: 0,
+              top: -5,
+              right: -5,
               minWidth: 16,
               height: 16,
-              borderRadius: 8,
-              padding: '0 4px',
-              background: 'var(--danger)',
-              color: '#fff',
+              padding: '0 3px',
+              background: 'var(--accent)',
+              color: 'var(--text-on-accent)',
               fontSize: 10,
-              fontWeight: 600,
               display: 'grid',
               placeItems: 'center',
             }}
@@ -116,7 +128,7 @@ export function NotificationsBell() {
           <Card
             variant="strong"
             padding={0}
-            style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', zIndex: 91, width: 360, maxWidth: '90vw' }}
+            style={{ position: 'absolute', right: 0, top: 'calc(100% + 10px)', zIndex: 91, width: 380, maxWidth: '90vw', boxShadow: 'var(--shadow-pop)' }}
           >
             <div className="panel-head" style={{ padding: '10px 14px' }}>
               <b style={{ fontSize: 14 }}>通知</b>
@@ -138,7 +150,7 @@ export function NotificationsBell() {
                   <div key={n.id} className="panel-row" style={{ alignItems: 'flex-start', padding: '10px 14px' }}>
                     <span
                       aria-hidden
-                      style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 5, background: kindTone(n.kind), flex: '0 0 auto' }}
+                      style={{ width: 7, height: 7, marginTop: 6, background: kindTone(n.kind), flex: '0 0 auto' }}
                     />
                     <span className="grow" style={{ minWidth: 0 }}>
                       <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>
@@ -178,7 +190,7 @@ export function NotificationsBell() {
             </div>
             <div
               style={{
-                borderTop: '1px solid var(--border-alt)',
+                borderTop: '1px solid var(--border)',
                 padding: '8px 14px',
                 display: 'flex',
                 justifyContent: 'center',

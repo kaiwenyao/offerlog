@@ -7,7 +7,7 @@ import type { AppRow, SavedView } from '../../lib/types'
 import { FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
 import { Button, Card, Input, Select, Tabs, Tag } from '../../ds'
 import { CompanyMark } from '../../components/Icon'
-import { StagePips } from '../../components/StageTrail'
+import { StageRail } from '../../components/StageTrail'
 import { Dot, EmptyHint, ErrorText, Modal, Num, PageSpinner, Spinner, StatusChip } from '../../components/ui'
 import { Drawer } from './drawer'
 import { BUILTIN, boardBuckets, buildFilters, type BoardBucket, type FilterCond, type Layout } from './views'
@@ -29,8 +29,10 @@ const LAYOUT_TABS = [
   { value: 'list', label: '列表' },
 ]
 
-/** Table geometry from the design's 阶段推进 grid, as fixed table columns. */
-const COLS = ['236px', '118px', '116px', 'auto', '92px', '88px', '104px', '56px']
+/** Table geometry from the design's 工序进度 grid, as fixed table columns. The
+ *  rail column is wide enough for the current stage's label to sit inside its
+ *  block, the way the canvas draws it. */
+const COLS = ['236px', '176px', '116px', 'auto', '92px', '88px', '104px', '56px']
 
 /** YYYY-MM-DD strictly before today (user-zone day-key compare). */
 function isDayBeforeToday(dayStr: string): boolean {
@@ -40,7 +42,7 @@ function isDayBeforeToday(dayStr: string): boolean {
 
 export function DatabasePage() {
   const { id: routeApp } = useParams()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const nav = useNavigate()
   const qc = useQueryClient()
 
@@ -56,7 +58,8 @@ export function DatabasePage() {
   const [bulkTag, setBulkTag] = useState('')
   const [bulkPriority, setBulkPriority] = useState('')
 
-  // Header search / saved views navigate here with query params.
+  // Header search / saved views / the header's ＋ 记一个岗位 button all
+  // navigate here with query params.
   useEffect(() => {
     const q = params.get('q')
     if (q !== null) setSearch(q)
@@ -64,8 +67,16 @@ export function DatabasePage() {
     if (v !== null) setViewId(Number(v))
     const l = params.get('layout') as Layout | null
     if (l) setLayout(l)
+    if (params.get('new') === '1') {
+      setShowCreate(true)
+      // Consume the flag so re-clicking the header button re-opens the dialog
+      // instead of navigating to an unchanged URL.
+      const next = new URLSearchParams(params)
+      next.delete('new')
+      setParams(next, { replace: true })
+    }
     setPage(1)
-  }, [params])
+  }, [params, setParams])
 
   const viewsQ = useQuery({ queryKey: ['views'], queryFn: () => api.get<{ items: SavedView[] }>('/api/v1/views') })
   const allViews = useMemo(() => [...BUILTIN, ...(viewsQ.data?.items ?? [])], [viewsQ.data])
@@ -381,7 +392,7 @@ function TableView({
                   </span>
                 </td>
                 <td>
-                  <StagePips status={a.status} pips={FLOW_PIPS} />
+                  <StageRail status={a.status} pips={FLOW_PIPS} />
                 </td>
                 <td>
                   <StatusChip status={a.status} />
@@ -436,27 +447,29 @@ function BoardView({
     <div className="board">
       {groups.map(({ bucket, items }) => (
         <section key={bucket.title} className="board-col" aria-label={bucket.title}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 4px' }}>
+          <div className="board-col-head">
             <Dot color={bucket.dot} />
-            <span style={{ fontSize: 13, fontWeight: 500 }}>{bucket.title}</span>
+            <span>{bucket.title}</span>
             <span style={{ marginLeft: 'auto' }}>
               <Num color="var(--text-muted)">{items.length}</Num>
             </span>
           </div>
           {items.map((a) => (
             <button key={a.id} className="board-card" onClick={() => onOpen(a.id)}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Dot color={statusMeta(a.status).dot} size={6} />
-                <span className="ellipsis" style={{ fontSize: 14, fontWeight: 500 }}>
-                  {a.company_name}
-                </span>
+              <div className="ellipsis" style={{ fontSize: 13, fontWeight: 500 }}>
+                {a.company_name}
               </div>
-              <div className="ellipsis" style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              <div className="ellipsis" style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
                 {a.position}
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
+              <div style={{ marginTop: 9 }}>
+                <StageRail status={a.status} pips={FLOW_PIPS} thin />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 9 }}>
                 <Num color="var(--text-muted)">{fmtDay(a.next_action_due_at ?? a.deadline)}</Num>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{a.channel || '—'}</span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', border: '1px solid var(--border)', padding: '0 5px' }}>
+                  {a.channel || '—'}
+                </span>
               </div>
             </button>
           ))}
@@ -481,7 +494,7 @@ function ListView({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: number) => vo
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {groups.map((g) => (
-        <Card key={g.title} padding={0} style={{ overflow: 'hidden' }}>
+        <Card key={g.title} padding={0}>
           <div className="panel-head">
             <Dot color={g.dot} />
             <span style={{ fontSize: 14, fontWeight: 500 }}>{g.title}</span>
