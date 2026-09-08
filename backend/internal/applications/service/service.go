@@ -113,8 +113,24 @@ func normalizeCreate(in *CreateInput) error {
 	return nil
 }
 
+// insertAppliedEvent records 投递 as a first-class timeline row at the time the
+// user actually submitted, rather than leaving it to live only in the
+// applications.submitted_at column. Without it the 阶段轨迹 (which patches the
+// applied day in from the snapshot) and the 时间线 (which has no such patch)
+// disagree, and the user sees a write-clock timestamp where they typed a date.
+func (s *Service) insertAppliedEvent(ctx context.Context, tx pgx.Tx, appID, ownerID int64, from string, at time.Time) error {
+	return s.repo.InsertEvent(ctx, tx, &repository.Event{
+		ApplicationID: appID, OwnerID: ownerID, EventType: "status_change",
+		FromStatus: ptrString(from), ToStatus: ptrString(domain.StatusApplied),
+		OccurredAt: at, ActorID: &ownerID,
+	})
+}
+
 // Create creates an application together with its initial event.
 func (s *Service) Create(ctx context.Context, ownerID int64, in *CreateInput) (*repository.Row, error) {
+	// Captured BEFORE normalizeCreate defaults it to saved_at: only a time the
+	// user actually typed earns its own 投递 event.
+	userSubmitted := in.SubmittedAt
 	if err := normalizeCreate(in); err != nil {
 		return nil, err
 	}
@@ -152,18 +168,24 @@ func (s *Service) Create(ctx context.Context, ownerID int64, in *CreateInput) (*
 		row.ID = id
 		out = row
 
-		// The created event's business time is the user-supplied time (投递/保存
-		// 时间), not the DB write clock — a backfilled "昨天投递" entry must show
-		// 昨天 everywhere the trail renders dates.
-		occ := *in.SavedAt
-		if in.SubmittedAt != nil {
-			occ = *in.SubmittedAt
-		}
+		// 建档 means "I started tracking this", so its business time is the
+		// creation instant. It used to borrow submitted_at, which made the row
+		// claim the user created the record on the day they had applied.
 		ev := &repository.Event{
 			ApplicationID: id, OwnerID: ownerID, EventType: "created",
-			FromStatus: nil, ToStatus: &row.Status, OccurredAt: occ,
+			FromStatus: nil, ToStatus: &row.Status, OccurredAt: *in.SavedAt,
 		}
-		return s.repo.InsertEvent(ctx, tx, ev)
+		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
+			return err
+		}
+		// Created straight into 已投递 with a real 投递时间: that submission is a
+		// separate business fact and gets its own row. Restricted to exactly
+		// applied so the event replay (which walks to_status by sequence) still
+		// lands on the status the record was created with.
+		if userSubmitted != nil && row.Status == domain.StatusApplied {
+			return s.insertAppliedEvent(ctx, tx, id, ownerID, domain.StatusSaved, *userSubmitted)
+		}
+		return nil
 	})
 	return out, err
 }
@@ -312,6 +334,12 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 			// 发生在昨天）。推进到后续阶段时发生时间留空仍默认现在。
 			occ = *in.SubmittedAt
 		}
+		// Skip-ahead (待投递 → 笔试作业) supplies 投递时间 for a stage that is not
+		// itself the submission. That time used to vanish into the snapshot
+		// column while the event took the write clock, so the trail said 前天 and
+		// the timeline said 今天. Give the submission its own row instead.
+		backfillApplied := in.SubmittedAt != nil && row.SubmittedAt == nil &&
+			in.ToStatus != domain.StatusApplied && !domain.IsPreparing(in.ToStatus)
 		hadOffer, err := s.repo.HadOffer(ctx, tx, id)
 		if err != nil {
 			return err
@@ -381,9 +409,18 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 		if err := s.repo.SetStatus(ctx, tx, &newRow); err != nil {
 			return err
 		}
+		// The synthesized 投递 row goes first so the sequence replay walks
+		// from → applied → to_status; every hop is a legal edge.
+		from := row.Status
+		if backfillApplied {
+			if err := s.insertAppliedEvent(ctx, tx, id, ownerID, from, *in.SubmittedAt); err != nil {
+				return err
+			}
+			from = domain.StatusApplied
+		}
 		ev := &repository.Event{
 			ApplicationID: id, OwnerID: ownerID, EventType: "status_change",
-			FromStatus: ptrString(row.Status), ToStatus: ptrString(in.ToStatus),
+			FromStatus: ptrString(from), ToStatus: ptrString(in.ToStatus),
 			Note: in.Note, Reason: in.Reason, OccurredAt: occ, ActorID: &ownerID,
 		}
 		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
@@ -425,6 +462,13 @@ func (s *Service) Correct(ctx context.Context, ownerID, appID int64, in *Correct
 		if err != nil {
 			return ErrNotFound
 		}
+		// A correction exists to repair a wrong time, so the user's occurred_at
+		// is the whole point — it used to be discarded for time.Now(), which
+		// left a mistyped timestamp unfixable through the product.
+		corrAt := in.OccurredAt
+		if corrAt.IsZero() {
+			corrAt = orig.OccurredAt
+		}
 		// Preview timeline with correction applied: substitute the original
 		// event's target state for the requested one at its occurrence time.
 		// Replay in sequence order — a backfilled event carries an earlier
@@ -455,7 +499,7 @@ func (s *Service) Correct(ctx context.Context, ownerID, appID int64, in *Correct
 			}
 			if current != "" && current != st {
 				if err := domain.ValidateTransition(domain.Transition{
-					FromStatus: current, ToStatus: st, OccurredAt: time.Now(), Now: time.Now(),
+					FromStatus: current, ToStatus: st, OccurredAt: corrAt, Now: time.Now(),
 					WasSubmitted: true, HadOffer: true, Reason: in.Reason,
 				}); err != nil {
 					return &domain.ValidationError{Code: "correction_invalid", Message: "纠正后的时间线不合法: " + err.Error()}
@@ -467,7 +511,7 @@ func (s *Service) Correct(ctx context.Context, ownerID, appID int64, in *Correct
 		ev := &repository.Event{
 			ApplicationID: appID, OwnerID: ownerID, EventType: "correction",
 			FromStatus: ptrString(*orig.ToStatus), ToStatus: ptrString(in.NewStatus),
-			Reason: in.Reason, OccurredAt: time.Now(), CorrectsEventID: &orig.ID, ActorID: &ownerID,
+			Reason: in.Reason, OccurredAt: corrAt, CorrectsEventID: &orig.ID, ActorID: &ownerID,
 		}
 		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
 			return err

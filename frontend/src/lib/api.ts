@@ -365,6 +365,23 @@ export function fmtDateTime(s: string | null | undefined, zone?: string): string
   })
 }
 
+/**
+ * 今天 / 昨天 / 前天 (and 明天 / 后天) for a timestamp, or null when it is far
+ * enough away that an absolute date reads better. Compares CALENDAR days in the
+ * user's zone — a raw ms division would call 23:00 昨天 and 01:00 今天 the same
+ * distance apart. Used to make a business timestamp legible at a glance: the
+ * user typed 前天, so the timeline should say 前天.
+ */
+export function relativeDayLabel(iso: string | null | undefined, zone?: string, now: Date = new Date()): string | null {
+  const z = zone ?? effectiveZone()
+  const target = toDayString(iso, z)
+  const today = toDayString(now.toISOString(), z)
+  if (!target || !today) return null
+  const diff = Math.round((Date.parse(today + 'T00:00:00Z') - Date.parse(target + 'T00:00:00Z')) / 86400000)
+  const labels: Record<number, string> = { 0: '今天', 1: '昨天', 2: '前天', [-1]: '明天', [-2]: '后天' }
+  return labels[diff] ?? null
+}
+
 export function daysBetween(fromIso: string | null | undefined, to: Date = new Date()): number | null {
   if (!fromIso) return null
   const from = new Date(fromIso)

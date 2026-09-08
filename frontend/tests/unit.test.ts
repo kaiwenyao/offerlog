@@ -17,6 +17,7 @@ import {
   fmtDate,
   fmtDateTime,
   daysBetween,
+  relativeDayLabel,
   dayToInstant,
   localDateTimeToInstant,
   toDayString,
@@ -161,6 +162,29 @@ describe('formatting helpers', () => {
     const past = new Date(Date.now() - 3 * 86400000).toISOString()
     expect(daysBetween(past)).toBe(3)
     expect(daysBetween(null)).toBeNull()
+  })
+})
+
+describe('relative day labels (timeline right-hand time)', () => {
+  const now = new Date('2026-09-08T12:00:00Z')
+  it('names the last two days the way the user described them', () => {
+    expect(relativeDayLabel('2026-09-08T09:00:00Z', 'UTC', now)).toBe('今天')
+    expect(relativeDayLabel('2026-09-07T23:30:00Z', 'UTC', now)).toBe('昨天')
+    expect(relativeDayLabel('2026-09-06T18:31:00Z', 'UTC', now)).toBe('前天')
+  })
+  it('handles future business times (a scheduled round)', () => {
+    expect(relativeDayLabel('2026-09-09T08:00:00Z', 'UTC', now)).toBe('明天')
+    expect(relativeDayLabel('2026-09-10T08:00:00Z', 'UTC', now)).toBe('后天')
+  })
+  it('falls back to no label once the absolute date reads better', () => {
+    expect(relativeDayLabel('2026-09-01T08:00:00Z', 'UTC', now)).toBeNull()
+    expect(relativeDayLabel(null, 'UTC', now)).toBeNull()
+  })
+  it('compares calendar days in the user zone, not raw elapsed ms', () => {
+    // 23:00 UTC on the 7th is 00:00 on the 8th in Shanghai → 今天 there,
+    // 昨天 in UTC. A ms-based diff would call both the same.
+    expect(relativeDayLabel('2026-09-07T23:00:00Z', 'UTC', now)).toBe('昨天')
+    expect(relativeDayLabel('2026-09-07T23:00:00Z', 'Asia/Shanghai', now)).toBe('今天')
   })
 })
 

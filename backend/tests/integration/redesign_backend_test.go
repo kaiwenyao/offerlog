@@ -18,6 +18,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,14 +201,25 @@ func TestStageHistoryUsesUserEnteredTimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	// 建档事件记的是「我今天开始追踪」，投递另有一条事件记「前天投出」——
+	// 两件事两条时间，不再让建档行冒充投递日。
 	var occ time.Time
 	if err := db.Pool().QueryRow(ctx,
 		`SELECT occurred_at FROM application_events WHERE application_id=$1 AND event_type='created'`, created.ID).
 		Scan(&occ); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := occ.UTC().Format("2006-01-02"), yesterday.Format("2006-01-02"); got != want {
-		t.Errorf("created event occurred_at = %s, want the backfilled day %s", got, want)
+	if got, want := occ.UTC().Format("2006-01-02"), today.Format("2006-01-02"); got != want {
+		t.Errorf("created event occurred_at = %s, want the real creation day %s", got, want)
+	}
+	var appliedOcc time.Time
+	if err := db.Pool().QueryRow(ctx,
+		`SELECT occurred_at FROM application_events WHERE application_id=$1 AND event_type='status_change' AND to_status=$2`,
+		created.ID, domain.StatusApplied).Scan(&appliedOcc); err != nil {
+		t.Fatalf("create with a backfilled submitted_at must also write an applied event: %v", err)
+	}
+	if got, want := appliedOcc.UTC().Format("2006-01-02"), yesterday.Format("2006-01-02"); got != want {
+		t.Errorf("applied event occurred_at = %s, want the backfilled day %s", got, want)
 	}
 
 	// (b) create as 待投递 today, move to 已投递 with only 实际投递时间.
@@ -531,5 +543,172 @@ func TestUploadFileToInterviewRoundAndCleanup(t *testing.T) {
 	arr2 := m[propKey].([]any)
 	if len(arr2) != 1 || arr2[0] != "keep2" {
 		t.Fatalf("custom_values after linked delete = %v, want only keep2", m[propKey])
+	}
+}
+
+// 时间线右侧显示的是事件的 occurred_at。这些用例锁住「occurred_at 永远是用户
+// 写的业务时间」这条不变量 —— 用户报的 bug 是建档行冒充投递日、跳阶时投递时间
+// 只进快照列而事件被盖上写库时刻。
+func TestTimelineCarriesUserEnteredBusinessTime(t *testing.T) {
+	ctx := context.Background()
+	db, svc, _, owner := setup(t)
+	today := time.Now().UTC()
+	twoDaysAgo := today.AddDate(0, 0, -2)
+
+	type row struct {
+		kind     string
+		to       string
+		occurred time.Time
+	}
+	timeline := func(appID int64) []row {
+		t.Helper()
+		rs, err := db.Pool().Query(ctx, `SELECT event_type, COALESCE(to_status,''), occurred_at
+			FROM application_events WHERE application_id=$1 ORDER BY sequence`, appID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rs.Close()
+		var out []row
+		for rs.Next() {
+			var r row
+			if err := rs.Scan(&r.kind, &r.to, &r.occurred); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, r)
+		}
+		return out
+	}
+	day := func(ts time.Time) string { return ts.UTC().Format("2006-01-02") }
+
+	t.Run("skip-ahead with only 投递时间 materializes an applied event at that time", func(t *testing.T) {
+		app := mustCreate(t, svc, owner, "SkipTimeline", "Role")
+		// 待投递 →（只填了前天的投递时间）→ 笔试作业
+		if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+			ToStatus: domain.StatusAssessment, Version: 1, SubmittedAt: &twoDaysAgo,
+		}); err != nil {
+			t.Fatalf("transition: %v", err)
+		}
+		got := timeline(app.ID)
+		if len(got) != 3 {
+			t.Fatalf("want created + applied + assessment, got %d events: %+v", len(got), got)
+		}
+		if got[1].to != domain.StatusApplied || day(got[1].occurred) != day(twoDaysAgo) {
+			t.Errorf("applied event = %+v, want applied on %s", got[1], day(twoDaysAgo))
+		}
+		if got[2].to != domain.StatusAssessment || day(got[2].occurred) != day(today) {
+			t.Errorf("assessment event = %+v, want assessment on %s", got[2], day(today))
+		}
+	})
+
+	t.Run("an explicit 发生时间 wins over the write clock", func(t *testing.T) {
+		app := mustCreate(t, svc, owner, "OccurredWins", "Role")
+		yesterday := today.AddDate(0, 0, -1)
+		if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+			ToStatus: domain.StatusAssessment, Version: 1,
+			SubmittedAt: &twoDaysAgo, OccurredAt: &yesterday,
+		}); err != nil {
+			t.Fatalf("transition: %v", err)
+		}
+		got := timeline(app.ID)
+		last := got[len(got)-1]
+		if day(last.occurred) != day(yesterday) {
+			t.Errorf("assessment occurred_at = %s, want the user-entered %s", day(last.occurred), day(yesterday))
+		}
+	})
+
+	t.Run("the newest event is correctable — that is the one users mistype", func(t *testing.T) {
+		app := mustCreate(t, svc, owner, "CorrectLatest", "Role")
+		if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+			ToStatus: domain.StatusAssessment, Version: 1, SubmittedAt: &twoDaysAgo,
+		}); err != nil {
+			t.Fatalf("transition: %v", err)
+		}
+		var latest int64
+		if err := db.Pool().QueryRow(ctx, `SELECT id FROM application_events
+			WHERE application_id=$1 AND event_type='status_change' ORDER BY sequence DESC LIMIT 1`, app.ID).
+			Scan(&latest); err != nil {
+			t.Fatal(err)
+		}
+		// Same status, corrected time only — the common "I typed the wrong day" repair.
+		if err := svc.Correct(ctx, owner, app.ID, &appservice.CorrectionInput{
+			EventID: latest, NewStatus: domain.StatusAssessment, OccurredAt: twoDaysAgo, Reason: "时间填错了",
+		}); err != nil {
+			t.Fatalf("correcting the newest event must be allowed: %v", err)
+		}
+		got, err := svc.Get(ctx, owner, app.ID, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != domain.StatusAssessment {
+			t.Errorf("status after a time-only correction = %s, want unchanged assessment", got.Status)
+		}
+	})
+
+	t.Run("corrections honor the submitted occurred_at", func(t *testing.T) {
+		app := mustCreate(t, svc, owner, "CorrectTime", "Role")
+		if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+			ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: &today,
+		}); err != nil {
+			t.Fatalf("transition: %v", err)
+		}
+		evs := timeline(app.ID)
+		target := evs[len(evs)-1]
+		_ = target
+		var eventID int64
+		if err := db.Pool().QueryRow(ctx, `SELECT id FROM application_events
+			WHERE application_id=$1 AND event_type='status_change' ORDER BY sequence DESC LIMIT 1`, app.ID).
+			Scan(&eventID); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Correct(ctx, owner, app.ID, &appservice.CorrectionInput{
+			EventID: eventID, NewStatus: domain.StatusApplied, OccurredAt: twoDaysAgo, Reason: "时间填错了",
+		}); err != nil {
+			t.Fatalf("correct: %v", err)
+		}
+		var corrOcc time.Time
+		if err := db.Pool().QueryRow(ctx, `SELECT occurred_at FROM application_events
+			WHERE application_id=$1 AND event_type='correction'`, app.ID).Scan(&corrOcc); err != nil {
+			t.Fatal(err)
+		}
+		if day(corrOcc) != day(twoDaysAgo) {
+			t.Errorf("correction occurred_at = %s, want the user-entered %s — a wrong timestamp must be repairable",
+				day(corrOcc), day(twoDaysAgo))
+		}
+	})
+}
+
+// The idempotency marker is an internal storage detail; it must never reach a
+// client (it used to render inside the user's own note text).
+func TestEventNotesDoNotLeakIdempotencyMarker(t *testing.T) {
+	ctx := context.Background()
+	db, svc, _, owner := setup(t)
+	app := mustCreate(t, svc, owner, "NoteLeak", "Role")
+	now := time.Now().UTC()
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: &now,
+		Note: "内推直接进面", IdempotencyKey: "ui-12345",
+	}); err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+
+	srv := newRedesignServer(t, db, owner, "UTC")
+	defer srv.Close()
+	res, err := http.Get(fmt.Sprintf("%s/api/v1/applications/%d/events", srv.URL, app.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Items []struct {
+			Note string `json:"note"`
+		} `json:"items"`
+	}
+	decode(t, res, &out)
+	for _, it := range out.Items {
+		if strings.Contains(it.Note, "|idem:") {
+			t.Errorf("note leaked the idempotency marker: %q", it.Note)
+		}
+		if it.Note != "" && it.Note != "内推直接进面" {
+			t.Errorf("note = %q, want the user's text verbatim", it.Note)
+		}
 	}
 }
