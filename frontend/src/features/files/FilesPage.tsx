@@ -65,7 +65,7 @@ export function FilesPage() {
           </Tag>
         ))}
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: 'var(--text-muted)' }}>
-          <span className="meter" style={{ width: 120, flex: '0 0 auto' }}>
+          <span className="meter slim" style={{ width: 120, flex: '0 0 auto' }}>
             <span style={{ width: `${Math.min(100, (used / QUOTA_BYTES) * 100)}%`, background: 'var(--accent)' }} />
           </span>
           已用 <Num color="var(--text)">{fmtBytes(used)}</Num> / 5 GB
@@ -102,55 +102,57 @@ export function FilesPage() {
           <p style={{ margin: 0, fontSize: 13 }}>从岗位详情或这里上传简历等文件。</p>
         </EmptyHint>
       ) : (
-        <Card padding={0} style={{ overflow: 'auto' }}>
-          <table className="tbl" style={{ minWidth: 780 }}>
-            <thead>
-              <tr>
-                <th>文件</th>
-                <th style={{ width: 96 }}>类别</th>
-                <th style={{ width: 92 }}>大小</th>
-                <th style={{ width: 180 }}>关联岗位</th>
-                <th style={{ width: 108 }}>上传时间</th>
-                <th style={{ width: 130 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((f) => (
-                <tr key={f.id}>
-                  <td>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
-                      <FileTile name={f.name} />
-                      <span className="ellipsis" style={{ fontSize: 14 }}>
-                        {f.name}
-                      </span>
-                    </span>
-                  </td>
-                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{categoryLabel(f.category)}</td>
-                  <td>
-                    <Num>{fmtBytes(f.size_bytes)}</Num>
-                  </td>
-                  <td className="ellipsis" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    {f.application_id ? `#${f.application_id}` : '—'}
-                  </td>
-                  <td>
-                    <Num color="var(--text-muted)">{fmtDate(f.created_at)}</Num>
-                  </td>
-                  <td>
-                    <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      {f.status === 'ready' && (
-                        <LinkButton variant="ghost" size="sm" href={`/api/v1/files/${f.id}/download`} download>
-                          下载
-                        </LinkButton>
-                      )}
-                      <Button variant="ghost" size="sm" disabled={del.isPending} onClick={() => del.mutate(f.id)}>
-                        删除
-                      </Button>
-                    </span>
-                  </td>
+        <Card padding={0}>
+          <div className="tbl-scroll">
+            <table className="tbl" style={{ minWidth: 780 }}>
+              <thead>
+                <tr>
+                  <th>文件</th>
+                  <th style={{ width: 96 }}>类别</th>
+                  <th style={{ width: 92 }}>大小</th>
+                  <th style={{ width: 180 }}>关联岗位</th>
+                  <th style={{ width: 108 }}>上传时间</th>
+                  <th style={{ width: 130 }} />
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {shown.map((f) => (
+                  <tr key={f.id}>
+                    <td>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+                        <FileTile name={f.name} />
+                        <span className="ellipsis" style={{ fontSize: 14 }}>
+                          {f.name}
+                        </span>
+                      </span>
+                    </td>
+                    <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{categoryLabel(f.category)}</td>
+                    <td>
+                      <Num>{fmtBytes(f.size_bytes)}</Num>
+                    </td>
+                    <td className="ellipsis" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {f.application_id ? `#${f.application_id}` : '—'}
+                    </td>
+                    <td>
+                      <Num color="var(--text-muted)">{fmtDate(f.created_at)}</Num>
+                    </td>
+                    <td>
+                      <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                        {f.status === 'ready' && (
+                          <LinkButton variant="ghost" size="sm" href={`/api/v1/files/${f.id}/download`} download>
+                            下载
+                          </LinkButton>
+                        )}
+                        <Button variant="ghost" size="sm" disabled={del.isPending} onClick={() => del.mutate(f.id)}>
+                          删除
+                        </Button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                </tbody>
+              </table>
+          </div>
         </Card>
       )}
     </section>

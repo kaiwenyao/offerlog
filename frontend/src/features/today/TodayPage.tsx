@@ -9,7 +9,8 @@ import { Dot, EmptyHint, ErrorText, Num, PageSpinner, StatusChip } from '../../c
 import { effectiveZone } from '../../lib/tz'
 import { buildWeek, CHIP_TONES, groupActions, type TodoItem } from './week'
 
-const PANEL: React.CSSProperties = { padding: 0, overflow: 'hidden' }
+/** Panels are edge-to-edge frames; the corner marks must not be clipped. */
+const PANEL: React.CSSProperties = { padding: 0 }
 
 /**
  * Today dashboard backed by /api/v1/home/summary (server-side full-data
@@ -95,7 +96,7 @@ export function TodayPage() {
   }
 
   return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {toast && <ErrorText>{toast}</ErrorText>}
 
       <WeekStrip week={week} totals={weekTotals} />
@@ -123,29 +124,56 @@ export function TodayPage() {
       )}
 
       <div className="split-grid">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {groups.map((g) => (
-            <Card key={g.title} style={PANEL}>
-              <div className="panel-head">
-                <Dot color={g.dot} />
-                <PanelTitle>{g.title}</PanelTitle>
-                <Num color="var(--text-muted)">{g.items.length}</Num>
+        {groups.length > 0 && (
+          <Card style={PANEL}>
+            <div className="panel-head">
+              <PanelTitle>行动清单</PanelTitle>
+              <span
+                style={{
+                  fontSize: 11,
+                  border: '1px solid var(--border)',
+                  padding: '1px 7px',
+                  color: 'var(--neutral-700)',
+                }}
+              >
+                {summary.todos.open} 项待处理
+              </span>
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>
+                完成后自动推进对应岗位
+              </span>
+            </div>
+            {groups.map((g) => (
+              <div key={g.title}>
+                <div className="panel-subhead">
+                  <Dot color={g.dot} />
+                  <span>{g.title}</span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--text-muted)',
+                      fontFamily: 'var(--font-body)',
+                      fontWeight: 400,
+                    }}
+                  >
+                    {g.items.length} 项
+                  </span>
+                </div>
+                {g.items.map((t) => (
+                  <TodoRow
+                    key={t.id}
+                    item={t}
+                    busy={doneMut.isPending || postponeMut.isPending}
+                    onOpen={() => t.application_id && nav(`/apps/${t.application_id}`)}
+                    onDone={() => doneMut.mutate({ id: t.id, actionId: t.action_id ?? null })}
+                    onPostpone={() => t.action_id != null && postponeMut.mutate(t.action_id)}
+                  />
+                ))}
               </div>
-              {g.items.map((t) => (
-                <TodoRow
-                  key={t.id}
-                  item={t}
-                  busy={doneMut.isPending || postponeMut.isPending}
-                  onOpen={() => t.application_id && nav(`/apps/${t.application_id}`)}
-                  onDone={() => doneMut.mutate({ id: t.id, actionId: t.action_id ?? null })}
-                  onPostpone={() => t.action_id != null && postponeMut.mutate(t.action_id)}
-                />
-              ))}
-            </Card>
-          ))}
-        </div>
+            ))}
+          </Card>
+        )}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           <UpcomingInterviews
             upcoming={summary.upcoming}
             loading={summaryQ.isLoading}
@@ -172,13 +200,15 @@ function Kpi({
   deltaColor?: string
 }) {
   return (
-    <Card padding="14px 16px">
-      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{label}</div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 4 }}>
-        <span style={{ font: 'var(--type-h3)', letterSpacing: 'var(--tracking-display)' }}>{value}</span>
+    <div style={{ padding: '15px 16px' }}>
+      <div className="micro">{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6 }}>
+        <span style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 40, lineHeight: 1 }}>
+          {value}
+        </span>
       </div>
-      <div style={{ fontSize: 12, color: deltaColor, marginTop: 4 }}>{delta}</div>
-    </Card>
+      <div style={{ fontSize: 12, color: deltaColor, marginTop: 6 }}>{delta}</div>
+    </div>
   )
 }
 
@@ -190,53 +220,68 @@ function WeekStrip({
   totals: { submitted: number; interviews: number; replied: number; overdue: number }
 }) {
   return (
-    <Card padding="16px">
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
-        <span style={{ font: 'var(--type-ui)', fontSize: 17, fontFamily: 'var(--font-display)', letterSpacing: 'var(--tracking-display)' }}>
-          本周进展
-        </span>
-        <span style={{ marginLeft: 'auto', fontSize: 13, color: 'var(--text-muted)' }}>
+    <section>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+        <h4 style={{ font: 'var(--type-h4)', margin: 0 }}>本周工序</h4>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>
           投递 <Num color="var(--text)">{totals.submitted}</Num> · 面试 <Num color="var(--text)">{totals.interviews}</Num> ·
           回复 <Num color="var(--text)">{totals.replied}</Num> · 逾期{' '}
           <Num color={totals.overdue > 0 ? 'var(--danger)' : 'var(--text)'}>{totals.overdue}</Num>
         </span>
       </div>
-      <div style={{ overflowX: 'auto', overflowY: 'hidden', paddingBottom: 2 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,minmax(100px,1fr))', gap: 8, minWidth: 756 }}>
+      <div style={{ overflowX: 'auto', overflowY: 'hidden' }}>
+        <div className="mesh" style={{ gridTemplateColumns: 'repeat(7,minmax(104px,1fr))', minWidth: 756 }}>
           {week.map((d) => (
             <div
               key={d.weekday}
               style={{
-                minHeight: 112,
-                padding: 8,
-                borderRadius: 12,
-                background: d.isToday ? 'var(--accent-soft)' : 'var(--surface-thin)',
-                border: '1px solid ' + (d.isToday ? 'var(--accent-border)' : 'var(--border-alt)'),
+                minHeight: 132,
+                padding: '9px 9px 11px',
+                background: d.isToday ? 'var(--accent-100)' : 'var(--bg)',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 6,
               }}
             >
               <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d.weekday}</span>
-                <Num color={d.isToday ? 'var(--accent)' : 'var(--text)'}>{d.dayNum}</Num>
+                <span style={{ fontSize: 11, letterSpacing: '.1em', color: 'var(--neutral-600)' }}>{d.weekday}</span>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-display)',
+                    fontWeight: 600,
+                    fontSize: 17,
+                    color: d.isToday ? 'var(--accent-700)' : 'var(--text)',
+                  }}
+                >
+                  {d.dayNum}
+                </span>
               </div>
               {d.items.slice(0, 3).map((e, i) => (
                 <div
                   key={i}
                   style={{
                     padding: '4px 6px',
-                    borderRadius: 8,
                     background: CHIP_TONES[e.tone].bg,
                     color: CHIP_TONES[e.tone].fg,
+                    borderLeft: '2px solid ' + CHIP_TONES[e.tone].bar,
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                   }}
                 >
-                  <span style={{ display: 'block', fontSize: 11, opacity: 0.85, lineHeight: 1.25 }}>{e.kind}</span>
+                  <span
+                    style={{
+                      display: 'block',
+                      fontSize: 10,
+                      letterSpacing: '.08em',
+                      color: 'var(--neutral-600)',
+                      lineHeight: 1.3,
+                    }}
+                  >
+                    {e.kind}
+                  </span>
                   <span
                     className="ellipsis"
-                    style={{ display: 'block', fontSize: 12, fontWeight: 500, lineHeight: 1.25 }}
+                    style={{ display: 'block', fontSize: 12, fontWeight: 500, lineHeight: 1.3 }}
                   >
                     {e.who}
                   </span>
@@ -249,7 +294,7 @@ function WeekStrip({
           ))}
         </div>
       </div>
-    </Card>
+    </section>
   )
 }
 
@@ -342,19 +387,25 @@ function UpcomingInterviews({
             <button key={i.id} className="panel-row" onClick={() => onOpen(i.application_id)}>
               <span
                 style={{
-                  width: 44,
+                  width: 42,
                   textAlign: 'center',
-                  padding: '4px 0',
-                  borderRadius: 10,
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border-alt)',
+                  padding: '3px 0',
+                  border: '1px solid var(--border)',
                   flex: '0 0 auto',
                 }}
               >
-                <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>
+                <span
+                  style={{
+                    display: 'block',
+                    fontFamily: 'var(--font-display)',
+                    fontWeight: 600,
+                    fontSize: 17,
+                    lineHeight: 1.1,
+                  }}
+                >
                   {String(Number(dayNum)).padStart(2, '0')}
                 </span>
-                <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>{Number(monthNum)} 月</span>
+                <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)' }}>{Number(monthNum)} 月</span>
               </span>
               <span className="grow">
                 <span className="ellipsis" style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>

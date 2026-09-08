@@ -3,14 +3,15 @@ import { useState, type CSSProperties, type ReactNode } from 'react'
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger'
 export type ControlSize = 'sm' | 'md' | 'lg'
 
+/** Industry controls: square, hairline-bordered, condensed label, no shadow. */
 const BASE: CSSProperties = {
   font: 'var(--type-ui)',
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  gap: 'var(--space-2)',
-  border: '1px solid transparent',
-  borderRadius: 'var(--radius-control)',
+  gap: 6,
+  border: '1px solid var(--border)',
+  borderRadius: 0,
   cursor: 'pointer',
   transition: 'var(--transition-control)',
   whiteSpace: 'nowrap',
@@ -18,9 +19,47 @@ const BASE: CSSProperties = {
 }
 
 const SIZES: Record<ControlSize, CSSProperties> = {
-  sm: { height: 'var(--control-h-sm)', padding: '0 var(--space-3)', fontSize: 'var(--text-13)' },
-  md: { height: 'var(--control-h-md)', padding: '0 var(--space-5)', fontSize: 'var(--text-15)' },
-  lg: { height: 'var(--control-h-lg)', padding: '0 var(--space-6)', fontSize: 'var(--text-17)' },
+  sm: { height: 'var(--control-h-sm)', padding: '0 var(--space-3)', fontSize: 12 },
+  md: { height: 'var(--control-h-md)', padding: '0 var(--space-4)', fontSize: 14 },
+  lg: { height: 'var(--control-h-lg)', padding: '0 var(--space-5)', fontSize: 15 },
+}
+
+/** Fill/edge pairs for each variant, resolved against hover + press state. */
+function skin(variant: ButtonVariant, hover: boolean, press: boolean): CSSProperties {
+  switch (variant) {
+    case 'primary':
+      return {
+        background: press ? 'var(--accent-700)' : hover ? 'var(--accent-600)' : 'var(--accent)',
+        borderColor: press ? 'var(--accent-700)' : hover ? 'var(--accent-600)' : 'var(--accent)',
+        color: 'var(--text-on-accent)',
+      }
+    case 'secondary':
+      return {
+        background: press
+          ? 'color-mix(in srgb, var(--text) 14%, transparent)'
+          : hover
+            ? 'color-mix(in srgb, var(--text) 7%, transparent)'
+            : 'transparent',
+        borderColor: 'var(--border)',
+        color: 'var(--text)',
+      }
+    case 'ghost':
+      return {
+        background: press
+          ? 'color-mix(in srgb, var(--accent) 18%, transparent)'
+          : hover
+            ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
+            : 'transparent',
+        borderColor: 'transparent',
+        color: 'var(--accent-700)',
+      }
+    case 'danger':
+      return {
+        background: hover ? 'var(--danger-hover)' : 'var(--danger)',
+        borderColor: hover ? 'var(--danger-hover)' : 'var(--danger)',
+        color: 'var(--text-on-accent)',
+      }
+  }
 }
 
 export interface ButtonProps
@@ -48,29 +87,6 @@ export function Button({
   const [hover, setHover] = useState(false)
   const [press, setPress] = useState(false)
 
-  const variants: Record<ButtonVariant, CSSProperties> = {
-    primary: {
-      background: hover ? 'var(--accent-hover)' : 'var(--accent)',
-      color: 'var(--text-on-accent)',
-      boxShadow: press ? 'none' : 'var(--shadow-card)',
-    },
-    secondary: {
-      background: hover ? 'var(--surface-hover)' : 'var(--surface)',
-      color: 'var(--text)',
-      borderColor: 'var(--border)',
-      boxShadow: 'var(--shadow-card)',
-    },
-    ghost: {
-      background: hover ? 'var(--surface-thin)' : 'transparent',
-      color: 'var(--text-muted)',
-    },
-    danger: {
-      background: hover ? 'var(--danger-hover)' : 'var(--danger)',
-      color: 'var(--text-on-accent)',
-      boxShadow: press ? 'none' : 'var(--shadow-card)',
-    },
-  }
-
   return (
     <button
       type={type}
@@ -85,11 +101,10 @@ export function Button({
       style={{
         ...BASE,
         ...SIZES[size],
-        ...variants[variant],
+        ...skin(variant, hover, press),
         width: fullWidth ? '100%' : undefined,
         opacity: disabled ? 0.45 : 1,
         pointerEvents: disabled ? 'none' : undefined,
-        transform: press ? 'scale(.98)' : 'none',
         ...style,
       }}
       {...rest}
@@ -122,21 +137,6 @@ export function LinkButton({
   ...rest
 }: LinkButtonProps) {
   const [hover, setHover] = useState(false)
-  const variants: Record<ButtonVariant, CSSProperties> = {
-    primary: {
-      background: hover ? 'var(--accent-hover)' : 'var(--accent)',
-      color: 'var(--text-on-accent)',
-      boxShadow: 'var(--shadow-card)',
-    },
-    secondary: {
-      background: hover ? 'var(--surface-hover)' : 'var(--surface)',
-      color: 'var(--text)',
-      borderColor: 'var(--border)',
-      boxShadow: 'var(--shadow-card)',
-    },
-    ghost: { background: hover ? 'var(--surface-thin)' : 'transparent', color: 'var(--text-muted)' },
-    danger: { background: hover ? 'var(--danger-hover)' : 'var(--danger)', color: 'var(--text-on-accent)' },
-  }
   return (
     <a
       onMouseEnter={() => setHover(true)}
@@ -144,7 +144,7 @@ export function LinkButton({
       style={{
         ...BASE,
         ...SIZES[size],
-        ...variants[variant],
+        ...skin(variant, hover, false),
         width: fullWidth ? '100%' : undefined,
         ...style,
       }}
@@ -157,7 +157,7 @@ export function LinkButton({
   )
 }
 
-const ICON_DIM: Record<ControlSize, number> = { sm: 32, md: 40, lg: 48 }
+const ICON_DIM: Record<ControlSize, number> = { sm: 28, md: 34, lg: 40 }
 
 export interface IconButtonProps extends Omit<ButtonProps, 'iconLeft' | 'iconRight'> {
   label: string
@@ -170,7 +170,7 @@ export function IconButton({ variant = 'secondary', size = 'md', label, style, c
       size={size}
       aria-label={label}
       title={label}
-      style={{ width: ICON_DIM[size], padding: 0, borderRadius: 'var(--radius-control)', ...style }}
+      style={{ width: ICON_DIM[size], padding: 0, ...style }}
       {...rest}
     >
       {children}

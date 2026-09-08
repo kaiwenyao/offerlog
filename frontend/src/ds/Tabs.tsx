@@ -12,24 +12,24 @@ export interface TabsProps {
   style?: CSSProperties
 }
 
+/**
+ * Segmented control in the Industry idiom: one hairline box divided by
+ * hairlines, the active segment filled with the accent. No pills, no shadow.
+ */
 export function Tabs({ items, value, onChange, size = 'md', fullWidth = false, ariaLabel, style }: TabsProps) {
-  const h = size === 'sm' ? 32 : 40
+  const h = size === 'sm' ? 28 : 34
   return (
     <div
       role="tablist"
       aria-label={ariaLabel}
       style={{
         display: 'inline-flex',
-        gap: 'var(--space-1)',
-        padding: 3,
-        borderRadius: 'var(--radius-pill)',
-        background: 'var(--surface-thin)',
         border: '1px solid var(--border)',
         width: fullWidth ? '100%' : undefined,
         ...style,
       }}
     >
-      {items.map((it) => {
+      {items.map((it, i) => {
         const v = typeof it === 'string' ? it : it.value
         const l = typeof it === 'string' ? it : it.label
         const on = v === value
@@ -45,20 +45,21 @@ export function Tabs({ items, value, onChange, size = 'md', fullWidth = false, a
               boxSizing: 'border-box',
               flex: fullWidth ? 1 : undefined,
               textAlign: 'center',
-              height: h - 6,
+              height: h,
               padding: '0 var(--space-4)',
-              borderRadius: 'var(--radius-pill)',
-              font: 'var(--type-ui)',
-              fontSize: size === 'sm' ? 'var(--text-13)' : 'var(--text-15)',
+              fontFamily: 'var(--font-display)',
+              fontWeight: 600,
+              letterSpacing: '.04em',
+              fontSize: size === 'sm' ? 12 : 13,
               cursor: 'pointer',
-              background: on ? 'var(--surface)' : 'transparent',
-              color: on ? 'var(--text)' : 'var(--text-muted)',
-              boxShadow: on ? 'var(--shadow-card)' : 'none',
+              background: on ? 'var(--accent)' : 'transparent',
+              color: on ? 'var(--text-on-accent)' : 'var(--text)',
+              borderLeft: i === 0 ? undefined : '1px solid var(--border)',
               transition: 'var(--transition-control)',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 'var(--space-2)',
+              gap: 6,
             }}
           >
             {l}

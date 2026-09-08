@@ -15,14 +15,12 @@ export function StatusChip({ status }: { status: string }) {
   )
 }
 
-/** Colored dot used by group headers, board columns and the activity feed. */
+/**
+ * Colour marker used by group headers, board columns and the activity feed.
+ * Square, matching the system's registration-mark language.
+ */
 export function Dot({ color, size = 7 }: { color: string; size?: number }) {
-  return (
-    <span
-      aria-hidden
-      style={{ width: size, height: size, borderRadius: '50%', background: color, flex: '0 0 auto' }}
-    />
-  )
+  return <span aria-hidden style={{ width: size, height: size, background: color, flex: '0 0 auto' }} />
 }
 
 export function Modal({
@@ -59,7 +57,7 @@ export function PageSpinner() {
 
 export function EmptyHint({ children }: { children: ReactNode }) {
   return (
-    <Card style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+    <Card padding="var(--space-6)" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', alignItems: 'center' }}>
         {children}
       </div>
@@ -75,7 +73,8 @@ export function ErrorText({ children }: { children: ReactNode }) {
   )
 }
 
-/** Monospace figure — dates, counts, ids. */
+/** Tabular figure — dates, counts, ids. Barlow's lining numerals align in
+ *  columns without switching to a monospace face. */
 export function Num({ children, color }: { children: ReactNode; color?: string }) {
-  return <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-13)', color }}>{children}</span>
+  return <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 12, color }}>{children}</span>
 }

@@ -70,12 +70,16 @@ export interface WeekDay {
 
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
-export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; fg: string }> = {
-  info: { bg: 'var(--info-soft)', fg: 'var(--info-strong)' },
-  warn: { bg: 'var(--warning-soft)', fg: 'var(--warning-strong)' },
-  good: { bg: 'var(--positive-soft)', fg: 'var(--positive-strong)' },
-  acc: { bg: 'var(--accent-soft)', fg: 'var(--accent-hover)' },
-  bad: { bg: 'var(--danger-soft)', fg: 'var(--danger-strong)' },
+/**
+ * Week-strip chips read as tape stuck onto the day cell: a flat neutral body
+ * with a coloured leading rule carrying the meaning (design: 本周工序).
+ */
+export const CHIP_TONES: Record<WeekDay['items'][number]['tone'], { bg: string; fg: string; bar: string }> = {
+  info: { bg: 'var(--neutral-100)', fg: 'var(--text)', bar: 'var(--info)' },
+  warn: { bg: 'var(--neutral-100)', fg: 'var(--text)', bar: 'var(--warning)' },
+  good: { bg: 'var(--neutral-100)', fg: 'var(--text)', bar: 'var(--positive)' },
+  acc: { bg: 'var(--neutral-100)', fg: 'var(--text)', bar: 'var(--accent)' },
+  bad: { bg: 'var(--neutral-100)', fg: 'var(--text)', bar: 'var(--danger)' },
 }
 
 /**

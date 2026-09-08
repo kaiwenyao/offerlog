@@ -112,6 +112,12 @@ spec:
     environment {
         CI = 'true'
         COMPOSE = 'docker compose -f deploy/compose.test.yaml'
+        // Unique compose project per JOB *and* build — see the same block in
+        // backend/Jenkinsfile: PR-N and its source branch are separate jobs
+        // with separate build numbering, so $BUILD_NUMBER alone collides on
+        // the shared host docker and one job's teardown kills the other's
+        // stack mid-run.
+        COMPOSE_PROJECT = "offerlog-ci-${env.JOB_NAME}-${env.BUILD_NUMBER}-e2e".toLowerCase().replaceAll(/[^a-z0-9_-]/, '-')
     }
 
     stages {
@@ -191,12 +197,13 @@ spec:
                             # harness): the test api opens registration
                             # (REGISTRATION_OPEN=true) and the e2e script signs
                             # up a one-off account; api serves the built SPA.
-                            # --build is mandatory: the <project>-api image name
-                            # only encodes $BUILD_NUMBER, which collides across
-                            # jobs on the shared host docker — compose run would
-                            # silently reuse a leftover stale image (no register
-                            # endpoint → e2e login timeout, PR #11 build #3).
-                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e run --build --rm e2e
+                            # --build is mandatory: compose only builds when
+                            # the image is missing, so without it a rerun would
+                            # silently reuse the previous commit's image (no
+                            # register endpoint → e2e login timeout, PR #11
+                            # build #3). Cross-job collisions are handled by
+                            # $COMPOSE_PROJECT being job-unique.
+                            $COMPOSE -p $COMPOSE_PROJECT --profile e2e run --build --rm e2e
                             '''
                         }
                     }
@@ -206,7 +213,7 @@ spec:
                                 try {
                                     container('docker') {
                                         sh '''
-                                        $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
+                                        $COMPOSE -p $COMPOSE_PROJECT --profile e2e down -v --remove-orphans || true
                                         '''
                                     }
                                 } catch (err) {
@@ -304,7 +311,7 @@ spec:
                 try {
                     container('docker') {
                         sh '''
-                        $COMPOSE -p offerlog-ci-$BUILD_NUMBER-e2e --profile e2e down -v --remove-orphans || true
+                        $COMPOSE -p $COMPOSE_PROJECT --profile e2e down -v --remove-orphans || true
                         '''
                     }
                 } catch (err) {

@@ -42,8 +42,7 @@ export function FileTile({ name, size = 24 }: { name: string; size?: number }) {
         width: size,
         height: size,
         flex: '0 0 auto',
-        borderRadius: 7,
-        background: EXT_TINT[ext] ?? 'var(--surface-thin)',
+        background: EXT_TINT[ext] ?? 'var(--neutral-100)',
         display: 'grid',
         placeItems: 'center',
         fontSize: 10,
@@ -137,7 +136,7 @@ export function OverviewTab({
         </div>
       )}
 
-      <Card padding={0} style={{ overflow: 'hidden' }}>
+      <Card padding={0}>
         <div className="panel-head">
           <PanelTitle>待办 ({openActions.length})</PanelTitle>
           <span style={{ marginLeft: 'auto' }}>
@@ -210,7 +209,7 @@ export function OverviewTab({
         )}
       </Card>
 
-      <Card padding={0} style={{ overflow: 'hidden' }}>
+      <Card padding={0}>
         <div className="panel-head">
           <PanelTitle>面试 ({interviews.length})</PanelTitle>
           <span style={{ marginLeft: 'auto' }}>
@@ -241,7 +240,7 @@ export function OverviewTab({
         )}
       </Card>
 
-      <Card padding={0} style={{ overflow: 'hidden' }}>
+      <Card padding={0}>
         <div className="panel-head">
           <PanelTitle>备注 ({notes.length})</PanelTitle>
           <span style={{ marginLeft: 'auto' }}>
@@ -395,7 +394,7 @@ export function FilesTab({ appId, files }: { appId: number; files: FileItem[] })
           还没有附件。上传简历版本、JD、Offer 文件等。
         </p>
       ) : (
-        <Card padding={0} style={{ overflow: 'hidden' }}>
+        <Card padding={0}>
           {files.map((f) => (
             <div key={f.id} className="panel-row">
               <FileTile name={f.name} />

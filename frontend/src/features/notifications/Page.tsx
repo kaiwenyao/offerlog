@@ -88,10 +88,10 @@ export function NotificationsPage() {
           </p>
         </Card>
       ) : (
-        <Card padding={0} style={{ overflow: 'hidden' }}>
+        <Card padding={0}>
           {items.map((n) => (
             <div key={n.id} className="panel-row" style={{ alignItems: 'flex-start' }}>
-              <span aria-hidden style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 6, background: kindTone(n.kind), flex: '0 0 auto' }} />
+              <span aria-hidden style={{ width: 7, height: 7, marginTop: 7, background: kindTone(n.kind), flex: '0 0 auto' }} />
               <span className="grow" style={{ minWidth: 0 }}>
                 <span style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>
                   {n.title}

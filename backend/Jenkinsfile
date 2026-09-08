@@ -139,9 +139,16 @@ spec:
 
     environment {
         CI = 'true'
-        // Unique compose project per build: nothing leaks between builds even
-        // if a stage is cancelled before its teardown runs.
         COMPOSE = 'docker compose -f deploy/compose.test.yaml'
+        // Unique compose project per JOB *and* build: the multibranch pipeline
+        // runs PR-N and its source branch as two separate jobs, each with its
+        // own build numbering, so a name keyed on $BUILD_NUMBER alone collides
+        // (both are build #1) on the shared host docker. The loser's teardown
+        // `down -v --remove-orphans` then rips out the winner's postgres and
+        // network mid-run: the DB-backed packages never report and compose
+        // exits 2. JOB_NAME carries the folder + branch; lowercase and squash
+        // everything outside compose's [a-z0-9_-] charset.
+        COMPOSE_PROJECT = "offerlog-ci-${env.JOB_NAME}-${env.BUILD_NUMBER}-integration".toLowerCase().replaceAll(/[^a-z0-9_-]/, '-')
     }
 
     stages {
@@ -203,10 +210,12 @@ spec:
                             set -eu
                             # Disposable tmpfs postgres + go test container; the
                             # suite applies migrations itself (PR #3 harness).
-                            # --build guards against reusing a leftover
-                            # <project>-integration image from another job with
-                            # the same $BUILD_NUMBER on the shared host docker.
-                            $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration run --build --rm integration
+                            # --build keeps the image in step with the source:
+                            # compose only builds when the image is missing, so
+                            # a rerun of this same job would otherwise test the
+                            # previous commit. (Cross-job image collisions are
+                            # handled by $COMPOSE_PROJECT being job-unique.)
+                            $COMPOSE -p $COMPOSE_PROJECT --profile integration run --build --rm integration
                             '''
                         }
                     }
@@ -216,7 +225,7 @@ spec:
                                 try {
                                     container('docker') {
                                         sh '''
-                                        $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
+                                        $COMPOSE -p $COMPOSE_PROJECT --profile integration down -v --remove-orphans || true
                                         '''
                                     }
                                 } catch (err) {
@@ -309,7 +318,7 @@ spec:
                 try {
                     container('docker') {
                         sh '''
-                        $COMPOSE -p offerlog-ci-$BUILD_NUMBER-integration --profile integration down -v --remove-orphans || true
+                        $COMPOSE -p $COMPOSE_PROJECT --profile integration down -v --remove-orphans || true
                         '''
                     }
                 } catch (err) {
