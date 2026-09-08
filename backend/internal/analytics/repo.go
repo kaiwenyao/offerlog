@@ -263,8 +263,8 @@ func (r *Repo) ByChannel(ctx context.Context, req *SnapshotRequest) ([]ChannelRo
 // StatusName maps keys to Chinese labels (mirror of frontend dict).
 var StatusName = map[string]string{
 	domain.StatusSaved: "待投递", domain.StatusPreparing: "准备材料", domain.StatusApplied: "已投递",
-	domain.StatusScreening: "初筛/沟通", domain.StatusAssessment: "笔试/作业", domain.StatusInterviewing: "面试中",
-	domain.StatusOffer: "Offer", domain.StatusAccepted: "已接受", domain.StatusRejected: "被拒绝",
+	domain.StatusScreening: "初筛沟通", domain.StatusAssessment: "笔试作业", domain.StatusInterviewing: "面试中",
+	domain.StatusOffer: "收到 Offer", domain.StatusAccepted: "已接受", domain.StatusRejected: "被拒绝",
 	domain.StatusWithdrawn: "已撤回", domain.StatusClosed: "岗位关闭",
 }
 

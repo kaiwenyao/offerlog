@@ -25,7 +25,7 @@ type Item struct {
 var statusLabel = map[string]string{
 	"saved": "待投递", "preparing": "准备材料", "applied": "已投递",
 	"screening": "初筛沟通", "assessment": "笔试作业", "interviewing": "面试中",
-	"offer": "Offer", "accepted": "已接受", "rejected": "被拒绝",
+	"offer": "收到 Offer", "accepted": "已接受", "rejected": "被拒绝",
 	"withdrawn": "已撤回", "closed": "岗位关闭",
 }
 

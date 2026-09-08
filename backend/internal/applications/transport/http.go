@@ -451,8 +451,10 @@ type transitionReq struct {
 	Note            string     `json:"note"`
 	SubmittedAt     *time.Time `json:"submitted_at"`
 	FirstResponseAt *time.Time `json:"first_response_at"`
-	Version         int        `json:"version"`
-	IdempotencyKey  string     `json:"idempotency_key"`
+	// 未经正式投递（内推 / 猎头直接约面）：允许直接进入招聘阶段而不编造投递时间。
+	NoFormalSubmission bool   `json:"no_formal_submission"`
+	Version            int    `json:"version"`
+	IdempotencyKey     string `json:"idempotency_key"`
 }
 
 func (h *Handler) transition(c *gin.Context) {
@@ -470,7 +472,8 @@ func (h *Handler) transition(c *gin.Context) {
 	in := &appservice.TransitionInput{
 		ToStatus: req.ToStatus, OccurredAt: req.OccurredAt, Reason: req.Reason, Note: req.Note,
 		SubmittedAt: req.SubmittedAt, FirstResponseAt: req.FirstResponseAt,
-		Version: req.Version, IdempotencyKey: req.IdempotencyKey,
+		NoFormalSubmission: req.NoFormalSubmission,
+		Version:            req.Version, IdempotencyKey: req.IdempotencyKey,
 	}
 	row, err := h.svc.Transition(c.Request.Context(), user.ID, id, in)
 	if err != nil {

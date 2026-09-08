@@ -1,14 +1,15 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { api, ApiError, localDateTimeToInstant } from '../../lib/api'
-import { effectiveZone } from '../../lib/tz'
+import { api, ApiError } from '../../lib/api'
+import { toInstantInUserZone } from '../../lib/tz'
 import type { AppRow } from '../../lib/types'
 import { NEXT_STEP_SUGGESTION } from '../../lib/status'
 import { Button, Input, Select, Textarea } from '../../ds'
 import { ErrorText, Modal, Spinner } from '../../components/ui'
 
-const ROUNDS = ['一面', '二面', '三面', '终面', '技术面', 'HR 面', '其他']
-const FORMATS = [
+/** Shared with the progress dialog's inline scheduler — keep one list. */
+export const ROUNDS = ['一面', '二面', '三面', '终面', '技术面', 'HR 面', '其他']
+export const FORMATS = [
   { value: 'phone', label: '电话' },
   { value: 'video', label: '视频' },
   { value: 'onsite', label: '到面' },
@@ -31,26 +32,18 @@ export function InterviewForm({
 
   const mut = useMutation({
     mutationFn: () => {
-      // The datetime-local value is a NAIVE wall-clock string with no zone.
-      // Interpret it in the USER's configured zone (effectiveZone), not the
-      // browser's: a Dublin browser + Shanghai user typing 14:30 must store
-      // 14:30 in Shanghai — new Date(...).toISOString() would parse it as
-      // Dublin 14:30 = Shanghai 21:30, polluting the "明天有面试" reminder day
-      // and calendar buckets. The zone label is sent so the stored interview
-      // keeps a truthful timezone tag instead of the backend default.
+      // The datetime-local value is naive wall-clock; toInstantInUserZone reads
+      // it in the user's configured zone and hands back the zone label to stamp
+      // on the round, so the stored interview keeps a truthful timezone tag.
       let scheduledAt: string | null = null
       let zoneLabel = ''
       if (scheduled) {
-        // The label sent must match the zone the wall-clock string was
-        // interpreted in: the user's configured zone when set, else the
-        // browser zone (the parse fallback).
-        const zone = effectiveZone() ?? Intl.DateTimeFormat().resolvedOptions().timeZone
-        const ms = localDateTimeToInstant(scheduled, zone)
-        if (ms == null) {
+        const { iso, zone } = toInstantInUserZone(scheduled)
+        if (iso == null) {
           setErr('时间格式不正确')
           return Promise.reject(new ApiError('bad_scheduled_at', '时间格式不正确', 400))
         }
-        scheduledAt = new Date(ms).toISOString()
+        scheduledAt = iso
         zoneLabel = zone
       }
       return api.post(`/api/v1/applications/${appId}/interviews`, {

@@ -3,6 +3,7 @@
 // Playwright e2e suite.
 import { describe, expect, it } from 'vitest'
 import { statusMeta, STATUSES } from '../src/lib/status'
+import { allowedTargets, needsReason, suggestedTargets, targetGroups, TRANSITIONS } from '../src/lib/transitions'
 import {
   fmtBytes,
   fmtDate,
@@ -36,6 +37,95 @@ describe('status dictionary', () => {
     expect(statusMeta('interviewing').category).toBe('in_progress')
     expect(statusMeta('offer').category).toBe('decision')
     expect(statusMeta('rejected').category).toBe('ended')
+  })
+})
+
+// Guard for the client-side mirror of backend allowedDirect. The list below is
+// transcribed from backend/internal/applications/domain/domain.go — if the two
+// drift, the UI offers targets the API answers with 400 invalid_transition.
+const BACKEND_EDGES: ReadonlyArray<readonly [string, string]> = [
+  ['saved', 'preparing'], ['saved', 'applied'], ['saved', 'screening'], ['saved', 'assessment'],
+  ['saved', 'interviewing'], ['saved', 'offer'], ['saved', 'rejected'], ['saved', 'withdrawn'],
+  ['saved', 'closed'],
+  ['preparing', 'applied'], ['preparing', 'screening'], ['preparing', 'assessment'],
+  ['preparing', 'interviewing'], ['preparing', 'offer'], ['preparing', 'rejected'],
+  ['preparing', 'withdrawn'], ['preparing', 'closed'],
+  ['applied', 'screening'], ['applied', 'assessment'], ['applied', 'interviewing'],
+  ['applied', 'offer'], ['applied', 'rejected'], ['applied', 'withdrawn'], ['applied', 'closed'],
+  ['screening', 'assessment'], ['screening', 'interviewing'], ['screening', 'offer'],
+  ['screening', 'rejected'], ['screening', 'withdrawn'], ['screening', 'closed'],
+  ['assessment', 'screening'], ['assessment', 'interviewing'], ['assessment', 'offer'],
+  ['assessment', 'rejected'], ['assessment', 'withdrawn'], ['assessment', 'closed'],
+  ['interviewing', 'screening'], ['interviewing', 'assessment'], ['interviewing', 'offer'],
+  ['interviewing', 'rejected'], ['interviewing', 'withdrawn'], ['interviewing', 'closed'],
+  ['offer', 'accepted'], ['offer', 'rejected'], ['offer', 'withdrawn'], ['offer', 'closed'],
+  ['accepted', 'offer'], ['accepted', 'withdrawn'],
+  ['rejected', 'applied'], ['rejected', 'screening'], ['rejected', 'assessment'],
+  ['rejected', 'interviewing'], ['rejected', 'offer'], ['rejected', 'saved'], ['rejected', 'preparing'],
+  ['withdrawn', 'saved'], ['withdrawn', 'preparing'], ['withdrawn', 'applied'],
+  ['withdrawn', 'screening'], ['withdrawn', 'assessment'], ['withdrawn', 'interviewing'],
+  ['withdrawn', 'offer'],
+  ['closed', 'saved'], ['closed', 'preparing'], ['closed', 'applied'], ['closed', 'screening'],
+  ['closed', 'assessment'], ['closed', 'interviewing'], ['closed', 'offer'],
+]
+
+describe('transition map (mirror of backend allowedDirect)', () => {
+  it('offers no edge the backend would reject', () => {
+    const backend = new Set(BACKEND_EDGES.map(([f, t]) => `${f}->${t}`))
+    const extra: string[] = []
+    for (const [from, tos] of Object.entries(TRANSITIONS)) {
+      for (const to of tos) if (!backend.has(`${from}->${to}`)) extra.push(`${from}->${to}`)
+    }
+    expect(extra).toEqual([])
+  })
+
+  it('exposes every backend edge, so no legal move is unreachable in the UI', () => {
+    const missing = BACKEND_EDGES
+      .filter(([f, t]) => !(TRANSITIONS[f] ?? []).includes(t))
+      .map(([f, t]) => `${f}->${t}`)
+    expect(missing).toEqual([])
+  })
+
+  it('lets 待投递 jump straight to 面试中 (skip-ahead)', () => {
+    expect(TRANSITIONS.saved).toContain('interviewing')
+    expect(allowedTargets('saved').map((s) => s.key)).toContain('interviewing')
+  })
+
+  it('drops preparing->saved, which the backend never allowed', () => {
+    expect(TRANSITIONS.preparing).not.toContain('saved')
+  })
+
+  it('groups targets into 推进 / 回退·更正 / 结束', () => {
+    const labels = targetGroups('applied').map((g) => g.label)
+    expect(labels).toEqual(['推进', '结束'])
+    const forward = targetGroups('applied')[0].options.map((o) => o.value)
+    expect(forward).toContain('interviewing')
+    expect(forward).not.toContain('rejected')
+  })
+
+  it('relabels the forward bucket as 重新开启 for an ended record', () => {
+    const groups = targetGroups('rejected')
+    expect(groups.map((g) => g.label)).toEqual(['重新开启'])
+    expect(groups[0].options.map((o) => o.value)).toContain('saved')
+  })
+
+  it('requires a reason exactly where the backend does', () => {
+    // domain.go: to == rejected|withdrawn|closed, or fromTerminal && !toTerminal
+    expect(needsReason('applied', 'rejected')).toBe(true)
+    expect(needsReason('offer', 'withdrawn')).toBe(true)
+    expect(needsReason('applied', 'closed')).toBe(true)
+    expect(needsReason('rejected', 'interviewing')).toBe(true) // 终态重开
+    expect(needsReason('accepted', 'offer')).toBe(true)
+    // 已接受 needs no justification — gating it blocks a legal transition.
+    expect(needsReason('offer', 'accepted')).toBe(false)
+    expect(needsReason('applied', 'interviewing')).toBe(false)
+    expect(needsReason('saved', '')).toBe(false)
+  })
+
+  it('suggests the next flow step plus 被拒绝 as one-tap chips', () => {
+    expect(suggestedTargets('applied').map((s) => s.key)).toEqual(['screening', 'assessment', 'rejected'])
+    // An ended record gets reopen targets only — no 被拒绝 chip.
+    expect(suggestedTargets('rejected').map((s) => s.key)).not.toContain('rejected')
   })
 })
 
