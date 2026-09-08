@@ -1,7 +1,20 @@
 import { ENDED, FLOW_ORDER, statusMeta } from '../lib/status'
+import { effectiveZone } from '../lib/tz'
 
 /** Statuses that end a pipeline without reaching 已接受. */
 const DEAD = new Set(['rejected', 'withdrawn', 'closed'])
+
+/**
+ * YYYY-MM-DD → the compact label under a rail node: MM-DD for the current
+ * year, the full date for any other year (applications routinely span year
+ * boundaries and a bare "12-03" would hide which December).
+ */
+function shortDay(day: string): string {
+  const [y, ...rest] = day.split('-')
+  const zone = effectiveZone() ?? undefined
+  const thisYear = Number(new Date().toLocaleString('en-CA', { timeZone: zone, year: 'numeric' }))
+  return Number(y) === thisYear ? rest.join('-') : day
+}
 
 /**
  * Where the rail's highlight sits. For a live application that is the current
@@ -73,7 +86,7 @@ export function StageTrail({
       {FLOW_ORDER.map((stage, i) => {
         const skin = cellSkin(i, at, dead)
         const full = dates?.[stage]
-        const date = full?.slice(5) // MM-DD inside the tight block
+        const date = full ? shortDay(full) : undefined // compact inside the tight block
         const isTip = i === at
         const sub = isTip
           ? date
@@ -87,7 +100,11 @@ export function StageTrail({
             ? date
             : ''
         return (
-          <span key={stage} className="stage-node">
+          <span
+            key={stage}
+            className="stage-node"
+            title={full ? `${statusMeta(stage).label} · ${full.split('-').join('/')}` : statusMeta(stage).label}
+          >
             <span
               aria-hidden
               className="bar"

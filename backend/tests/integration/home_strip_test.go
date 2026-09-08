@@ -19,13 +19,15 @@ func TestHomeStripFollowsWeekStartSunday(t *testing.T) {
 	ctx := context.Background()
 	db, svc, _, owner := setup(t)
 
-	// Fixed "now": Wednesday 2026-09-09 12:00 UTC = 13:00 Europe/Dublin
-	// (summer, UTC+1). Week with Sunday start = 2026-09-06 .. 2026-09-13.
-	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	// Fixed "now": Wednesday 2026-08-26 12:00 UTC = 13:00 Europe/Dublin
+	// (summer, UTC+1). Week with Sunday start = 2026-08-23 .. 2026-08-30.
+	// (Week chosen in the past so seeding "submitted" rows never trips the
+	// future-submission guard, whatever the real wall clock is.)
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	// Sunday submission → the week-start day itself.
-	sunday := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC) // 11:00 Dublin Sunday
+	sunday := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC) // 11:00 Dublin Sunday
 	// Wednesday submission → ws + 3d.
-	wednesday := time.Date(2026, 9, 9, 9, 0, 0, 0, time.UTC) // 10:00 Dublin Wednesday
+	wednesday := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC) // 10:00 Dublin Wednesday
 
 	mustCreateWithSubmit(t, svc, owner, "SunCo", "R", sunday)
 	mustCreateWithSubmit(t, svc, owner, "WedCo", "R", wednesday)
@@ -62,11 +64,11 @@ func TestHomeStripMondayDefaultDayIndexes(t *testing.T) {
 	ctx := context.Background()
 	db, svc, _, owner := setup(t)
 
-	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC) // Wednesday 2026-09-09
-	// The Monday of that week is 2026-09-07 (week start under the default).
-	monday := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC) // Wednesday 2026-08-26
+	// The Monday of that week is 2026-08-24 (week start under the default).
+	monday := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
 	// A Friday event in the same week.
-	friday := time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC)
+	friday := time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)
 
 	mustCreateWithSubmit(t, svc, owner, "MonCo", "R", monday)
 	mustCreateWithSubmit(t, svc, owner, "FriCo", "R", friday)

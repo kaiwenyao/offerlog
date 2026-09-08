@@ -343,13 +343,21 @@ export function fmtDate(s: string | null | undefined, zone?: string): string {
  * UI buckets events by the user's zone, so the displayed time string must be
  * rendered in that same zone or a Dublin browser + Shanghai user would see
  * the wrong local time next to the correct calendar day.
+ *
+ * The year is appended only when the instant falls in a different year than
+ * the current one (in that zone) — a job timeline routinely spans year
+ * boundaries and "12/03 14:00" alone would hide which December.
  */
 export function fmtDateTime(s: string | null | undefined, zone?: string): string {
   if (!s) return '—'
   const d = new Date(s)
   if (isNaN(d.getTime())) return '—'
+  const z = zone ?? effectiveZone()
+  const yearOf = (t: Date) => Number(t.toLocaleString('en-CA', { timeZone: z, year: 'numeric' }))
+  const crossYear = yearOf(d) !== yearOf(new Date())
   return d.toLocaleString('zh-CN', {
-    timeZone: zone ?? effectiveZone(),
+    timeZone: z,
+    ...(crossYear ? { year: 'numeric' } : {}),
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',

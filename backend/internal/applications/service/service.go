@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -96,6 +97,19 @@ func normalizeCreate(in *CreateInput) error {
 		now := time.Now()
 		in.SavedAt = &now
 	}
+	// Snapshot time semantics (same rules the transition machine enforces):
+	// pre-submission statuses carry no submitted_at, while statuses at or
+	// beyond 已投递 need submission evidence — default it to the saved time so
+	// the created event's business time is never a silent server clock.
+	if in.Status == domain.StatusSaved || in.Status == domain.StatusPreparing {
+		in.SubmittedAt = nil
+	} else if in.SubmittedAt == nil {
+		t := *in.SavedAt
+		in.SubmittedAt = &t
+	}
+	if in.SubmittedAt != nil && in.SubmittedAt.After(time.Now().Add(5*time.Minute)) {
+		return &domain.ValidationError{Code: "future_occurred_at", Message: "投递时间不能晚于现在"}
+	}
 	return nil
 }
 
@@ -138,9 +152,16 @@ func (s *Service) Create(ctx context.Context, ownerID int64, in *CreateInput) (*
 		row.ID = id
 		out = row
 
+		// The created event's business time is the user-supplied time (投递/保存
+		// 时间), not the DB write clock — a backfilled "昨天投递" entry must show
+		// 昨天 everywhere the trail renders dates.
+		occ := *in.SavedAt
+		if in.SubmittedAt != nil {
+			occ = *in.SubmittedAt
+		}
 		ev := &repository.Event{
 			ApplicationID: id, OwnerID: ownerID, EventType: "created",
-			FromStatus: nil, ToStatus: &row.Status, OccurredAt: now,
+			FromStatus: nil, ToStatus: &row.Status, OccurredAt: occ,
 		}
 		return s.repo.InsertEvent(ctx, tx, ev)
 	})
@@ -281,6 +302,11 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 		occ := now
 		if in.OccurredAt != nil {
 			occ = *in.OccurredAt
+		} else if in.SubmittedAt != nil && in.ToStatus == domain.StatusApplied {
+			// 回填场景：进入「已投递」时只填了实际投递时间、没填发生时间 → 以
+			// 投递时间为准，而不是数据库写入的 now（今天补录昨天投递，事件应
+			// 发生在昨天）。推进到后续阶段时发生时间留空仍默认现在。
+			occ = *in.SubmittedAt
 		}
 		hadOffer, err := s.repo.HadOffer(ctx, tx, id)
 		if err != nil {
@@ -396,10 +422,16 @@ func (s *Service) Correct(ctx context.Context, ownerID, appID int64, in *Correct
 		}
 		// Preview timeline with correction applied: substitute the original
 		// event's target state for the requested one at its occurrence time.
+		// Replay in sequence order — a backfilled event carries an earlier
+		// business time than the created event, but the state machine walked
+		// the transitions in the order they were recorded.
 		timeline, err := s.repo.ListEvents(ctx, tx, appID, ownerID)
 		if err != nil {
 			return err
 		}
+		slices.SortStableFunc(timeline, func(a, b *repository.Event) int {
+			return a.Sequence - b.Sequence
+		})
 		// validate sequence stays consistent; we trust the new status is a
 		// legal step from the previous effective state.
 		sim := make([]string, 0, len(timeline))

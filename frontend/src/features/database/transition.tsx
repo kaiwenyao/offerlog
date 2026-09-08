@@ -114,10 +114,11 @@ export function TransitionModal({
         </Select>
 
         <Input
-          label="发生时间（可选，默认现在）"
+          label="发生时间"
           type="datetime-local"
           value={occurredAt}
           onChange={(e) => setOccurredAt(e.target.value)}
+          hint={needsSubmitted ? '这件事什么时候发生的；留空则按实际投递时间记录' : '这件事什么时候发生的；留空默认为现在'}
         />
 
         {needsSubmitted && (
@@ -126,7 +127,7 @@ export function TransitionModal({
             type="datetime-local"
             value={submittedAt}
             onChange={(e) => setSubmittedAt(e.target.value)}
-            hint="进入招聘阶段需要补充投递时间（或标记未经正式投递）"
+            hint="什么时候投出的；进入招聘阶段需要补充（或标记未经正式投递）"
           />
         )}
 

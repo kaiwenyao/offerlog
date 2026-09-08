@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, ApiError, fmtDate, fmtDay, toDayString } from '../../lib/api'
+import { api, ApiError, fmtDate, fmtDay, localDateTimeToInstant, toDayString } from '../../lib/api'
 import { effectiveZone } from '../../lib/tz'
 import type { AppRow, SavedView } from '../../lib/types'
 import { FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
@@ -528,6 +528,10 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const [position, setPosition] = useState('')
   const [location, setLocation] = useState('')
   const [url, setUrl] = useState('')
+  // 补录场景：新增时就能声明「已经投了」并填写真实投递时间——时间线显示的
+  // 是投递那天，而不是今天录入的日期。
+  const [status, setStatus] = useState('saved')
+  const [submittedAt, setSubmittedAt] = useState('')
   const [err, setErr] = useState('')
   const [parsing, setParsing] = useState(false)
 
@@ -558,8 +562,14 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
   })
 
   const mut = useMutation({
-    mutationFn: (b: { company_name: string; position: string; location?: string; job_url?: string }) =>
-      api.post('/api/v1/applications', b),
+    mutationFn: (b: {
+      company_name: string
+      position: string
+      location?: string
+      job_url?: string
+      status?: string
+      submitted_at?: string
+    }) => api.post('/api/v1/applications', b),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['apps'] })
       onCreated()
@@ -568,6 +578,24 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
   })
 
   const canCreate = !mut.isPending && !parsing && company.trim() && position.trim()
+
+  const submitCreate = () => {
+    // datetime-local 是无时区挂墙时间：按用户配置时区换算成 UTC 瞬间（与
+    // 更新进度弹窗同一规则），避免都柏林浏览器把「昨天 14:00」存成别的日子。
+    const zone = effectiveZone() ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    const toInstant = (v: string) => {
+      const ms = localDateTimeToInstant(v, zone)
+      return ms == null ? undefined : new Date(ms).toISOString()
+    }
+    mut.mutate({
+      company_name: company.trim(),
+      position: position.trim(),
+      location: location.trim() || undefined,
+      job_url: url.trim(),
+      status,
+      ...(status === 'applied' && submittedAt ? { submitted_at: toInstant(submittedAt) } : {}),
+    })
+  }
 
   return (
     <Modal
@@ -583,14 +611,7 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
             variant="primary"
             size="sm"
             disabled={!canCreate}
-            onClick={() =>
-              mut.mutate({
-                company_name: company.trim(),
-                position: position.trim(),
-                location: location.trim() || undefined,
-                job_url: url.trim(),
-              })
-            }
+            onClick={submitCreate}
           >
             {mut.isPending ? <Spinner size={14} /> : '创建'}
           </Button>
@@ -642,6 +663,31 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
             </Button>
           )}
         </div>
+        <div>
+          <Select
+            label="当前状态"
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            options={[
+              { value: 'saved', label: '待投递' },
+              { value: 'preparing', label: '准备材料' },
+              { value: 'applied', label: '已投递' },
+            ]}
+            aria-label="当前状态"
+          />
+        </div>
+        {status === 'applied' && (
+          <div>
+            <Input
+              id="cf-submitted"
+              label="投递时间"
+              type="datetime-local"
+              value={submittedAt}
+              onChange={(e) => setSubmittedAt(e.target.value)}
+              hint="什么时候投出的；留空按今天算。补录过往投递填真实时间，时间线会显示那天"
+            />
+          </div>
+        )}
       </div>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 'var(--space-4)' }}>
         保存后仍可继续编辑完整信息、上传附件并更新进度。
