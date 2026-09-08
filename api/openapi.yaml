@@ -110,7 +110,7 @@ paths:
         '400': { description: 链接非 http/https 或缺 url }
         '429': { description: 超过每分钟解析次数 }
   /applications/{id}:
-    get: { summary: 详情 }
+    get: { summary: 详情（回收站中的软删除记录同样返回，deleted 字段标识） }
     patch:
       summary: 普通字段更新（携带 version，冲突返回 409）
     delete: { summary: 软删除 }
