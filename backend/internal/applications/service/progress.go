@@ -199,7 +199,10 @@ func (s *Service) applySubstatusToRound(ctx context.Context, q database.Querier,
 		}
 		return s.acts.UpdateAssessment(ctx, q, round)
 	case domain.ActivityInterview:
-		round, err := s.acts.GetInterview(ctx, appID, ownerID, id)
+		// The lock matters: this runs inside the transition's transaction, and
+		// without it a concurrent round edit could land between our read and
+		// write and be silently overwritten (PR #23 review).
+		round, err := s.acts.GetInterviewForUpdate(ctx, q, appID, ownerID, id)
 		if err != nil {
 			return err
 		}
@@ -233,7 +236,7 @@ func (s *Service) substatusOfRound(ctx context.Context, q database.Querier, owne
 		}
 		return domain.SubstatusForActivity(domain.ActivityAssessment, round.Progress, round.Result), nil
 	case domain.ActivityInterview:
-		round, err := s.acts.GetInterview(ctx, appID, ownerID, id)
+		round, err := s.acts.GetInterview(ctx, q, appID, ownerID, id)
 		if err != nil {
 			return "", err
 		}
@@ -328,7 +331,7 @@ func (s *Service) CorrectCurrent(ctx context.Context, ownerID, appID int64, in *
 		if in.OccurredAt != nil {
 			occ = *in.OccurredAt
 		}
-		if err := s.validateEffectiveTimeline(ctx, tx, appID, ownerID, events, target.ID, in.ToStatus, in.ToSubstatus, in.Reason); err != nil {
+		if err := s.validateEffectiveTimeline(ctx, tx, appID, ownerID, row, events, target.ID, in.ToStatus, in.ToSubstatus, in.Reason); err != nil {
 			return err
 		}
 		ev := &apprepo.Event{
@@ -394,7 +397,7 @@ func (s *Service) pickCorrectableEvent(ctx context.Context, q database.Querier, 
 // validateEffectiveTimeline replays the effective history with one event
 // overridden and refuses a result that the state model would not have produced
 // (方案 §4.3: 更正的验证和快照重算都必须先应用已有更正).
-func (s *Service) validateEffectiveTimeline(ctx context.Context, q database.Querier, appID, ownerID int64, events []*apprepo.Event, overrideID int64, status, substatus, reason string) error {
+func (s *Service) validateEffectiveTimeline(ctx context.Context, q database.Querier, appID, ownerID int64, row *apprepo.Row, events []*apprepo.Event, overrideID int64, status, substatus, reason string) error {
 	type effective struct {
 		status    string
 		substatus string
@@ -417,13 +420,26 @@ func (s *Service) validateEffectiveTimeline(ctx context.Context, q database.Quer
 		}
 	}
 	curStatus, curSub := "", ""
+	// Evidence is rebuilt the way the LIVE state machine reads it (Transition
+	// starts from the row's own facts), then upgraded as the replay walks the
+	// timeline: a submission fact exists once the snapshot carries one (or the
+	// record already sits in a recruiter-driven stage, i.e. the evidence rule
+	// was satisfied at entry — 内推 rows legitimately carry no submitted_at),
+	// an Offer fact once an event reached Offer. The previous version
+	// hardcoded both to true, which let a correction mint 已接受 with no Offer
+	// record at all (方案 §4.1 接受 Offer 仍需要真实 Offer 记录).
+	hadSubmitted := row.SubmittedAt != nil ||
+		domain.InProgressStatuses[row.Status] ||
+		row.Status == domain.StatusOffer || row.Status == domain.StatusAccepted
+	hadOffer := false
 	for _, ev := range ordered {
 		if ev.EventType == "correction" {
 			continue
 		}
 		var eff effective
+		isOverride := false
 		if o, ok := overrides[ev.ID]; ok {
-			eff = o
+			eff, isOverride = o, true
 		} else if c, ok := corrected[ev.ID]; ok {
 			eff = c
 		} else if ev.ToStatus != nil {
@@ -435,14 +451,47 @@ func (s *Service) validateEffectiveTimeline(ctx context.Context, q database.Quer
 			continue
 		}
 		if curStatus != "" && curStatus != eff.status {
+			// Each hop is validated with the evidence the timeline HAD at that
+			// point — not with this correction's inputs:
+			//   • a historical hop carries its own recorded reason (a reopen edge
+			//     wrote one when it was accepted); using the current correction's
+			//     reason instead made a legal history un-correctable,
+			//   • the overridden hop is the one this correction creates, so it
+			//     takes the caller's reason (falling back to the original event's
+			//     reason when the UI had no reason field to show).
+			hopReason := reason
+			if isOverride && hopReason == "" {
+				hopReason = ev.Reason
+			}
+			if !isOverride {
+				hopReason = ev.Reason
+				if hopReason == "" {
+					hopReason = reason
+				}
+			}
+			// 历史跳变不重验投递证据（ReplayHistorical）：「未经正式投递」是当时
+			// 请求上的断言，没存进事件行，无法回放。只有被改写的跳变（本次更正
+			// 真正产生的那条）按现行规则严格验证。Offer 证据两边都验——它可以从
+			// 事件流里重构。
 			if err := domain.ValidateTransition(domain.Transition{
 				FromStatus: curStatus, FromSubstatus: curSub,
 				ToStatus: eff.status, ToSubstatus: eff.substatus,
 				OccurredAt: ev.OccurredAt, Now: time.Now().Add(time.Hour),
-				WasSubmitted: true, HadOffer: true, Reason: reason,
+				WasSubmitted: hadSubmitted, HadOffer: hadOffer,
+				ReplayHistorical: !isOverride, Reason: hopReason,
 			}); err != nil {
 				return &domain.ValidationError{Code: "correction_invalid", Message: "更正后的时间线不合法: " + err.Error()}
 			}
+		}
+		switch {
+		case domain.InProgressStatuses[eff.status] ||
+			eff.status == domain.StatusOffer || eff.status == domain.StatusAccepted:
+			// 到过已投递及以后的阶段：投递事实成立。回退到待投递不清除它
+			// （方案 §4.2），所以这里只升不降。
+			hadSubmitted = true
+		}
+		if eff.status == domain.StatusOffer {
+			hadOffer = true
 		}
 		curStatus, curSub = eff.status, eff.substatus
 	}

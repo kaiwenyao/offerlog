@@ -24,10 +24,10 @@ func TestCancelOwnershipCheckBeforeUpsert(t *testing.T) {
 		VALUES($1,$2,'一面','video', now() + interval '1 day','Europe/Dublin') RETURNING id`, appA.ID, ownerA).Scan(&iid); err != nil {
 		t.Fatal(err)
 	}
-	// The handler's ownership check is repo.GetInterview(appID, ownerID, id):
+	// The handler's ownership check is repo.GetInterview(q, appID, ownerID, id):
 	// querying B's context for A's interview must fail (→ transport 404). The
 	// exact sentinel is irrelevant — the gate runs before any schedule upsert.
-	if _, err := repo.GetInterview(ctx, appA.ID, ownerB, iid); err == nil {
+	if _, err := repo.GetInterview(ctx, db, appA.ID, ownerB, iid); err == nil {
 		t.Fatal("B must not read A's interview (expected an error → 404)")
 	}
 	// Cross-owner GetScheduleLink also yields nil → the handler would create a

@@ -121,8 +121,17 @@ type Transition struct {
 	// in-progress evidence rule WITHOUT inventing a submitted_at, so
 	// 投递→回复 analytics keep a truthful empty numerator.
 	SkipSubmission bool
-	Note           string
-	Reason         string
+	// ReplayHistorical marks a hop REPLAYED from the timeline during a
+	// correction re-check rather than a fresh request. The correction replay
+	// re-validates structure (allowedTarget, substatus pairs, each event's own
+	// reason, Offer evidence) but NOT the submission evidence of hops that
+	// were already admitted when they were written: 「未经正式投递」 is a
+	// per-request assertion that was never stored on the event row, so there
+	// is nothing honest to replay it from — re-asking would make every legal
+	// timeline un-correctable.
+	ReplayHistorical bool
+	Note             string
+	Reason           string
 }
 
 // Change types recorded on an event (application_events.change_type).
@@ -212,7 +221,7 @@ func ValidateTransition(t Transition) error {
 	// checked when the stage actually changes: a substatus tweak inside a stage
 	// the record already occupies must not re-ask (a 内推 row entered with
 	// no_formal_submission legitimately has no submitted_at).
-	if t.FromStatus != t.ToStatus && InProgressStatuses[t.ToStatus] && !t.WasSubmitted {
+	if !t.ReplayHistorical && t.FromStatus != t.ToStatus && InProgressStatuses[t.ToStatus] && !t.WasSubmitted {
 		if !t.SkipSubmission {
 			return errf("missing_submitted_at", "进入后续招聘阶段需补充实际投递时间或标记未经过正式投递")
 		}

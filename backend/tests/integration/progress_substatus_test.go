@@ -595,3 +595,102 @@ func TestAnalyticsExcludesCorrectedEvents(t *testing.T) {
 		t.Errorf("offer_rate = %v, want 0", after.OfferRate)
 	}
 }
+
+// review 修复回归：更正重放必须用「各事件自己记录的原因」验证历史跳变，
+// 否则合法时间线无法更正 —— applied → 被拒绝(有原因) → 重开回 Offer(有原因)，
+// 用户想把误点的 Offer 更正掉时，弹窗根本没给原因输入框，重放却拿本次更正的
+// 空原因去验 rejected→X 这条需要原因的历史跳变。
+func TestCorrectionReplayUsesEachEventsOwnReason(t *testing.T) {
+	_, svc, _, owner := newProgressService(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "ReplayReason", "后端工程师")
+
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: submittedAt(6),
+	}); err != nil {
+		t.Fatalf("applied: %v", err)
+	}
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusRejected, Version: 2, Reason: "简历未通过",
+	}); err != nil {
+		t.Fatalf("rejected: %v", err)
+	}
+	row, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusOffer, Version: 3, Reason: "招聘方重新联系",
+	})
+	if err != nil {
+		t.Fatalf("reopen to offer: %v", err)
+	}
+
+	// 更正最后一条（重开回 Offer）为面试，原因留空 —— 前端在 needsReason=false
+	// 时不显示原因框。被改写的跳变会回退用原事件记录的原因，历史跳变用各自的。
+	row, err = svc.CorrectCurrent(ctx, owner, app.ID, &appservice.CorrectCurrentInput{
+		ToStatus: domain.StatusInterviewing, ToSubstatus: domain.SubAwaitingSchedule,
+		Reason: "", Version: row.Version,
+	})
+	if err != nil {
+		t.Fatalf("correction without a caller reason must fall back to the event's own reason: %v", err)
+	}
+	if row.Status != domain.StatusInterviewing || row.Substatus != domain.SubAwaitingSchedule {
+		t.Fatalf("after correction got %s/%s, want interviewing/awaiting_schedule", row.Status, row.Substatus)
+	}
+}
+
+// review 修复回归：更正不能凭空捏造 Offer。→accepted 只可能从 Offer 位置的
+// 跳变改出来（allowedTarget 已挡住其它入口），重放据此重构 HadOffer —— 旧实现
+// 把它硬编码成 true，等于把这条证据检查整个交给了调用方。
+func TestCorrectionCannotMintAnAcceptance(t *testing.T) {
+	_, svc, _, owner := newProgressService(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "MintGuard", "算法工程师")
+
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: submittedAt(3),
+	}); err != nil {
+		t.Fatalf("applied: %v", err)
+	}
+	// 没到过 Offer：把 已投递 那步直接更正成 已接受 —— 必须被拒。
+	_, err := svc.CorrectCurrent(ctx, owner, app.ID, &appservice.CorrectCurrentInput{
+		ToStatus: domain.StatusAccepted, Reason: "直接改成已接受", Version: 2,
+	})
+	if err == nil {
+		t.Fatalf("correcting straight to 已接受 without any Offer record must be refused")
+	}
+	var ve *domain.ValidationError
+	if !errors.As(err, &ve) || ve.Code != "correction_invalid" {
+		t.Fatalf("err = %v, want correction_invalid", err)
+	}
+
+	// 对照 A：真实到达过 Offer 的记录，把 Offer 之后那步更正成 已接受 可以。
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusOffer, Version: 2, Reason: "约谈",
+	}); err != nil {
+		t.Fatalf("offer: %v", err)
+	}
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusAccepted, Version: 3,
+	}); err != nil {
+		t.Fatalf("accepted: %v", err)
+	}
+	// 现在把「误点成已接受」那步更正回 Offer，再对照一次正向路径仍然合法。
+	row, err := svc.CorrectCurrent(ctx, owner, app.ID, &appservice.CorrectCurrentInput{
+		ToStatus: domain.StatusOffer, Reason: "其实还没接受", Version: 4,
+	})
+	if err != nil {
+		t.Fatalf("correcting accepted back to offer: %v", err)
+	}
+	if row.Status != domain.StatusOffer {
+		t.Fatalf("status = %q, want offer", row.Status)
+	}
+	// 更正已把错误那步作废：当前进度回到 Offer，重新决定接受是一次真实的
+	// 状态变更，走普通流转（唯一能进 已接受 的入口），而不是再更正一次。
+	row, err = svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusAccepted, Version: row.Version,
+	})
+	if err != nil {
+		t.Fatalf("re-accepting after the correction: %v", err)
+	}
+	if row.Status != domain.StatusAccepted {
+		t.Fatalf("status = %q, want accepted", row.Status)
+	}
+}

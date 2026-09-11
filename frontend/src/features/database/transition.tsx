@@ -498,7 +498,7 @@ export function TransitionModal({
           </Card>
         )}
 
-        {needsReason && (
+        {(needsReason || mode === 'correction') && (
           <div
             style={{
               display: 'flex',
@@ -506,6 +506,13 @@ export function TransitionModal({
               gap: 'var(--space-2)',
             }}
           >
+            {/* 方案 §4.2：更正的原因记在更正事件上；被改写的那步如果本身要求
+                原因（例如从终态重开），留空时后端会用该事件当时记录的原因兜底。 */}
+            {reasonPresets.length > 0 && mode === 'correction' && (
+              <span style={{ font: 'var(--type-caption)', color: 'var(--text-muted)' }}>
+                原因可选；留空时沿用被更正记录当时填写的原因。
+              </span>
+            )}
             {reasonPresets.length > 0 && (
               <div
                 style={{
@@ -522,11 +529,11 @@ export function TransitionModal({
               </div>
             )}
             <Textarea
-              label="原因 *"
+              label={needsReason ? '原因 *' : '原因（可选）'}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               rows={2}
-              placeholder="必填"
+              placeholder={needsReason ? '必填' : '为什么改这条记录'}
             />
           </div>
         )}

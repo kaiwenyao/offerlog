@@ -179,7 +179,8 @@ func (a *App) Handler() http.Handler {
 	// meta: server-owned status / substatus whitelist for the client
 	appH.MetaRoutes(api.Group("/meta"))
 
-	// health (no auth)	r.GET("/health/live", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	// health (no auth)
+	r.GET("/health/live", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	r.GET("/health/ready", a.ready)
 
 	// SPA fallback handled by the static file server in cmd/api.

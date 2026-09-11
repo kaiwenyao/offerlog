@@ -126,9 +126,23 @@ func (r *Repo) ListInterviews(ctx context.Context, appID, ownerID int64) ([]*Int
 	return out, rows.Err()
 }
 
-func (r *Repo) GetInterview(ctx context.Context, appID, ownerID, id int64) (*Interview, error) {
-	return scanInterview(r.db.Pool().QueryRow(ctx, `SELECT `+interviewCols+`
+// GetInterview loads one round through the caller's Querier. Writers pass their
+// transaction so the read and the write see the same rows — a pool read next
+// to a transactional write is exactly the stale-snapshot bug CorrectCurrent
+// had (PR #23 review). Use GetInterviewForUpdate on write paths.
+func (r *Repo) GetInterview(ctx context.Context, q database.Querier, appID, ownerID, id int64) (*Interview, error) {
+	return scanInterview(q.QueryRow(ctx, `SELECT `+interviewCols+`
 		FROM interviews WHERE id=$1 AND application_id=$2 AND owner_id=$3`, id, appID, ownerID))
+}
+
+// GetInterviewForUpdate is GetInterview with a row lock, for the paths that
+// rewrite the round inside the caller's transaction (complete / reopen /
+// PATCH and the application service's round↔substatus sync). Without the
+// lock, two concurrent writers both read the old row and the second commit
+// silently overwrites the first.
+func (r *Repo) GetInterviewForUpdate(ctx context.Context, q database.Querier, appID, ownerID, id int64) (*Interview, error) {
+	return scanInterview(q.QueryRow(ctx, `SELECT `+interviewCols+`
+		FROM interviews WHERE id=$1 AND application_id=$2 AND owner_id=$3 FOR UPDATE`, id, appID, ownerID))
 }
 
 func (r *Repo) CreateInterview(ctx context.Context, q database.Querier, it *Interview) error {

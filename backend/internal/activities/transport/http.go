@@ -290,60 +290,67 @@ func (h *Handler) updateInterview(c *gin.Context) {
 	// Ownership gate before mutating: only a genuine not-found is a 404; DB
 	// errors surface (previously every UpdateInterview failure — including a
 	// real DB outage — was masked as “面试记录不存在”).
-	existing, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid)
-	if err != nil {
+	if _, err := h.repo.GetInterview(c.Request.Context(), h.repo.Pool(), appID, user.ID, iid); err != nil {
 		writeInterviewOwnershipErr(c, err)
 		return
 	}
-	it := &actrepo.Interview{
-		ID: iid, ApplicationID: appID, OwnerID: user.ID, RoundName: req.RoundName, Format: req.Format,
-		ScheduledAt: req.ScheduledAt, Timezone: req.Timezone, DurationMinutes: req.DurationMinutes,
-		Result: req.Result, Progress: req.Progress, InvitedAt: req.InvitedAt,
-		CompletedAt: req.CompletedAt, CompletedUnknown: req.CompletedUnknown,
-		Feedback: req.Feedback, Notes: req.Notes,
-	}
-	if it.Progress == "" {
-		it.Progress = existing.Progress
-	}
-	if it.Result == "" {
-		it.Result = existing.Result
-	}
-	// A PATCH that does not mention the completion facts must not erase them:
-	// the wire shape cannot distinguish "omitted" from "null" for a timestamp,
-	// and silently dropping a recorded completed_at would lose real history.
-	if it.CompletedAt == nil {
-		it.CompletedAt = existing.CompletedAt
-	}
-	if it.InvitedAt == nil {
-		it.InvitedAt = existing.InvitedAt
-	}
-	it.Result = resultOrUnknown(it.Result)
-	// A legacy round carries progress='' (未细分). Updating its schedule must not
-	// be blocked by a refinement it never had (方案 §7): only a progress the
-	// caller actually names — or one already recorded — is validated.
-	if it.Progress != "" && !appdomain.ValidActivityProgress(appdomain.ActivityInterview, it.Progress) {
-		httpx.WriteErr(c, httpx.BadRequest("invalid_progress", "未知的面试进度"))
-		return
-	}
-	if !appdomain.ValidActivityResult(it.Result) {
-		httpx.WriteErr(c, httpx.BadRequest("invalid_result", "未知的面试结果"))
-		return
-	}
-	if it.Progress != "" && it.Progress != actrepo.ProgressCompleted && it.Result != actrepo.ResultUnknown {
-		httpx.WriteErr(c, httpx.BadRequest("result_before_completion", "尚未完成的面试不能记录通过 / 未通过结果"))
-		return
-	}
-	if it.Progress == actrepo.ProgressCompleted && it.CompletedAt == nil {
-		// 完成的轮次至少要知道「完成了」，不能既没有时间也没有完成标记；
-		// 时间不详就标未知，而不是填一个看起来精确的假时间。
-		it.CompletedUnknown = true
-	}
-	// Interview update + its scheduling metadata are written in ONE transaction
-	// (same shape as createInterview) so a failure mid-way cannot leave the
-	// interview updated without its (optional) schedule link, or a link
-	// pointing at a stale interview.
+	// The row itself is re-read INSIDE the transaction with a lock: building
+	// the patch from a pre-transaction copy is the classic stale-snapshot race
+	// — a concurrent complete/PATCH between this read and the write would be
+	// silently overwritten (PR #23 review, same class as CorrectCurrent).
+	var it *actrepo.Interview
 	var sch *actrepo.ScheduleLink
-	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+	var fresh *actrepo.Interview
+	err := h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		existing, err := h.repo.GetInterviewForUpdate(ctx, tx, appID, user.ID, iid)
+		if err != nil {
+			return err
+		}
+		fresh = existing
+		it = &actrepo.Interview{
+			ID: iid, ApplicationID: appID, OwnerID: user.ID, RoundName: req.RoundName, Format: req.Format,
+			ScheduledAt: req.ScheduledAt, Timezone: req.Timezone, DurationMinutes: req.DurationMinutes,
+			Result: req.Result, Progress: req.Progress, InvitedAt: req.InvitedAt,
+			CompletedAt: req.CompletedAt, CompletedUnknown: req.CompletedUnknown,
+			Feedback: req.Feedback, Notes: req.Notes,
+		}
+		if it.Progress == "" {
+			it.Progress = existing.Progress
+		}
+		if it.Result == "" {
+			it.Result = existing.Result
+		}
+		// A PATCH that does not mention the completion facts must not erase them:
+		// the wire shape cannot distinguish "omitted" from "null" for a timestamp,
+		// and silently dropping a recorded completed_at would lose real history.
+		if it.CompletedAt == nil {
+			it.CompletedAt = existing.CompletedAt
+		}
+		if it.InvitedAt == nil {
+			it.InvitedAt = existing.InvitedAt
+		}
+		it.Result = resultOrUnknown(it.Result)
+		// A legacy round carries progress='' (未细分). Updating its schedule must not
+		// be blocked by a refinement it never had (方案 §7): only a progress the
+		// caller actually names — or one already recorded — is validated.
+		if it.Progress != "" && !appdomain.ValidActivityProgress(appdomain.ActivityInterview, it.Progress) {
+			return httpx.BadRequest("invalid_progress", "未知的面试进度")
+		}
+		if !appdomain.ValidActivityResult(it.Result) {
+			return httpx.BadRequest("invalid_result", "未知的面试结果")
+		}
+		if it.Progress != "" && it.Progress != actrepo.ProgressCompleted && it.Result != actrepo.ResultUnknown {
+			return httpx.BadRequest("result_before_completion", "尚未完成的面试不能记录通过 / 未通过结果")
+		}
+		if it.Progress == actrepo.ProgressCompleted && it.CompletedAt == nil {
+			// 完成的轮次至少要知道「完成了」，不能既没有时间也没有完成标记；
+			// 时间不详就标未知，而不是填一个看起来精确的假时间。
+			it.CompletedUnknown = true
+		}
+		// Interview update + its scheduling metadata are written in ONE transaction
+		// (same shape as createInterview) so a failure mid-way cannot leave the
+		// interview updated without its (optional) schedule link, or a link
+		// pointing at a stale interview.
 		if err := h.repo.UpdateInterview(ctx, tx, it); err != nil {
 			return err
 		}
@@ -371,7 +378,7 @@ func (h *Handler) updateInterview(c *gin.Context) {
 	// pinned and stale — it would also mute the fresh one. Clearing here frees
 	// the key; the daily generator re-arms the reminder for the new time on its
 	// next pass (same lifecycle as cancel/uncancel). Best-effort.
-	if h.nots != nil && scheduledAtChanged(existing, req.ScheduledAt) {
+	if h.nots != nil && scheduledAtChanged(fresh, req.ScheduledAt) {
 		if err := h.nots.ClearInterviewReminders(c.Request.Context(), user.ID, iid); err != nil {
 			observability.L(c.Request.Context()).Warn("clear interview reminders on reschedule",
 				"interview_id", iid, "error", err)
@@ -388,7 +395,7 @@ func (h *Handler) deleteInterview(c *gin.Context) {
 	}
 	// Ownership gate first so a foreign interview is a clean 404 and a real DB
 	// failure is not reported as “记录不存在”.
-	if _, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid); err != nil {
+	if _, err := h.repo.GetInterview(c.Request.Context(), h.repo.Pool(), appID, user.ID, iid); err != nil {
 		writeInterviewOwnershipErr(c, err)
 		return
 	}
@@ -440,7 +447,7 @@ func (h *Handler) completeInterview(c *gin.Context) {
 	}
 	var out *actrepo.Interview
 	err := h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
-		it, err := h.repo.GetInterview(ctx, appID, user.ID, iid)
+		it, err := h.repo.GetInterviewForUpdate(ctx, tx, appID, user.ID, iid)
 		if err != nil {
 			return err
 		}
@@ -487,7 +494,7 @@ func (h *Handler) reopenInterview(c *gin.Context) {
 	}
 	var out *actrepo.Interview
 	err := h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
-		it, err := h.repo.GetInterview(ctx, appID, user.ID, iid)
+		it, err := h.repo.GetInterviewForUpdate(ctx, tx, appID, user.ID, iid)
 		if err != nil {
 			return err
 		}
@@ -664,6 +671,26 @@ func (h *Handler) updateAssessment(c *gin.Context) {
 	}
 	if req.Kind == "" {
 		req.Kind = existing.Kind
+	}
+	// Mirror updateInterview: a PATCH that does not mention a recorded time
+	// must not erase it. The wire shape cannot distinguish 「omitted」 from
+	// 「null」 for a timestamp, so a note-only PATCH would otherwise drop the
+	// invited/planned/due/completed facts one by one (方案 §3.2 四种时间各自保存).
+	if req.InvitedAt == nil {
+		req.InvitedAt = existing.InvitedAt
+	}
+	if req.PlannedAt == nil {
+		req.PlannedAt = existing.PlannedAt
+	}
+	if req.DueAt == nil {
+		req.DueAt = existing.DueAt
+	}
+	if req.CompletedAt == nil {
+		req.CompletedAt = existing.CompletedAt
+	}
+	if req.CompletedAt == nil && existing.CompletedUnknown {
+		// 完成时间不详的标记同样不能被顺带清掉。
+		req.CompletedUnknown = true
 	}
 	a, ok := assessmentPayload(c, &req)
 	if !ok {
@@ -900,7 +927,7 @@ func (h *Handler) cancelInterview(c *gin.Context) {
 	// reason is optional — an empty body (or no JSON) is fine for cancel.
 	_ = httpx.BindJSON(c, &req)
 	// Ownership check first: only a real not-found is 404; DB errors surface.
-	if _, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid); err != nil {
+	if _, err := h.repo.GetInterview(c.Request.Context(), h.repo.Pool(), appID, user.ID, iid); err != nil {
 		writeInterviewOwnershipErr(c, err)
 		return
 	}
@@ -935,7 +962,7 @@ func (h *Handler) uncancelInterview(c *gin.Context) {
 		return
 	}
 	// Ownership check first: only a real not-found is 404; DB errors surface.
-	if _, err := h.repo.GetInterview(c.Request.Context(), appID, user.ID, iid); err != nil {
+	if _, err := h.repo.GetInterview(c.Request.Context(), h.repo.Pool(), appID, user.ID, iid); err != nil {
 		writeInterviewOwnershipErr(c, err)
 		return
 	}
