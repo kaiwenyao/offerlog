@@ -350,8 +350,11 @@ type eventRow struct {
 }
 
 func (r *Repo) eventsFor(ctx context.Context, appID int64) ([]eventRow, error) {
-	rows, err := r.db.Pool().Query(ctx, `SELECT from_status, to_status, event_type, occurred_at FROM application_events
-		WHERE application_id=$1 AND event_type <> 'correction' ORDER BY occurred_at, sequence`, appID)
+	// The effective target status (a later correction wins) is what the flow
+	// actually did; the raw to_status would keep a mis-click in the diagram.
+	rows, err := r.db.Pool().Query(ctx, `SELECT e.from_status, `+effectiveToStatusSQL+`, e.event_type, e.occurred_at
+		FROM application_events e
+		WHERE e.application_id=$1 AND e.event_type <> 'correction' ORDER BY e.occurred_at, e.sequence`, appID)
 	if err != nil {
 		return nil, err
 	}

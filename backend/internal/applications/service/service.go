@@ -7,12 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	actrepo "offerlog/backend/internal/activities/repository"
 	"offerlog/backend/internal/applications/domain"
 	"offerlog/backend/internal/applications/repository"
 	"offerlog/backend/internal/platform/database"
@@ -43,6 +43,8 @@ type CreateInput struct {
 	Notes          string
 	SubmittedAt    *time.Time
 	SavedAt        *time.Time
+	// Substatus refines Status inside the stage at creation time (optional).
+	Substatus string
 }
 
 type UpdateInput struct {
@@ -66,9 +68,19 @@ type UpdateInput struct {
 type Service struct {
 	db   *database.DB
 	repo *repository.Repo
+	// acts gives the service access to interview / assessment rounds so a
+	// transition and the round it references are written in one transaction
+	// (方案 §6.3). Optional: nil-safe for tests that only exercise status.
+	acts *actrepo.Repo
 }
 
 func New(db *database.DB, repo *repository.Repo) *Service { return &Service{db: db, repo: repo} }
+
+// WithActivities attaches the activities repository (interviews, OA rounds).
+func (s *Service) WithActivities(acts *actrepo.Repo) *Service {
+	s.acts = acts
+	return s
+}
 
 func (s *Service) Repo() *repository.Repo { return s.repo }
 
@@ -86,6 +98,9 @@ func normalizeCreate(in *CreateInput) error {
 	}
 	if !domain.ValidStatus(in.Status) {
 		return &domain.ValidationError{Code: "invalid_status", Message: "未知状态"}
+	}
+	if in.Substatus != "" && !domain.ValidSubstatus(in.Status, in.Substatus) {
+		return &domain.ValidationError{Code: "invalid_substatus", Message: "阶段与子状态不匹配"}
 	}
 	if in.Priority == "" {
 		in.Priority = "medium"
@@ -156,7 +171,7 @@ func (s *Service) Create(ctx context.Context, ownerID int64, in *CreateInput) (*
 			Position: in.Position, JobURL: in.JobURL, Location: in.Location,
 			RemotePolicy: in.RemotePolicy, EmploymentType: in.EmploymentType,
 			SalaryMin: in.SalaryMin, SalaryMax: in.SalaryMax, SalaryCurrency: in.SalaryCurrency,
-			Channel: in.Channel, Status: in.Status, Priority: in.Priority,
+			Channel: in.Channel, Status: in.Status, Substatus: in.Substatus, Priority: in.Priority,
 			Tags: in.Tags, Notes: in.Notes, Deadline: in.Deadline,
 			SavedAt: in.SavedAt, SubmittedAt: in.SubmittedAt,
 			CustomValues: json.RawMessage(`{}`), Version: 1, CreatedAt: now,
@@ -295,6 +310,7 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, in *UpdateInput
 // TransitionInput is the request for a status change.
 type TransitionInput struct {
 	ToStatus        string     `json:"to_status"`
+	ToSubstatus     string     `json:"to_substatus"`
 	OccurredAt      *time.Time `json:"occurred_at"`
 	Reason          string     `json:"reason"`
 	Note            string     `json:"note"`
@@ -306,6 +322,27 @@ type TransitionInput struct {
 	NoFormalSubmission bool   `json:"no_formal_submission"`
 	Version            int    `json:"version"`
 	IdempotencyKey     string `json:"idempotency_key"`
+	// ChangeType records WHY the change happened. "" derives advance /
+	// rollback / reopen from the flow order; "rollback" asserts 流程实际退回.
+	// "correct" is refused here — a mistake is repaired through
+	// CorrectCurrent so the wrong stage keeps an audit trail (方案 §4.2).
+	ChangeType string `json:"change_type"`
+	// FocusActivity points the stage at one specific round; ClearFocus removes
+	// the reference. Both are optional.
+	FocusActivityKind string `json:"focus_activity_kind"`
+	FocusActivityID   *int64 `json:"focus_activity_id"`
+	ClearFocus        bool   `json:"clear_focus"`
+	// Assessment / Interview record a new round in the SAME transaction as the
+	// transition (方案 §6.3), so 切到准备 OA 顺手记一条轮次 cannot half-apply.
+	Assessment *AssessmentInput `json:"assessment"`
+	Interview  *InterviewInput  `json:"interview"`
+}
+
+func sameInt64Ptr(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // Transition applies a status change, writes an event and updates the snapshot
@@ -313,6 +350,17 @@ type TransitionInput struct {
 func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *TransitionInput) (*repository.Row, error) {
 	if in.ToStatus == "" {
 		return nil, &domain.ValidationError{Code: "to_status_required", Message: "缺少目标状态"}
+	}
+	if in.ChangeType == "correct" {
+		return nil, &domain.ValidationError{
+			Code:    "use_correction",
+			Message: "「之前选错了」请使用更正流程，以便保留误操作的审计记录",
+		}
+	}
+	switch in.ChangeType {
+	case "", domain.ChangeAdvance, domain.ChangeRollback, domain.ChangeReopen:
+	default:
+		return nil, &domain.ValidationError{Code: "invalid_change_type", Message: "未知的变更类型"}
 	}
 	if in.IdempotencyKey != "" {
 		done, existing, err := s.repo.RunIdempotentGuard(ctx, ownerID, id, in.IdempotencyKey)
@@ -345,6 +393,87 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 			// 发生在昨天）。推进到后续阶段时发生时间留空仍默认现在。
 			occ = *in.SubmittedAt
 		}
+
+		// Resolve the concrete progress inside the target stage (方案 §6.8):
+		// an older client that only sends `status` keeps the existing substatus
+		// when the stage does not change, and never carries it across stages.
+		toSub := in.ToSubstatus
+		if toSub == "" && in.ToStatus == row.Status {
+			toSub = row.Substatus
+		}
+		if toSub != "" && !domain.ValidSubstatus(in.ToStatus, toSub) {
+			return &domain.ValidationError{Code: "invalid_substatus", Message: "阶段与子状态不匹配"}
+		}
+
+		// Focus reference resolution.
+		focusKind, focusID := row.FocusActivityKind, row.FocusActivityID
+		if in.ClearFocus {
+			focusKind, focusID = "", nil
+		}
+		if in.FocusActivityKind != "" {
+			if !domain.ValidActivityKind(in.FocusActivityKind) {
+				return &domain.ValidationError{Code: "invalid_activity_kind", Message: "未知的活动类型"}
+			}
+			if repository.StageForActivityKind(in.FocusActivityKind) != in.ToStatus {
+				return &domain.ValidationError{Code: "activity_stage_mismatch", Message: "活动类型与目标阶段不匹配"}
+			}
+			focusKind, focusID = in.FocusActivityKind, in.FocusActivityID
+		}
+
+		// A new round may be recorded inline with the transition.
+		if in.Assessment != nil {
+			if in.ToStatus != domain.StatusAssessment {
+				return &domain.ValidationError{Code: "activity_stage_mismatch", Message: "只有 OA / 作业阶段可以新增测评轮次"}
+			}
+			round, err := s.CreateAssessmentTx(ctx, tx, ownerID, id, in.Assessment)
+			if err != nil {
+				return err
+			}
+			focusKind, focusID = domain.ActivityAssessment, &round.ID
+			if toSub == "" {
+				toSub = domain.SubstatusForActivity(domain.ActivityAssessment, round.Progress, round.Result)
+			}
+		}
+		if in.Interview != nil {
+			if in.ToStatus != domain.StatusInterviewing {
+				return &domain.ValidationError{Code: "activity_stage_mismatch", Message: "只有面试阶段可以新增面试轮次"}
+			}
+			round, err := s.CreateInterviewTx(ctx, tx, ownerID, id, in.Interview)
+			if err != nil {
+				return err
+			}
+			focusKind, focusID = domain.ActivityInterview, &round.ID
+			if toSub == "" {
+				toSub = domain.SubstatusForActivity(domain.ActivityInterview, round.Progress, round.Result)
+			}
+		}
+
+		// Leaving the focused activity's stage drops the reference: a record in
+		// 待投递 has no current round.
+		if focusKind != "" && repository.StageForActivityKind(focusKind) != in.ToStatus {
+			focusKind, focusID = "", nil
+		}
+		// Derive the substatus from the focused round when the caller did not
+		// name one (方案 §6.1: 子状态由选中的活动进度派生).
+		if toSub == "" && focusKind != "" && focusID != nil {
+			if st, err := s.substatusOfRound(ctx, tx, ownerID, id, focusKind, *focusID); err == nil {
+				toSub = st
+			}
+		}
+		// 反向同步（方案 §6.1）：用户直接选了具体进度（例如「已完成 OA」）而没有
+		// 新建轮次时，要把关注的那一轮也改成同一事实，否则申请说已完成、轮次还
+		// 说准备中，下一次派生又会把它拉回去。
+		if in.Assessment == nil && in.Interview == nil && toSub != "" && focusKind != "" && focusID != nil {
+			if err := s.applySubstatusToRound(ctx, tx, ownerID, id, focusKind, *focusID, toSub); err != nil {
+				return err
+			}
+		}
+
+		focusChanged := focusKind != row.FocusActivityKind || !sameInt64Ptr(focusID, row.FocusActivityID)
+		if row.Status == in.ToStatus && row.Substatus == toSub && !focusChanged {
+			return &domain.ValidationError{Code: "same_status", Message: "进度未变化"}
+		}
+
 		// Skip-ahead (待投递 → 笔试作业) supplies 投递时间 for a stage that is not
 		// itself the submission. That time used to vanish into the snapshot
 		// column while the event took the write clock, so the trail said 前天 and
@@ -359,8 +488,15 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 		if in.SubmittedAt != nil {
 			wasSubmitted = true
 		}
+		changeType := in.ChangeType
+		if changeType == "" {
+			changeType = domain.DeriveChangeType(row.Status, in.ToStatus)
+		}
 		err = domain.ValidateTransition(domain.Transition{
-			FromStatus: row.Status, ToStatus: in.ToStatus, OccurredAt: occ, Now: now,
+			FromStatus: row.Status, FromSubstatus: row.Substatus,
+			ToStatus: in.ToStatus, ToSubstatus: toSub,
+			ChangeType: changeType, FocusChanged: focusChanged,
+			OccurredAt: occ, Now: now,
 			WasSubmitted: wasSubmitted, HadOffer: hadOffer, SkipSubmission: in.NoFormalSubmission,
 			Reason: in.Reason, Note: in.Note,
 		})
@@ -371,15 +507,24 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 		// derive new snapshot fields from the target status
 		newRow := *row
 		newRow.Status = in.ToStatus
-		newRow.Reason = in.Reason
+		newRow.Substatus = toSub
+		newRow.FocusActivityKind = focusKind
+		newRow.FocusActivityID = focusID
+		if in.Reason != "" || row.Status != in.ToStatus {
+			newRow.Reason = in.Reason
+		}
 		if in.SubmittedAt != nil {
 			newRow.SubmittedAt = in.SubmittedAt
 		}
 		if in.FirstResponseAt != nil {
 			newRow.FirstResponseAt = in.FirstResponseAt
 		}
+		// 方案 §4.2: a rollback does NOT erase history. submitted_at and
+		// first_response_at stay exactly as they were — the submission and the
+		// first reply really happened, even when the process walks back. Only
+		// the explicit correction flow may retire them.
 		if in.ToStatus == domain.StatusAccepted {
-			// record accept time and default reason
+			// record accept time
 			if newRow.AcceptedAt == nil {
 				at := occ
 				newRow.AcceptedAt = &at
@@ -402,21 +547,9 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 			at := occ
 			newRow.RejectedAt = &at
 		}
-		if in.ToStatus == domain.StatusOffer && !wasSubmitted {
-			// receiving an offer implies the application was submitted; keep
-			// submitted_at null only if user explicitly says not submitted.
-			if newRow.SubmittedAt == nil {
-				// plan: 从准备中直接进入后续招聘阶段时，必须补充实际投递时间或标记未经过正式投递。
-				// Since offers necessarily come after a real submission, use the
-				// occurrence time as the submission time.
-				st := occ
-				newRow.SubmittedAt = &st
-			}
-		}
-		if in.ToStatus == domain.StatusSaved || in.ToStatus == domain.StatusPreparing {
-			newRow.SubmittedAt = nil
-			newRow.FirstResponseAt = nil
-		}
+		// NOTE: entering 已投递 / 后续阶段 never fabricates a submitted_at here.
+		// 方案 §4.1: 接受 Offer 仍需要真实 Offer 记录或显式补录，不能自动捏造；
+		// the missing-submission rule is enforced by ValidateTransition instead.
 		if err := s.repo.SetStatus(ctx, tx, &newRow); err != nil {
 			return err
 		}
@@ -432,7 +565,10 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 		ev := &repository.Event{
 			ApplicationID: id, OwnerID: ownerID, EventType: "status_change",
 			FromStatus: ptrString(from), ToStatus: ptrString(in.ToStatus),
-			Note: in.Note, Reason: in.Reason, OccurredAt: occ, ActorID: &ownerID,
+			FromSubstatus: nullStr(row.Substatus), ToSubstatus: nullStr(toSub),
+			ActivityKind: nullStr(focusKind), ActivityID: focusID,
+			ChangeType: changeType,
+			Note:       in.Note, Reason: in.Reason, OccurredAt: occ, ActorID: &ownerID,
 		}
 		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
 			return err
@@ -449,6 +585,13 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 	return out, err
 }
 
+func nullStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 func ptrString(s string) *string { return &s }
 
 // Events lists the timeline for an application.
@@ -460,76 +603,25 @@ func (s *Service) Events(ctx context.Context, ownerID, id int64) ([]*repository.
 // CorrectionInput rewrites history with an audit trail: the corrected event is
 // linked via corrects_event_id and a compensating event is appended.
 type CorrectionInput struct {
-	EventID    int64
-	NewStatus  string
-	OccurredAt time.Time
-	Reason     string
+	EventID   int64
+	NewStatus string
+	// NewSubstatus optionally also repairs the concrete progress (方案 §6.3:
+	// 更正接口扩展可更正的子状态).
+	NewSubstatus string
+	OccurredAt   time.Time
+	Reason       string
+	Version      int
 }
 
 // Correct validates the resulting timeline then records a correction event.
 func (s *Service) Correct(ctx context.Context, ownerID, appID int64, in *CorrectionInput) error {
-	return s.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		orig, err := s.repo.GetEventByID(ctx, tx, appID, ownerID, in.EventID)
-		if err != nil {
-			return ErrNotFound
-		}
-		// A correction exists to repair a wrong time, so the user's occurred_at
-		// is the whole point — it used to be discarded for time.Now(), which
-		// left a mistyped timestamp unfixable through the product.
-		corrAt := in.OccurredAt
-		if corrAt.IsZero() {
-			corrAt = orig.OccurredAt
-		}
-		// Preview timeline with correction applied: substitute the original
-		// event's target state for the requested one at its occurrence time.
-		// Replay in sequence order — a backfilled event carries an earlier
-		// business time than the created event, but the state machine walked
-		// the transitions in the order they were recorded.
-		timeline, err := s.repo.ListEvents(ctx, tx, appID, ownerID)
-		if err != nil {
-			return err
-		}
-		slices.SortStableFunc(timeline, func(a, b *repository.Event) int {
-			return a.Sequence - b.Sequence
-		})
-		// validate sequence stays consistent; we trust the new status is a
-		// legal step from the previous effective state.
-		sim := make([]string, 0, len(timeline))
-		for _, ev := range timeline {
-			if ev.ID == in.EventID {
-				sim = append(sim, in.NewStatus)
-			} else if ev.ToStatus != nil && ev.EventType != "correction" {
-				sim = append(sim, *ev.ToStatus)
-			}
-		}
-		// Simulate step by step: current = created state (first event to_status)
-		current := ""
-		for _, st := range sim {
-			if st == "" {
-				continue
-			}
-			if current != "" && current != st {
-				if err := domain.ValidateTransition(domain.Transition{
-					FromStatus: current, ToStatus: st, OccurredAt: corrAt, Now: time.Now(),
-					WasSubmitted: true, HadOffer: true, Reason: in.Reason,
-				}); err != nil {
-					return &domain.ValidationError{Code: "correction_invalid", Message: "纠正后的时间线不合法: " + err.Error()}
-				}
-			}
-			current = st
-		}
-		// Record correction (keep audit; do not delete the original event)
-		ev := &repository.Event{
-			ApplicationID: appID, OwnerID: ownerID, EventType: "correction",
-			FromStatus: ptrString(*orig.ToStatus), ToStatus: ptrString(in.NewStatus),
-			Reason: in.Reason, OccurredAt: corrAt, CorrectsEventID: &orig.ID, ActorID: &ownerID,
-		}
-		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
-			return err
-		}
-		// Recompute the current application status from the effective timeline.
-		return s.repo.ResyncStatusFromEvents(ctx, tx, appID, ownerID)
+	occ := in.OccurredAt
+	_, err := s.CorrectCurrent(ctx, ownerID, appID, &CorrectCurrentInput{
+		ToStatus: in.NewStatus, ToSubstatus: in.NewSubstatus,
+		Reason: in.Reason, OccurredAt: &occ, Version: in.Version,
+		CorrectedEventID: &in.EventID,
 	})
+	return err
 }
 
 // SetDeleted / Restore / Archive implement trash & archive semantics.

@@ -12,26 +12,33 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"offerlog/backend/internal/applications/domain"
 	"offerlog/backend/internal/platform/database"
 )
 
 // Row is the full applications row.
 type Row struct {
-	ID                    int64
-	OwnerID               int64
-	CompanyID             int64
-	CompanyName           string
-	Position              string
-	JobURL                string
-	JDSnapshot            string
-	Location              string
-	RemotePolicy          string
-	EmploymentType        string
-	SalaryMin             *int64
-	SalaryMax             *int64
-	SalaryCurrency        string
-	Channel               string
-	Status                string
+	ID             int64
+	OwnerID        int64
+	CompanyID      int64
+	CompanyName    string
+	Position       string
+	JobURL         string
+	JDSnapshot     string
+	Location       string
+	RemotePolicy   string
+	EmploymentType string
+	SalaryMin      *int64
+	SalaryMax      *int64
+	SalaryCurrency string
+	Channel        string
+	Status         string
+	// Substatus refines Status inside a large stage ("" = 未细分).
+	Substatus string
+	// FocusActivityKind/FocusActivityID point at the activity the user is
+	// currently focused on ("assessment" / "interview"); nil = none chosen.
+	FocusActivityKind     string
+	FocusActivityID       *int64
 	Priority              string
 	Tags                  []string
 	CustomValues          json.RawMessage
@@ -56,13 +63,20 @@ type Row struct {
 
 // Event is an application_events row.
 type Event struct {
-	ID              int64
-	ApplicationID   int64
-	OwnerID         int64
-	Sequence        int
-	EventType       string
-	FromStatus      *string
-	ToStatus        *string
+	ID            int64
+	ApplicationID int64
+	OwnerID       int64
+	Sequence      int
+	EventType     string
+	FromStatus    *string
+	ToStatus      *string
+	// Substatus / activity references and the reason the change was made
+	// (advance / rollback / reopen). Empty for legacy rows.
+	FromSubstatus   *string
+	ToSubstatus     *string
+	ActivityKind    *string
+	ActivityID      *int64
+	ChangeType      string
 	Note            string
 	Reason          string
 	OccurredAt      time.Time
@@ -79,21 +93,48 @@ func (r *Repo) Pool() *database.DB { return r.db }
 
 const rowCols = `id, owner_id, company_id, company_name, position, job_url, jd_snapshot,
 	location, remote_policy, employment_type, salary_min, salary_max, salary_currency,
-	channel, status, priority, tags, custom_values, notes, saved_at, submitted_at,
+	channel, status, substatus, focus_activity_kind, focus_activity_id, priority, tags,
+	custom_values, notes, saved_at, submitted_at,
 	first_response_at, deadline, accepted_at, rejected_at, reason, next_action,
 	next_action_due_at, next_action_due_ts, version, archived_at, deleted_at,
 	previous_application_id, created_at, updated_at`
 
+const eventCols = `id, application_id, sequence, event_type, from_status, to_status,
+	from_substatus, to_substatus, activity_kind, activity_id, change_type,
+	note, reason, occurred_at, recorded_at, corrects_event_id, actor_id`
+
+func scanEvent(row pgx.Row) (*Event, error) {
+	var e Event
+	if err := row.Scan(&e.ID, &e.ApplicationID, &e.Sequence, &e.EventType, &e.FromStatus,
+		&e.ToStatus, &e.FromSubstatus, &e.ToSubstatus, &e.ActivityKind, &e.ActivityID,
+		&e.ChangeType, &e.Note, &e.Reason, &e.OccurredAt, &e.RecordedAt,
+		&e.CorrectsEventID, &e.ActorID); err != nil {
+		return nil, err
+	}
+	e.Note = StripIdempotencyMarker(e.Note)
+	return &e, nil
+}
+
 func scanRow(row pgx.Row) (*Row, error) {
 	var r Row
+	// substatus / focus_activity_kind are nullable (NULL = 未细分 / 没有关注轮次),
+	// so they scan through pointers and collapse to the "" the domain uses.
+	var substatus, focusKind *string
 	err := row.Scan(&r.ID, &r.OwnerID, &r.CompanyID, &r.CompanyName, &r.Position, &r.JobURL,
 		&r.JDSnapshot, &r.Location, &r.RemotePolicy, &r.EmploymentType, &r.SalaryMin, &r.SalaryMax,
-		&r.SalaryCurrency, &r.Channel, &r.Status, &r.Priority, &r.Tags, &r.CustomValues, &r.Notes,
+		&r.SalaryCurrency, &r.Channel, &r.Status, &substatus, &focusKind, &r.FocusActivityID,
+		&r.Priority, &r.Tags, &r.CustomValues, &r.Notes,
 		&r.SavedAt, &r.SubmittedAt, &r.FirstResponseAt, &r.Deadline, &r.AcceptedAt, &r.RejectedAt,
 		&r.Reason, &r.NextAction, &r.NextActionDueAt, &r.NextActionDueTs, &r.Version,
 		&r.ArchivedAt, &r.DeletedAt, &r.PreviousApplicationID, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if substatus != nil {
+		r.Substatus = *substatus
+	}
+	if focusKind != nil {
+		r.FocusActivityKind = *focusKind
 	}
 	return &r, nil
 }
@@ -190,16 +231,25 @@ func (r *Repo) List(ctx context.Context, ownerID int64, o ListOptions) ([]*Row, 
 func (r *Repo) Create(ctx context.Context, q database.Querier, a *Row) (int64, error) {
 	err := q.QueryRow(ctx, `INSERT INTO applications(owner_id, company_id, company_name, position, job_url,
 		jd_snapshot, location, remote_policy, employment_type, salary_min, salary_max, salary_currency,
-		channel, status, priority, tags, custom_values, notes, saved_at, submitted_at, first_response_at,
+		channel, status, substatus, focus_activity_kind, focus_activity_id, priority, tags, custom_values,
+		notes, saved_at, submitted_at, first_response_at,
 		deadline, reason, next_action, next_action_due_at, next_action_due_ts, previous_application_id)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
 		RETURNING id, created_at, updated_at`,
 		a.OwnerID, a.CompanyID, a.CompanyName, a.Position, a.JobURL, a.JDSnapshot, a.Location,
 		a.RemotePolicy, a.EmploymentType, a.SalaryMin, a.SalaryMax, a.SalaryCurrency, a.Channel,
-		a.Status, a.Priority, a.Tags, a.CustomValues, a.Notes, a.SavedAt, a.SubmittedAt,
+		a.Status, a.Substatus, nullIfEmpty(a.FocusActivityKind), a.FocusActivityID,
+		a.Priority, a.Tags, a.CustomValues, a.Notes, a.SavedAt, a.SubmittedAt,
 		a.FirstResponseAt, a.Deadline, a.Reason, a.NextAction, a.NextActionDueAt, a.NextActionDueTs,
 		a.PreviousApplicationID).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)
 	return a.ID, err
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // UpdateFields updates the mutable core fields with optimistic locking.
@@ -221,21 +271,34 @@ func (r *Repo) UpdateFields(ctx context.Context, q database.Querier, a *Row) (in
 	return tag.RowsAffected(), nil
 }
 
-// SetStatus updates status-related columns within a transition.
+// SetStatus updates status/substatus/focus plus the derived snapshot columns
+// within a transition.
 //
-// submitted_at / first_response_at are written OUTRIGHT, not COALESCEd: the
-// caller passes a full row read under FOR UPDATE, so a nil there means "clear
-// it", not "leave it alone". Reopening an ended record back to 待投递 /
-// 准备材料 has to erase them — with COALESCE the row kept its old timestamps and
-// stayed counted as submitted by analytics and stale-response reminders while
-// displaying a pre-submission status.
+// The caller passes a full row read under FOR UPDATE, so submitted_at /
+// first_response_at are written outright: the service decides whether a change
+// preserves or clears them. The rule (方案 §4.4) is that a ROLLBACK — a real
+// process step backwards like 面试中 → 初筛 — keeps them, because the submission
+// and the first reply really happened; only an explicit correction may clear
+// them.
 func (r *Repo) SetStatus(ctx context.Context, q database.Querier, a *Row) error {
-	_, err := q.Exec(ctx, `UPDATE applications SET status=$1, submitted_at=$2::timestamptz,
-		first_response_at=$3::timestamptz, saved_at=COALESCE($4::timestamptz, saved_at),
-		accepted_at=$5::timestamptz, rejected_at=$6::timestamptz, reason=$7, version = version + 1, updated_at = now()
-		WHERE id=$8 AND owner_id=$9 AND version=$10`,
-		a.Status, a.SubmittedAt, a.FirstResponseAt, a.SavedAt, a.AcceptedAt, a.RejectedAt,
+	_, err := q.Exec(ctx, `UPDATE applications SET status=$1, substatus=$2,
+		focus_activity_kind=$3, focus_activity_id=$4,
+		submitted_at=$5::timestamptz,
+		first_response_at=$6::timestamptz, saved_at=COALESCE($7::timestamptz, saved_at),
+		accepted_at=$8::timestamptz, rejected_at=$9::timestamptz, reason=$10, version = version + 1, updated_at = now()
+		WHERE id=$11 AND owner_id=$12 AND version=$13`,
+		a.Status, a.Substatus, nullIfEmpty(a.FocusActivityKind), a.FocusActivityID,
+		a.SubmittedAt, a.FirstResponseAt, a.SavedAt, a.AcceptedAt, a.RejectedAt,
 		a.Reason, a.ID, a.OwnerID, a.Version)
+	return err
+}
+
+// SetFocus points the application at a specific activity without changing the
+// stage (used when the user picks which round they are working on).
+func (r *Repo) SetFocus(ctx context.Context, q database.Querier, ownerID, id int64, kind string, activityID *int64) error {
+	_, err := q.Exec(ctx, `UPDATE applications SET focus_activity_kind=$1, focus_activity_id=$2,
+		version=version+1, updated_at=now() WHERE id=$3 AND owner_id=$4`,
+		nullIfEmpty(kind), activityID, id, ownerID)
 	return err
 }
 
@@ -249,17 +312,22 @@ func (r *Repo) InsertEvent(ctx context.Context, q database.Querier, e *Event) er
 	if e.ToStatus != nil {
 		to = *e.ToStatus
 	}
+	changeType := e.ChangeType
+	if changeType == "" {
+		changeType = domain.ChangeAdvance
+	}
 	return q.QueryRow(ctx, `INSERT INTO application_events(application_id, owner_id, sequence, event_type,
-		from_status, to_status, note, reason, occurred_at, corrects_event_id, actor_id)
-		VALUES ($1, $2, (SELECT COALESCE(MAX(sequence),0)+1 FROM application_events WHERE application_id = $1), $3, $4::text, $5::text, $6, $7, $8, $9, $10)
+		from_status, to_status, from_substatus, to_substatus, activity_kind, activity_id, change_type,
+		note, reason, occurred_at, corrects_event_id, actor_id)
+		VALUES ($1, $2, (SELECT COALESCE(MAX(sequence),0)+1 FROM application_events WHERE application_id = $1), $3, $4::text, $5::text, $6::text, $7::text, $8::text, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING sequence`,
-		e.ApplicationID, e.OwnerID, e.EventType, from, to, e.Note, e.Reason,
-		e.OccurredAt, e.CorrectsEventID, e.ActorID).Scan(&e.Sequence)
+		e.ApplicationID, e.OwnerID, e.EventType, from, to,
+		e.FromSubstatus, e.ToSubstatus, e.ActivityKind, e.ActivityID, changeType,
+		e.Note, e.Reason, e.OccurredAt, e.CorrectsEventID, e.ActorID).Scan(&e.Sequence)
 }
 
 func (r *Repo) ListEvents(ctx context.Context, q database.Querier, appID, ownerID int64) ([]*Event, error) {
-	rows, err := q.Query(ctx, `SELECT id, application_id, sequence, event_type, from_status, to_status,
-		note, reason, occurred_at, recorded_at, corrects_event_id, actor_id
+	rows, err := q.Query(ctx, `SELECT `+eventCols+`
 		FROM application_events WHERE application_id=$1 AND owner_id=$2
 		-- Business-time order, but the 建档 row is pinned first: a backfilled
 		-- 投递 carries an EARLIER occurred_at than the creation instant, and a
@@ -272,30 +340,19 @@ func (r *Repo) ListEvents(ctx context.Context, q database.Querier, appID, ownerI
 	defer rows.Close()
 	var out []*Event
 	for rows.Next() {
-		var e Event
-		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.Sequence, &e.EventType, &e.FromStatus,
-			&e.ToStatus, &e.Note, &e.Reason, &e.OccurredAt, &e.RecordedAt, &e.CorrectsEventID, &e.ActorID); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.Note = StripIdempotencyMarker(e.Note)
-		out = append(out, &e)
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }
 
 func (r *Repo) GetEventByID(ctx context.Context, q database.Querier, appID, ownerID, eventID int64) (*Event, error) {
-	var e Event
-	err := q.QueryRow(ctx, `SELECT id, application_id, sequence, event_type, from_status, to_status,
-		note, reason, occurred_at, recorded_at, corrects_event_id, actor_id
+	return scanEvent(q.QueryRow(ctx, `SELECT `+eventCols+`
 		FROM application_events WHERE id=$1 AND application_id=$2 AND owner_id=$3`,
-		eventID, appID, ownerID).Scan(&e.ID, &e.ApplicationID, &e.Sequence, &e.EventType,
-		&e.FromStatus, &e.ToStatus, &e.Note, &e.Reason, &e.OccurredAt, &e.RecordedAt,
-		&e.CorrectsEventID, &e.ActorID)
-	if err != nil {
-		return nil, err
-	}
-	e.Note = StripIdempotencyMarker(e.Note)
-	return &e, nil
+		eventID, appID, ownerID))
 }
 
 // idempotencyMarker is APPENDED to note by RecordIdempotency so the guard query
@@ -384,4 +441,35 @@ func (r *Repo) ListCompanies(ctx context.Context, ownerID int64) ([]*Company, er
 		out = append(out, &c)
 	}
 	return out, rows.Err()
+}
+
+// StageForActivityKind maps an activity kind to the large stage it lives in.
+func StageForActivityKind(kind string) string {
+	switch kind {
+	case domain.ActivityAssessment:
+		return domain.StatusAssessment
+	case domain.ActivityInterview:
+		return domain.StatusInterviewing
+	}
+	return ""
+}
+
+// SyncFromActivity reflects an activity's derived progress into the
+// application snapshot (方案 §6.1: one command updates both). It is
+// deliberately scoped to applications that are CURRENTLY in the activity's
+// stage: finishing an old OA after the record already moved on to 面试 must not
+// drag the stage back or relabel it.
+func (r *Repo) SyncFromActivity(ctx context.Context, q database.Querier, ownerID, appID int64, kind string, activityID int64, substatus string) error {
+	stage := StageForActivityKind(kind)
+	if stage == "" {
+		return nil
+	}
+	_, err := q.Exec(ctx, `UPDATE applications SET
+			focus_activity_kind = $1,
+			focus_activity_id = $2,
+			substatus = CASE WHEN $3::text <> '' THEN $3::text ELSE substatus END,
+			version = version + 1, updated_at = now()
+		WHERE id = $4 AND owner_id = $5 AND status = $6`,
+		kind, activityID, substatus, appID, ownerID, stage)
+	return err
 }

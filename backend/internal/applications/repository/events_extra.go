@@ -61,8 +61,7 @@ func (r *Repo) RecordIdempotency(ctx context.Context, q database.Querier, ownerI
 // (owner-scoped) ordered by (application_id, occurred_at, sequence), so one
 // round-trip can feed the stage-history computation for a whole list page.
 func (r *Repo) ListEventsByApps(ctx context.Context, ownerID int64, appIDs []int64) ([]*Event, error) {
-	rows, err := r.db.Pool().Query(ctx, `SELECT id, application_id, sequence, event_type, from_status, to_status,
-		note, reason, occurred_at, recorded_at, corrects_event_id, actor_id
+	rows, err := r.db.Pool().Query(ctx, `SELECT `+eventCols+`
 		FROM application_events WHERE owner_id=$1 AND application_id = ANY($2::bigint[])
 		ORDER BY application_id, occurred_at ASC, sequence ASC`, ownerID, appIDs)
 	if err != nil {
@@ -71,14 +70,88 @@ func (r *Repo) ListEventsByApps(ctx context.Context, ownerID int64, appIDs []int
 	defer rows.Close()
 	var out []*Event
 	for rows.Next() {
-		var e Event
-		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.Sequence, &e.EventType, &e.FromStatus,
-			&e.ToStatus, &e.Note, &e.Reason, &e.OccurredAt, &e.RecordedAt, &e.CorrectsEventID, &e.ActorID); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, &e)
+		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// TimelineSummary is the per-application enrichment the list page needs. Both
+// maps come from ONE events query so a page of results costs a single
+// round-trip rather than one per derived view.
+type TimelineSummary struct {
+	// StageHistory: reached status → earliest arrival day (YYYY-MM-DD, user zone).
+	StageHistory map[int64]map[string]string
+	// ProgressSince: app id → the day its CURRENT progress was entered
+	// (方案 §5: 列表补充「最近一次进入当前进度的日期」). A correction moves it to
+	// the corrected business time; the superseded original does not count.
+	ProgressSince map[int64]string
+}
+
+// TimelineSummaryFor computes the list enrichment in one pass over the events.
+func (r *Repo) TimelineSummaryFor(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location, submittedAt map[int64]*time.Time) (*TimelineSummary, error) {
+	out := &TimelineSummary{
+		StageHistory:  map[int64]map[string]string{},
+		ProgressSince: map[int64]string{},
+	}
+	if len(appIDs) == 0 {
+		return out, nil
+	}
+	events, err := r.ListEventsByApps(ctx, ownerID, appIDs)
+	if err != nil {
+		return nil, err
+	}
+	out.StageHistory = buildStageHistory(events, loc, submittedAt)
+	out.ProgressSince = buildProgressSince(events, loc)
+	return out, nil
+}
+
+// buildProgressSince replays each application's effective timeline (corrections
+// applied first) and keeps the business time of the last change that actually
+// moved the progress — status or substatus. Editing only the note does not.
+func buildProgressSince(events []*Event, loc *time.Location) map[int64]string {
+	byApp := map[int64][]*Event{}
+	var order []int64
+	for _, e := range events {
+		if _, ok := byApp[e.ApplicationID]; !ok {
+			order = append(order, e.ApplicationID)
+		}
+		byApp[e.ApplicationID] = append(byApp[e.ApplicationID], e)
+	}
+	out := map[int64]string{}
+	for _, appID := range order {
+		evs := bySequence(byApp[appID])
+		corrected := correctionsByEvent(evs)
+		var last time.Time
+		curStatus, curSub := "", ""
+		seen := false
+		for _, ev := range evs {
+			if ev.EventType == "correction" {
+				continue
+			}
+			eff, at, ok := effectiveOf(ev, corrected)
+			if !ok {
+				continue
+			}
+			sub := ""
+			if c, ok := corrected[ev.ID]; ok {
+				sub = c.substatus
+			} else if ev.ToSubstatus != nil {
+				sub = *ev.ToSubstatus
+			}
+			if !seen || eff != curStatus || sub != curSub {
+				last, seen = at, true
+			}
+			curStatus, curSub = eff, sub
+		}
+		if seen {
+			out[appID] = timeutil.DateOnly(last, loc)
+		}
+	}
+	return out
 }
 
 // StageHistoryFor returns, per application id, the earliest calendar day
@@ -109,8 +182,9 @@ func (r *Repo) StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int6
 // status left the timeline showing the fix while submitted_at and the stage
 // rail kept the wrong day.
 type effectiveEvent struct {
-	status string
-	at     time.Time
+	status    string
+	substatus string
+	at        time.Time
 }
 
 // correctionsByEvent indexes corrections by the event they correct; a later
@@ -119,7 +193,11 @@ func correctionsByEvent(evs []*Event) map[int64]effectiveEvent {
 	out := map[int64]effectiveEvent{}
 	for _, ev := range evs {
 		if ev.EventType == "correction" && ev.CorrectsEventID != nil && ev.ToStatus != nil {
-			out[*ev.CorrectsEventID] = effectiveEvent{status: *ev.ToStatus, at: ev.OccurredAt}
+			sub := ""
+			if ev.ToSubstatus != nil {
+				sub = *ev.ToSubstatus
+			}
+			out[*ev.CorrectsEventID] = effectiveEvent{status: *ev.ToStatus, substatus: sub, at: ev.OccurredAt}
 		}
 	}
 	return out
@@ -183,9 +261,11 @@ func buildStageHistory(events []*Event, loc *time.Location, submittedAt map[int6
 	return out
 }
 
-// ResyncStatusFromEvents recomputes the current status by replaying the
-// effective timeline, then updates the application snapshot. Corrections
-// override the status of the event they point to.
+// ResyncStatusFromEvents recomputes the current status (and substatus) by
+// replaying the effective timeline, then updates the application snapshot.
+// Corrections override the status of the event they point to; existing
+// corrections are applied first so repeated corrections stay consistent
+// (方案 §4.3).
 func (r *Repo) ResyncStatusFromEvents(ctx context.Context, q database.Querier, appID, ownerID int64) error {
 	events, err := r.ListEvents(ctx, q, appID, ownerID)
 	if err != nil {
@@ -198,6 +278,7 @@ func (r *Repo) ResyncStatusFromEvents(ctx context.Context, q database.Querier, a
 	events = bySequence(events)
 	corrected := correctionsByEvent(events)
 	status := domain.StatusSaved
+	substatus := ""
 	var sub, rej, acc *time.Time
 	for _, ev := range events {
 		if ev.EventType == "correction" {
@@ -208,6 +289,15 @@ func (r *Repo) ResyncStatusFromEvents(ctx context.Context, q database.Querier, a
 			continue
 		}
 		status = eff
+		// The substatus follows the effective event too: a correction that
+		// points back at 准备 carries its own substatus (or "").
+		if c, ok := corrected[ev.ID]; ok {
+			substatus = c.substatus
+		} else if ev.ToSubstatus != nil {
+			substatus = *ev.ToSubstatus
+		} else {
+			substatus = ""
+		}
 		switch {
 		case eff == domain.StatusApplied && sub == nil:
 			t := at
@@ -220,9 +310,21 @@ func (r *Repo) ResyncStatusFromEvents(ctx context.Context, q database.Querier, a
 			acc = &t
 		}
 	}
-	_, err = q.Exec(ctx, `UPDATE applications SET status=$1, submitted_at=$2, rejected_at=$3,
-		accepted_at=$4, version=version+1, updated_at=now() WHERE id=$5 AND owner_id=$6`,
-		status, sub, rej, acc, appID, ownerID)
+	// A focus reference only survives while the record still sits in that
+	// activity's stage.
+	focusKind := ""
+	switch status {
+	case domain.StatusAssessment:
+		focusKind = domain.ActivityAssessment
+	case domain.StatusInterviewing:
+		focusKind = domain.ActivityInterview
+	}
+	_, err = q.Exec(ctx, `UPDATE applications SET status=$1, substatus=$2,
+		focus_activity_kind = CASE WHEN $7::text IS NOT NULL AND focus_activity_kind = $7 THEN focus_activity_kind ELSE NULL END,
+		focus_activity_id = CASE WHEN $7::text IS NOT NULL AND focus_activity_kind = $7 THEN focus_activity_id ELSE NULL END,
+		submitted_at=$3, rejected_at=$4, accepted_at=$5, version=version+1, updated_at=now()
+		WHERE id=$6 AND owner_id=$8`,
+		status, substatus, sub, rej, acc, appID, nullIfEmpty(focusKind), ownerID)
 	return err
 }
 

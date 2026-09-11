@@ -34,17 +34,20 @@ type FieldInfo struct {
 
 // CoreFields enumerates filterable/sortable built-in fields.
 var CoreFields = map[string]FieldInfo{
-	"company_name":       {Type: TypeText, SQL: "a.company_name"},
-	"position":           {Type: TypeText, SQL: "a.position"},
-	"job_url":            {Type: TypeURL, SQL: "a.job_url"},
-	"location":           {Type: TypeText, SQL: "a.location"},
-	"remote_policy":      {Type: TypeText, SQL: "a.remote_policy"},
-	"employment_type":    {Type: TypeText, SQL: "a.employment_type"},
-	"salary_min":         {Type: TypeNumber, SQL: "a.salary_min"},
-	"salary_max":         {Type: TypeNumber, SQL: "a.salary_max"},
-	"salary_currency":    {Type: TypeText, SQL: "a.salary_currency"},
-	"channel":            {Type: TypeText, SQL: "a.channel"},
-	"status":             {Type: TypeSelect, SQL: "a.status"},
+	"company_name":    {Type: TypeText, SQL: "a.company_name"},
+	"position":        {Type: TypeText, SQL: "a.position"},
+	"job_url":         {Type: TypeURL, SQL: "a.job_url"},
+	"location":        {Type: TypeText, SQL: "a.location"},
+	"remote_policy":   {Type: TypeText, SQL: "a.remote_policy"},
+	"employment_type": {Type: TypeText, SQL: "a.employment_type"},
+	"salary_min":      {Type: TypeNumber, SQL: "a.salary_min"},
+	"salary_max":      {Type: TypeNumber, SQL: "a.salary_max"},
+	"salary_currency": {Type: TypeText, SQL: "a.salary_currency"},
+	"channel":         {Type: TypeText, SQL: "a.channel"},
+	"status":          {Type: TypeSelect, SQL: "a.status"},
+	// substatus is the concrete progress inside a stage (方案 §3.2). It is
+	// filterable so a board can ask for 「面试 · 已完成 · 等反馈」 directly.
+	"substatus":          {Type: TypeSelect, SQL: "a.substatus"},
 	"priority":           {Type: TypeSelect, SQL: "a.priority"},
 	"tags":               {Type: TypeMultiSelect, SQL: "a.tags"},
 	"notes":              {Type: TypeText, SQL: "a.notes"},

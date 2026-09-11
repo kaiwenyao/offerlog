@@ -153,6 +153,9 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 			LEFT JOIN schedule_links sl ON sl.interview_id = i.id AND sl.owner_id = i.owner_id
 			WHERE i.owner_id=$1 AND i.scheduled_at IS NOT NULL
 			  AND COALESCE(sl.cancelled, FALSE) = FALSE
+			  -- 已完成 / 已取消的轮次不再提醒：用户在轮次卡片上标过「已完成」就不该
+			  -- 再收到「明天有面试」（方案 §3.3 完成事实独立于排期）。
+			  AND COALESCE(i.progress,'') NOT IN ('completed','cancelled')
 			  AND i.scheduled_at >= $2 AND i.scheduled_at < $3
 			ORDER BY i.id`, ownerID, tomorrowStart, tomorrowEnd)
 		if err != nil {

@@ -122,7 +122,7 @@ type WeekItem struct {
 type Summary struct {
 	Total              int64               `json:"total"`       // active (non-deleted) applications, incl archived
 	Active             int64               `json:"active"`      // non-deleted + non-archived (working set)
-	ToApply            int64               `json:"to_apply"`    // saved/preparing (active)
+	ToApply            int64               `json:"to_apply"`    // saved/preparing with no submission fact (active)
 	InProgress         int64               `json:"in_progress"` // applied…interviewing (active)
 	WithResult         int64               `json:"with_result"` // offer+accepted+rejected+withdrawn+closed (active)
 	Archived           int64               `json:"archived"`
@@ -178,7 +178,10 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 
 	// Lifecycle buckets over the working set (exclude archived + deleted).
 	if err := q.QueryRow(ctx, `SELECT
-		count(*) FILTER (WHERE status IN ('saved','preparing')),
+		-- 待投递必须同时「没有有效投递事实」：回退到准备材料的记录可能已经
+		-- 投过（HR 要求补材料），不能重新算回待投递（方案 §4.2）。
+		count(*) FILTER (WHERE status IN ('saved','preparing')
+			AND submitted_at IS NULL AND first_response_at IS NULL),
 		count(*) FILTER (WHERE status IN ('applied','screening','assessment','interviewing')),
 		count(*) FILTER (WHERE status IN ('offer','accepted','rejected','withdrawn','closed')),
 		count(*)
@@ -207,11 +210,14 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 	}
 
 	// 本周面试: non-cancelled interview rounds scheduled in [weekStart, weekEnd),
-	// over applications that are active (not archived / not deleted). Completed
-	// rounds (result passed/failed) counted separately.
+	// over applications that are active (not archived / not deleted). A round is
+	// cancelled when either the schedule link or its own progress says so (方案
+	// §3.3 面试进度与排期取消保持一致). 已完成轮次 independent from its result:
+	// 面完了但还没反馈也是「已完成」。
 	if err := q.QueryRow(ctx, `SELECT
-		count(*) FILTER (WHERE COALESCE(sl.cancelled, FALSE) = FALSE),
-		count(*) FILTER (WHERE COALESCE(sl.cancelled, FALSE) = FALSE AND i.result IN ('passed','failed'))
+		count(*) FILTER (WHERE COALESCE(sl.cancelled, FALSE) = FALSE AND COALESCE(i.progress,'') <> 'cancelled'),
+		count(*) FILTER (WHERE COALESCE(sl.cancelled, FALSE) = FALSE AND COALESCE(i.progress,'') <> 'cancelled'
+		                 AND (i.progress = 'completed' OR i.result IN ('passed','failed')))
 		FROM interviews i
 		JOIN applications a ON a.id = i.application_id AND a.owner_id = i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id = i.id AND sl.owner_id = i.owner_id
@@ -243,7 +249,8 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		FROM interviews i JOIN applications a ON a.id=i.application_id AND a.owner_id=i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id=i.id AND sl.owner_id=i.owner_id
 		WHERE i.owner_id=$1 AND i.scheduled_at >= $3 AND i.scheduled_at < $4
-		  AND COALESCE(sl.cancelled,FALSE)=FALSE AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		  AND COALESCE(sl.cancelled,FALSE)=FALSE AND COALESCE(i.progress,'') <> 'cancelled'
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		UNION ALL
 		-- 待办：due_ts is an instant; date-only due_date is the user's calendar day
 		-- and must be read as the *user's local midnight* (due_date::timestamp AT
@@ -292,6 +299,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		JOIN applications a ON a.id = i.application_id AND a.owner_id = i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id = i.id AND sl.owner_id = i.owner_id
 		WHERE i.owner_id=$1 AND i.scheduled_at IS NOT NULL AND COALESCE(sl.cancelled, FALSE) = FALSE
+		  AND COALESCE(i.progress,'') <> 'cancelled'
 		  AND a.deleted_at IS NULL
 		  AND i.scheduled_at >= $2
 		ORDER BY i.scheduled_at ASC

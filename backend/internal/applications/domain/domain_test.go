@@ -92,6 +92,22 @@ func TestTransitionValidationTable(t *testing.T) {
 			return tr
 		}(), ""},
 		{"interviewing->assessment rollback ok", base("interviewing", "assessment"), ""},
+		// 方案 §4.1：任意非终态之间都可前进、跳过或返回，排序只影响推荐。
+		{"preparing->saved rollback ok", base("preparing", "saved"), ""},
+		{"applied->preparing rollback ok", base("applied", "preparing"), ""},
+		{"offer->interviewing rollback ok", base("offer", "interviewing"), ""},
+		{"applied->saved rollback ok", base("applied", "saved"), ""},
+		{"terminal reopen accepted->interviewing ok", func() Transition {
+			tr := base("accepted", "interviewing")
+			tr.Reason = "招聘方重新联系"
+			return tr
+		}(), ""},
+		{"terminal reopen accepted->interviewing needs reason", func() Transition {
+			tr := base("accepted", "interviewing")
+			tr.Reason = ""
+			return tr
+		}(), "missing_reason"},
+		{"terminal->terminal needs correction not transition", base("rejected", "closed"), "invalid_transition"},
 		{"accepted->withdrawn 毁约 needs reason", func() Transition {
 			tr := base("accepted", "withdrawn")
 			tr.Reason = ""
@@ -132,9 +148,30 @@ func TestTransitionValidationTable(t *testing.T) {
 			tr.Reason = "重新开放"
 			return tr
 		}(), ""},
-		{"rejected->offer via offer disallowed", base("accepted", "applied"), "invalid_transition"},
 		{"saved->accepted disallowed", base("saved", "accepted"), "invalid_transition"},
+		{"accepted->applied reopen is allowed (方案 §4.1)", func() Transition {
+			tr := base("accepted", "applied")
+			tr.Reason = "之前记录有误"
+			return tr
+		}(), ""},
 		{"same status invalid", base("applied", "applied"), "same_status"},
+		// 同一大阶段允许子状态变更（方案 §4.1）：不是 no-op。
+		{"substatus change inside a stage is allowed", func() Transition {
+			tr := base("assessment", "assessment")
+			tr.FromSubstatus = "completed"
+			tr.ToSubstatus = "preparing"
+			return tr
+		}(), ""},
+		{"unknown substatus rejected", func() Transition {
+			tr := base("applied", "assessment")
+			tr.ToSubstatus = "nonsense"
+			return tr
+		}(), "invalid_substatus"},
+		{"substatus must belong to the target stage", func() Transition {
+			tr := base("applied", "assessment")
+			tr.ToSubstatus = "negotiating"
+			return tr
+		}(), "invalid_substatus"},
 		{"unknown status invalid", base("applied", "bogus"), "invalid_status"},
 		{"future occurred_at rejected", func() Transition {
 			tr := base("applied", "screening")

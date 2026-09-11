@@ -29,6 +29,97 @@ export const STATUSES: StatusMeta[] = [
 
 const byKey = new Map(STATUSES.map((s) => [s.key, s]))
 
+// 子状态字典（方案 §3.1/§6.5）。后端 backend/internal/applications/domain/substatus.go
+// 是唯一白名单，会通过 GET /api/v1/meta/status-model 下发；这里保留一份用于首屏
+// 与离线渲染的镜像。同一个键在不同大阶段含义不同，所以按阶段分组，
+// 绝不用全局 map 查标签。
+export interface SubstatusMeta {
+  key: string
+  label: string
+}
+
+export const SUBSTATUSES: Record<string, SubstatusMeta[]> = {
+  preparing: [{ key: 'ready', label: '材料就绪 · 待投递' }],
+  screening: [
+    { key: 'awaiting_schedule', label: '待安排初筛' },
+    { key: 'preparing', label: '准备初筛' },
+    { key: 'completed', label: '已完成初筛 · 等反馈' },
+  ],
+  assessment: [
+    { key: 'preparing', label: '准备 OA' },
+    { key: 'completed', label: '已完成 OA · 等结果' },
+    { key: 'passed', label: 'OA 已通过 · 等下一步' },
+  ],
+  interviewing: [
+    { key: 'awaiting_schedule', label: '待安排面试' },
+    { key: 'preparing', label: '准备面试' },
+    { key: 'completed', label: '已完成面试 · 等反馈' },
+  ],
+  offer: [
+    { key: 'reviewing', label: '待评估 Offer' },
+    { key: 'negotiating', label: '协商 Offer' },
+    { key: 'ready_to_accept', label: '待确认接受' },
+  ],
+}
+
+/** Legal substatuses for a stage ([] when the stage has no subdivision). */
+export function substatusOptions(status: string): SubstatusMeta[] {
+  return SUBSTATUSES[status] ?? []
+}
+
+/** True when (status, substatus) is a legal pair; "" is always 未细分. */
+export function validSubstatus(status: string, substatus: string): boolean {
+  if (!substatus) return statusMeta(status).key === status
+  return substatusOptions(status).some((s) => s.key === substatus)
+}
+
+/**
+ * The exact label the list / detail shows, mirroring domain.ComboLabelForKind:
+ * the un-subdivided state is named too (「未细分」), so a legacy row is never
+ * silently displayed as if the user had chosen 准备 OA.
+ */
+export function comboLabel(status: string, substatus?: string | null, assessmentKind?: string | null): string {
+  const sub = substatus ?? ''
+  if (status === 'assessment') {
+    const kind = assessmentKind ?? ''
+    const noun = kind === 'take_home' ? '作业' : 'OA'
+    if (kind && kind !== 'online_test') {
+      if (sub === 'preparing') return `准备${noun}`
+      if (sub === 'completed') return `已提交${noun} · 等结果`
+      if (sub === 'passed') return `${noun}已通过 · 等下一步`
+    }
+    if (sub === 'preparing') return '准备 OA'
+    if (sub === 'completed') return '已完成 OA · 等结果'
+    if (sub === 'passed') return 'OA 已通过 · 等下一步'
+    return 'OA / 作业 · 进度未细分'
+  }
+  if (!sub) {
+    switch (status) {
+      case 'saved':
+        return '待投递'
+      case 'applied':
+        return '已投递 · 等回复'
+      case 'screening':
+        return '初筛沟通 · 未细分'
+      case 'interviewing':
+        return '面试中 · 未细分'
+      case 'offer':
+        return '收到 Offer · 未细分'
+      default:
+        return statusMeta(status).label
+    }
+  }
+  const opt = substatusOptions(status).find((s) => s.key === sub)
+  return opt?.label ?? statusMeta(status).label
+}
+
+/** 测评类型（方案 §3.2）：作业显示「准备作业 / 已提交作业」。 */
+export const ASSESSMENT_KINDS: Array<{ value: string; label: string }> = [
+  { value: 'online_test', label: '在线测试 (OA)' },
+  { value: 'take_home', label: 'Take-home 作业' },
+  { value: 'other', label: '其他测评' },
+]
+
 export function statusMeta(key: string): StatusMeta {
   return (
     byKey.get(key) ?? { key, label: key, icon: '❓', category: 'preparing', tone: 'neutral', dot: 'var(--neutral)' }

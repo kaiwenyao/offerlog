@@ -1,45 +1,54 @@
 // Client-side mirror of the backend state machine.
 //
 // ⚠️ SOURCE OF TRUTH IS THE BACKEND: backend/internal/applications/domain/domain.go
-// (`allowedDirect`). Every edge here must exist there — the server re-validates
-// and returns `invalid_transition`, so an extra edge is a dead option the user
-// can pick and get a 400 for. Change one, change both, and update the guard
-// test in frontend/tests/unit.test.ts.
-import { ENDED, FLOW_ORDER, STATUSES, statusMeta, type StatusMeta } from './status'
+// (`allowedTarget` / `ReasonRequired` / `BucketFor`) and substatus.go
+// (`ValidSubstatus`). The server re-validates every request and answers
+// `invalid_transition` / `invalid_substatus` / `missing_reason`, so anything
+// offered here that the server does not allow is a dead option the user can
+// pick and get a 400 for. Change one, change both, and update the guard test in
+// frontend/tests/unit.test.ts.
+//
+// 方案 §4.1 relaxed the rules from a hand-written edge list to a rule:
+//   • any non-terminal → any non-terminal (forward, skip or back),
+//   • terminal → any non-terminal (reopen, needs a reason),
+//   • → 已接受 only from Offer (never fabricate an acceptance),
+//   • 已接受 → 已撤回 (毁约) is the one legal terminal → terminal move,
+//   • terminal → terminal otherwise must go through 更正, not 流转.
+import { ENDED, FLOW_ORDER, STATUSES, statusMeta, substatusOptions, type StatusMeta } from './status'
 import type { ListboxGroup } from '../ds'
 
-export const TRANSITIONS: Record<string, string[]> = {
-  // 准备期可以跳阶到任一招聘阶段：真实用户常常「面完了才想起来记录」或走内推
-  // 直接约面。进入 in-progress 时后端仍要投递证据（补时间或勾未经正式投递）。
-  saved: [
-    'preparing',
-    'applied',
-    'screening',
-    'assessment',
-    'interviewing',
-    'offer',
-    'rejected',
-    'withdrawn',
-    'closed',
-  ],
-  preparing: ['applied', 'screening', 'assessment', 'interviewing', 'offer', 'rejected', 'withdrawn', 'closed'],
-  applied: ['screening', 'assessment', 'interviewing', 'offer', 'rejected', 'withdrawn', 'closed'],
-  screening: ['assessment', 'interviewing', 'offer', 'rejected', 'withdrawn', 'closed'],
-  assessment: ['screening', 'interviewing', 'offer', 'rejected', 'withdrawn', 'closed'],
-  interviewing: ['screening', 'assessment', 'offer', 'rejected', 'withdrawn', 'closed'],
-  offer: ['accepted', 'rejected', 'withdrawn', 'closed'],
-  // 终态重开 / 毁约，后端一律要求填原因。
-  accepted: ['offer', 'withdrawn'],
-  rejected: ['saved', 'preparing', 'applied', 'screening', 'assessment', 'interviewing', 'offer'],
-  withdrawn: ['saved', 'preparing', 'applied', 'screening', 'assessment', 'interviewing', 'offer'],
-  closed: ['saved', 'preparing', 'applied', 'screening', 'assessment', 'interviewing', 'offer'],
+/** Every stage key, in dictionary order. */
+export const ALL_STATUS_KEYS = STATUSES.map((s) => s.key)
+
+export const isTerminal = (k: string): boolean => ENDED.has(k)
+
+/**
+ * Mirrors domain.allowedTarget exactly. `same stage` returns true because a
+ * substatus / focus-round change inside one stage is a real transition; whether
+ * it is a *change* at all is decided separately (same_status).
+ */
+export function canTransition(from: string, to: string): boolean {
+  if (!ALL_STATUS_KEYS.includes(from) || !ALL_STATUS_KEYS.includes(to)) return false
+  if (from === to) return true // 子状态 / 关注轮次变更
+  if (to === 'accepted') return from === 'offer'
+  if (from === 'accepted' && to === 'withdrawn') return true
+  if (isTerminal(from) && isTerminal(to)) return false
+  return true
 }
 
-/** Reachable targets from `from`, in the canonical dictionary order. */
+/**
+ * The reachable targets from `from`, in dictionary order — the same shape the
+ * backend serves at GET /api/v1/meta/status-model (`targets[from]`).
+ * A stage with no subdivision cannot target itself (nothing to change).
+ */
 export function allowedTargets(from: string): StatusMeta[] {
-  const keys = TRANSITIONS[from] ?? []
-  return STATUSES.filter((s) => keys.includes(s.key))
+  return STATUSES.filter((s) => canTransition(from, s.key) && !(s.key === from && substatusOptions(from).length === 0))
 }
+
+/** Reachable status keys from `from` (shape used by the guard test). */
+export const TRANSITIONS: Record<string, string[]> = Object.fromEntries(
+  ALL_STATUS_KEYS.map((from) => [from, allowedTargets(from).map((s) => s.key)]),
+)
 
 /** Statuses that still need submission evidence before they can be entered. */
 export const RECRUITING_KEYS = ['applied', 'screening', 'assessment', 'interviewing']
@@ -71,6 +80,35 @@ function rank(key: string): number {
   return i < 0 ? Number.POSITIVE_INFINITY : i
 }
 
+/** Mirrors domain.BucketFor — decides the picker group, never permission. */
+export function bucketFor(from: string, to: string): 'advance' | 'backward' | 'reopen' | 'end' {
+  if (isTerminal(to)) return 'end'
+  if (isTerminal(from)) return 'reopen'
+  return rank(to) > rank(from) ? 'advance' : 'backward'
+}
+
+/** Mirrors domain.DeriveChangeType: what the timeline should call this move. */
+export type ChangeType = 'advance' | 'rollback' | 'reopen'
+
+export function changeTypeFor(from: string, to: string): ChangeType {
+  if (isTerminal(from) && !isTerminal(to)) return 'reopen'
+  if (rank(to) < rank(from)) return 'rollback'
+  return 'advance'
+}
+
+export function changeTypeLabel(t: ChangeType | string): string {
+  switch (t) {
+    case 'rollback':
+      return '回退'
+    case 'reopen':
+      return '重开'
+    case 'correct':
+      return '更正'
+    default:
+      return '推进'
+  }
+}
+
 function toOption(s: StatusMeta) {
   return {
     value: s.key,
@@ -82,61 +120,63 @@ function toOption(s: StatusMeta) {
 }
 
 /**
- * Split reachable targets into the three buckets a job seeker actually thinks
- * in: 推进 (further along the flow), 回退 / 更正 (back up the flow), 结束
- * (the terminal outcomes). From a terminal status the forward bucket is the
- * reopen path, so it is relabelled.
+ * Split reachable targets into the groups a job seeker actually thinks in:
+ * 推进 (further along the flow), 回退 / 更正 (back up the flow), 结束 (the
+ * terminal outcomes). From a terminal status the forward bucket is the reopen
+ * path, so it is relabelled.
  */
 export function targetGroups(from: string): ListboxGroup[] {
-  const fromEnded = ENDED.has(from)
+  const fromEnded = isTerminal(from)
   const targets = allowedTargets(from)
   const fromRank = rank(from)
 
-  const ending = targets.filter((s) => ENDED.has(s.key))
-  const pipeline = targets.filter((s) => !ENDED.has(s.key))
+  if (fromEnded) {
+    // 终态只能重开回非终态（需要原因），外加 已接受 → 已撤回 这一种毁约。
+    const reopen = targets.filter((s) => !isTerminal(s.key))
+    const inter = targets.filter((s) => isTerminal(s.key) && s.key !== from)
+    return [
+      { label: '重新开启', options: reopen.map(toOption) },
+      { label: '毁约 / 更正', options: inter.map(toOption) },
+    ].filter((g) => g.options.length > 0)
+  }
+
+  const accept = targets.filter((s) => s.key === 'accepted')
+  const ending = targets.filter((s) => isTerminal(s.key) && s.key !== 'accepted')
+  const pipeline = targets.filter((s) => !isTerminal(s.key))
   const forward = pipeline.filter((s) => rank(s.key) > fromRank)
   const backward = pipeline.filter((s) => rank(s.key) <= fromRank)
 
   return [
-    {
-      label: fromEnded ? '重新开启' : '推进',
-      options: (fromEnded ? pipeline : forward).map(toOption),
-    },
-    {
-      label: '回退 / 更正',
-      options: (fromEnded ? [] : backward).map(toOption),
-    },
+    // 接受 Offer 是向前的一步，放在「推进」而不是「结束」。
+    { label: '推进', options: [...forward, ...accept].map(toOption) },
+    { label: '回退 / 更正', options: backward.map(toOption) },
     { label: '结束', options: ending.map(toOption) },
   ].filter((g) => g.options.length > 0)
 }
 
 /**
  * The two or three targets worth a one-tap chip above the picker: the next
- * step in the main flow, plus the endings a user reaches most often from here.
+ * step in the main flow, plus 被拒绝 for records still in the pipeline.
  */
 export function suggestedTargets(from: string): StatusMeta[] {
   const reachable = new Set(TRANSITIONS[from] ?? [])
   const fromRank = rank(from)
   const nextInFlow = FLOW_ORDER.filter((k) => rank(k) > fromRank && reachable.has(k)).slice(0, 2)
-  const endings = ENDED.has(from) ? [] : ['rejected'].filter((k) => reachable.has(k))
+  const endings = isTerminal(from) ? [] : ['rejected'].filter((k) => reachable.has(k))
   return [...nextInFlow, ...endings].map(statusMeta)
 }
 
 /**
- * Targets the backend refuses without a reason (domain.go ValidateTransition:
- * `to == rejected || withdrawn || closed`). Note 已接受 is NOT here — accepting
- * an offer needs no justification.
+ * Targets the backend refuses without a reason (domain.go ReasonRequired):
+ * the three managed endings, plus reopening an ended record back into the
+ * pipeline. Note 已接受 is NOT here — accepting an offer needs no justification.
  */
 export const REASON_REQUIRED_TARGETS = ['rejected', 'withdrawn', 'closed']
 
-/**
- * Mirrors the backend rule exactly: a reason is required for the three managed
- * endings, and for reopening an ended record back into the pipeline
- * (`fromTerminal && !toTerminal`).
- */
+/** Mirrors domain.ReasonRequired exactly. */
 export function needsReason(from: string, to: string): boolean {
   if (!to) return false
-  return REASON_REQUIRED_TARGETS.includes(to) || (ENDED.has(from) && !ENDED.has(to))
+  return REASON_REQUIRED_TARGETS.includes(to) || (isTerminal(from) && !isTerminal(to))
 }
 
 /** Preset reasons offered as one-tap chips for the targets that require one. */
@@ -148,3 +188,20 @@ export const REASON_PRESETS: Record<string, string[]> = {
 
 /** Reasons for reopening a record that had already ended. */
 export const REOPEN_REASON_PRESETS = ['招聘方重新联系', '之前记录有误', '岗位重新开放']
+
+/**
+ * 方案 §4.2: 回退与更正的分叉。默认「流程实际退回」——真实发生过的事保留历史，
+ * 只有用户明确说「之前选错了」才走更正、让旧的错误事实失效。
+ */
+export type ChangeMode = 'flow' | 'correction'
+
+export const CHANGE_MODE_LABEL: Record<ChangeMode, string> = {
+  flow: '流程实际退回',
+  correction: '之前选错了',
+}
+
+/** The change_type the transition API records for a given mode. */
+export const API_CHANGE_TYPE: Record<ChangeMode, string> = {
+  flow: 'auto', // 由后端 DeriveChangeType 按顺序推导 advance / rollback / reopen
+  correction: 'correct',
+}

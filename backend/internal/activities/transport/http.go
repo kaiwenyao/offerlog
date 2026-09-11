@@ -11,7 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	actrepo "offerlog/backend/internal/activities/repository"
+	appdomain "offerlog/backend/internal/applications/domain"
 	notifrepo "offerlog/backend/internal/notifications"
+	"offerlog/backend/internal/platform/database"
 	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
 	"offerlog/backend/internal/platform/observability"
@@ -21,9 +23,36 @@ import (
 type Handler struct {
 	repo *actrepo.Repo
 	nots *notifrepo.Repo
+	// sync keeps the owning application's substatus / focus round in step with
+	// the activity's own progress (方案 §6.1). Wired by bootstrap to the
+	// applications repository; nil in tests that only exercise activities.
+	sync ProgressSync
+}
+
+// ProgressSync mirrors an activity round's progress into the application
+// snapshot. Implemented by the applications repository, so the activity write
+// and the application update commit in one transaction.
+type ProgressSync interface {
+	SyncFromActivity(ctx context.Context, q database.Querier, ownerID, appID int64, kind string, activityID int64, substatus string) error
 }
 
 func New(repo *actrepo.Repo) *Handler { return &Handler{repo: repo} }
+
+// WithApplicationSync attaches the application progress mirror.
+func (h *Handler) WithApplicationSync(s ProgressSync) *Handler {
+	h.sync = s
+	return h
+}
+
+// mirrorProgress pushes a round's derived substatus onto the application inside
+// the caller's transaction. A no-op when no syncer is wired.
+func (h *Handler) mirrorProgress(ctx context.Context, q database.Querier, ownerID, appID int64, kind string, activityID int64, progress, result string) error {
+	if h.sync == nil {
+		return nil
+	}
+	return h.sync.SyncFromActivity(ctx, q, ownerID, appID, kind, activityID,
+		appdomain.SubstatusForActivity(kind, progress, result))
+}
 
 // WithNotifications attaches the in-app notification store so action lifecycle
 // endpoints (done / postpone) can keep reminders in sync with the action.
@@ -44,6 +73,16 @@ func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.DELETE("/interviews/:interview_id", h.deleteInterview)
 	g.POST("/interviews/:interview_id/cancel", h.cancelInterview)
 	g.POST("/interviews/:interview_id/uncancel", h.uncancelInterview)
+	// 面试自身的完成事实（≠ 通过结果）：方案 §3.3
+	g.POST("/interviews/:interview_id/complete", h.completeInterview)
+	g.POST("/interviews/:interview_id/reopen", h.reopenInterview)
+	// assessments (OA / 作业轮次)
+	g.GET("/assessments", h.listAssessments)
+	g.POST("/assessments", h.createAssessment)
+	g.PATCH("/assessments/:assessment_id", h.updateAssessment)
+	g.DELETE("/assessments/:assessment_id", h.deleteAssessment)
+	g.POST("/assessments/:assessment_id/complete", h.completeAssessment)
+	g.POST("/assessments/:assessment_id/reopen", h.reopenAssessment)
 	// actions
 	g.GET("/actions", h.listActions)
 	g.POST("/actions", h.createAction)
@@ -93,9 +132,15 @@ type interviewDTO struct {
 	Timezone        string     `json:"timezone"`
 	DurationMinutes *int       `json:"duration_minutes"`
 	Result          string     `json:"result"`
-	Feedback        string     `json:"feedback"`
-	Notes           string     `json:"notes"`
-	CreatedAt       time.Time  `json:"created_at"`
+	// Progress is the activity state — 待安排 / 准备中 / 已完成 / 已取消 —
+	// deliberately separate from Result so 「面完了」 never auto-reads 「过了」.
+	Progress         string     `json:"progress"`
+	InvitedAt        *time.Time `json:"invited_at"`
+	CompletedAt      *time.Time `json:"completed_at"`
+	CompletedUnknown bool       `json:"completed_unknown"`
+	Feedback         string     `json:"feedback"`
+	Notes            string     `json:"notes"`
+	CreatedAt        time.Time  `json:"created_at"`
 	// schedule (upserted into schedule_links)
 	Schedule *scheduleDTO `json:"schedule,omitempty"`
 }
@@ -119,11 +164,22 @@ func (h *Handler) listInterviews(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
+// resultOrUnknown maps the legacy 'pending' / ” result values onto the
+// explicit 'unknown' the round model uses: 没有反馈就是不未知，不是未通过。
+func resultOrUnknown(r string) string {
+	if r == "" || r == "pending" {
+		return actrepo.ResultUnknown
+	}
+	return r
+}
+
 func interviewToDTO(it *actrepo.Interview, sch *actrepo.ScheduleLink) interviewDTO {
 	d := interviewDTO{
 		ID: it.ID, ApplicationID: it.ApplicationID, RoundName: it.RoundName, Format: it.Format,
 		ScheduledAt: it.ScheduledAt, Timezone: it.Timezone, DurationMinutes: it.DurationMinutes,
-		Result: it.Result, Feedback: it.Feedback, Notes: it.Notes, CreatedAt: it.CreatedAt,
+		Result: resultOrUnknown(it.Result), Progress: it.Progress, InvitedAt: it.InvitedAt,
+		CompletedAt: it.CompletedAt, CompletedUnknown: it.CompletedUnknown,
+		Feedback: it.Feedback, Notes: it.Notes, CreatedAt: it.CreatedAt,
 	}
 	if sch != nil {
 		d.Schedule = &scheduleDTO{
@@ -169,11 +225,31 @@ func (h *Handler) createInterview(c *gin.Context) {
 	it := &actrepo.Interview{
 		ApplicationID: appID, OwnerID: user.ID, RoundName: req.RoundName, Format: req.Format,
 		ScheduledAt: req.ScheduledAt, Timezone: req.Timezone, DurationMinutes: req.DurationMinutes,
-		Result: req.Result, Feedback: req.Feedback, Notes: req.Notes,
+		Result: req.Result, Progress: req.Progress, InvitedAt: req.InvitedAt,
+		CompletedAt: req.CompletedAt, CompletedUnknown: req.CompletedUnknown,
+		Feedback: req.Feedback, Notes: req.Notes,
+	}
+	if it.Progress == "" {
+		it.Progress = actrepo.ProgressAwaitingSchedule
+	}
+	it.Result = resultOrUnknown(it.Result)
+	if !appdomain.ValidActivityProgress(appdomain.ActivityInterview, it.Progress) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_progress", "未知的面试进度"))
+		return
+	}
+	if !appdomain.ValidActivityResult(it.Result) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_result", "未知的面试结果"))
+		return
+	}
+	// 「完成面试」不等于「通过」：未完成的轮次不能先有结果。
+	if it.Progress != actrepo.ProgressCompleted && it.Result != actrepo.ResultUnknown {
+		httpx.WriteErr(c, httpx.BadRequest("result_before_completion", "尚未完成的面试不能记录通过 / 未通过结果"))
+		return
 	}
 	// Interview + its scheduling metadata are created in ONE transaction so a
 	// failure mid-way cannot leave an interview without its (optional) link or
-	// a link pointing at a half-created interview.
+	// a link pointing at a half-created interview. The application's substatus
+	// is mirrored in the SAME transaction (方案 §6.1).
 	var sch *actrepo.ScheduleLink
 	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := h.repo.CreateInterview(ctx, tx, it); err != nil {
@@ -187,9 +263,11 @@ func (h *Handler) createInterview(c *gin.Context) {
 				Cancelled: req.Schedule.Cancelled, CancelledReason: req.Schedule.CancelledReason,
 				OriginalTimezone: req.Schedule.OriginalTimezone,
 			}
-			return h.repo.CreateScheduleLink(ctx, tx, sch)
+			if err := h.repo.CreateScheduleLink(ctx, tx, sch); err != nil {
+				return err
+			}
 		}
-		return nil
+		return h.mirrorProgress(ctx, tx, user.ID, appID, appdomain.ActivityInterview, it.ID, it.Progress, it.Result)
 	})
 	if err != nil {
 		httpx.WriteErr(c, err)
@@ -220,7 +298,45 @@ func (h *Handler) updateInterview(c *gin.Context) {
 	it := &actrepo.Interview{
 		ID: iid, ApplicationID: appID, OwnerID: user.ID, RoundName: req.RoundName, Format: req.Format,
 		ScheduledAt: req.ScheduledAt, Timezone: req.Timezone, DurationMinutes: req.DurationMinutes,
-		Result: req.Result, Feedback: req.Feedback, Notes: req.Notes,
+		Result: req.Result, Progress: req.Progress, InvitedAt: req.InvitedAt,
+		CompletedAt: req.CompletedAt, CompletedUnknown: req.CompletedUnknown,
+		Feedback: req.Feedback, Notes: req.Notes,
+	}
+	if it.Progress == "" {
+		it.Progress = existing.Progress
+	}
+	if it.Result == "" {
+		it.Result = existing.Result
+	}
+	// A PATCH that does not mention the completion facts must not erase them:
+	// the wire shape cannot distinguish "omitted" from "null" for a timestamp,
+	// and silently dropping a recorded completed_at would lose real history.
+	if it.CompletedAt == nil {
+		it.CompletedAt = existing.CompletedAt
+	}
+	if it.InvitedAt == nil {
+		it.InvitedAt = existing.InvitedAt
+	}
+	it.Result = resultOrUnknown(it.Result)
+	// A legacy round carries progress='' (未细分). Updating its schedule must not
+	// be blocked by a refinement it never had (方案 §7): only a progress the
+	// caller actually names — or one already recorded — is validated.
+	if it.Progress != "" && !appdomain.ValidActivityProgress(appdomain.ActivityInterview, it.Progress) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_progress", "未知的面试进度"))
+		return
+	}
+	if !appdomain.ValidActivityResult(it.Result) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_result", "未知的面试结果"))
+		return
+	}
+	if it.Progress != "" && it.Progress != actrepo.ProgressCompleted && it.Result != actrepo.ResultUnknown {
+		httpx.WriteErr(c, httpx.BadRequest("result_before_completion", "尚未完成的面试不能记录通过 / 未通过结果"))
+		return
+	}
+	if it.Progress == actrepo.ProgressCompleted && it.CompletedAt == nil {
+		// 完成的轮次至少要知道「完成了」，不能既没有时间也没有完成标记；
+		// 时间不详就标未知，而不是填一个看起来精确的假时间。
+		it.CompletedUnknown = true
 	}
 	// Interview update + its scheduling metadata are written in ONE transaction
 	// (same shape as createInterview) so a failure mid-way cannot leave the
@@ -239,9 +355,11 @@ func (h *Handler) updateInterview(c *gin.Context) {
 				Cancelled: req.Schedule.Cancelled, CancelledReason: req.Schedule.CancelledReason,
 				OriginalTimezone: req.Schedule.OriginalTimezone,
 			}
-			return h.repo.UpsertScheduleLink(ctx, tx, sch)
+			if err := h.repo.UpsertScheduleLink(ctx, tx, sch); err != nil {
+				return err
+			}
 		}
-		return nil
+		return h.mirrorProgress(ctx, tx, user.ID, appID, appdomain.ActivityInterview, iid, it.Progress, it.Result)
 	})
 	if err != nil {
 		writeUpsertErr(c, err)
@@ -291,6 +409,403 @@ func (h *Handler) deleteInterview(c *gin.Context) {
 
 type cancelReq struct {
 	Reason string `json:"reason"`
+}
+
+// completeReq records that a round actually happened. completed_at is optional
+// on purpose: a user who forgot the exact date marks it unknown rather than
+// having a precise-looking timestamp invented for them (方案 §3.3).
+type completeReq struct {
+	CompletedAt *time.Time `json:"completed_at"`
+	Unknown     bool       `json:"completed_unknown"`
+	Result      string     `json:"result"`
+	Feedback    string     `json:"feedback"`
+}
+
+// -- interviews: progress lifecycle --
+
+func (h *Handler) completeInterview(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	appID, iid, ok := h.mustInterviewIDs(c)
+	if !ok {
+		return
+	}
+	var req completeReq
+	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	if req.Result != "" && !appdomain.ValidActivityResult(req.Result) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_result", "未知的面试结果"))
+		return
+	}
+	var out *actrepo.Interview
+	err := h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		it, err := h.repo.GetInterview(ctx, appID, user.ID, iid)
+		if err != nil {
+			return err
+		}
+		it.Progress = actrepo.ProgressCompleted
+		if req.Result != "" {
+			it.Result = req.Result
+		}
+		if req.Feedback != "" {
+			it.Feedback = req.Feedback
+		}
+		// 只知道「面完了」但不能确定哪天：保留 completed_at 为空并标记未知。
+		if req.CompletedAt != nil {
+			at := req.CompletedAt.UTC()
+			it.CompletedAt = &at
+			it.CompletedUnknown = false
+		} else if it.CompletedAt == nil {
+			// 只知道「面完了」但不能确定哪天：completed_at 留空并标记未知，
+			// 不填一个看起来精确的假时间。
+			it.CompletedUnknown = true
+		}
+		if err := h.repo.UpdateInterview(ctx, tx, it); err != nil {
+			return err
+		}
+		if err := h.mirrorProgress(ctx, tx, user.ID, appID, appdomain.ActivityInterview, iid, it.Progress, it.Result); err != nil {
+			return err
+		}
+		out = it
+		return nil
+	})
+	if err != nil {
+		writeInterviewOwnershipErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, interviewToDTO(out, nil))
+}
+
+// reopenInterview walks a round back from 已完成 to 准备中 — a wrong「面完了」
+// tap is a correction of the round, not a stage rollback (方案 §3.3).
+func (h *Handler) reopenInterview(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	appID, iid, ok := h.mustInterviewIDs(c)
+	if !ok {
+		return
+	}
+	var out *actrepo.Interview
+	err := h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		it, err := h.repo.GetInterview(ctx, appID, user.ID, iid)
+		if err != nil {
+			return err
+		}
+		it.Progress = actrepo.ProgressPreparing
+		// A reopened round has no result yet; keep the feedback text.
+		it.Result = actrepo.ResultUnknown
+		it.CompletedAt = nil
+		it.CompletedUnknown = false
+		if err := h.repo.UpdateInterview(ctx, tx, it); err != nil {
+			return err
+		}
+		if err := h.mirrorProgress(ctx, tx, user.ID, appID, appdomain.ActivityInterview, iid, it.Progress, it.Result); err != nil {
+			return err
+		}
+		out = it
+		return nil
+	})
+	if err != nil {
+		writeInterviewOwnershipErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, interviewToDTO(out, nil))
+}
+
+// -- assessments (OA / 作业) --
+
+type assessmentDTO struct {
+	ID               int64      `json:"id"`
+	ApplicationID    int64      `json:"application_id"`
+	Kind             string     `json:"kind"`
+	Name             string     `json:"name"`
+	Progress         string     `json:"progress"`
+	Result           string     `json:"result"`
+	InvitedAt        *time.Time `json:"invited_at"`
+	PlannedAt        *time.Time `json:"planned_at"`
+	DueAt            *time.Time `json:"due_at"`
+	CompletedAt      *time.Time `json:"completed_at"`
+	CompletedUnknown bool       `json:"completed_unknown"`
+	Link             string     `json:"link"`
+	Notes            string     `json:"notes"`
+	CreatedAt        time.Time  `json:"created_at"`
+}
+
+func assessmentToDTO(a *actrepo.AssessmentRound) assessmentDTO {
+	return assessmentDTO{
+		ID: a.ID, ApplicationID: a.ApplicationID, Kind: a.Kind, Name: a.Name,
+		Progress: a.Progress, Result: resultOrUnknown(a.Result), InvitedAt: a.InvitedAt,
+		PlannedAt: a.PlannedAt, DueAt: a.DueAt, CompletedAt: a.CompletedAt,
+		CompletedUnknown: a.CompletedUnknown, Link: a.Link, Notes: a.Notes, CreatedAt: a.CreatedAt,
+	}
+}
+
+func (h *Handler) listAssessments(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	appID, err := h.appID(c)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的岗位 ID"))
+		return
+	}
+	items, err := h.repo.ListAssessments(c.Request.Context(), appID, user.ID)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	out := make([]assessmentDTO, 0, len(items))
+	for _, a := range items {
+		out = append(out, assessmentToDTO(a))
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
+}
+
+// assessmentPayload validates an OA round request. Completion and result stay
+// independent: an OA the user finished but has not heard back on is
+// progress=completed, result=unknown — never inferred as passed.
+func assessmentPayload(c *gin.Context, req *assessmentDTO) (*actrepo.AssessmentRound, bool) {
+	a := &actrepo.AssessmentRound{
+		ID: req.ID, ApplicationID: req.ApplicationID, Kind: req.Kind, Name: req.Name,
+		Progress: req.Progress, Result: req.Result, InvitedAt: req.InvitedAt,
+		PlannedAt: req.PlannedAt, DueAt: req.DueAt, CompletedAt: req.CompletedAt,
+		CompletedUnknown: req.CompletedUnknown, Link: req.Link, Notes: req.Notes,
+	}
+	if a.Kind == "" {
+		a.Kind = "online_test"
+	}
+	if a.Kind != "online_test" && a.Kind != "take_home" && a.Kind != "other" {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_kind", "未知的测评类型"))
+		return nil, false
+	}
+	if a.Progress == "" {
+		a.Progress = actrepo.ProgressPreparing
+	}
+	if !appdomain.ValidActivityProgress(appdomain.ActivityAssessment, a.Progress) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_progress", "未知的测评进度"))
+		return nil, false
+	}
+	a.Result = resultOrUnknown(a.Result)
+	if !appdomain.ValidActivityResult(a.Result) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_result", "未知的测评结果"))
+		return nil, false
+	}
+	if a.Progress != actrepo.ProgressCompleted && a.Result != actrepo.ResultUnknown {
+		httpx.WriteErr(c, httpx.BadRequest("result_before_completion", "尚未完成的测评不能记录通过 / 未通过结果"))
+		return nil, false
+	}
+	if a.Progress == actrepo.ProgressCompleted && a.CompletedAt == nil {
+		a.CompletedUnknown = true
+	}
+	return a, true
+}
+
+func (h *Handler) createAssessment(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	appID, err := h.appID(c)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的岗位 ID"))
+		return
+	}
+	var req assessmentDTO
+	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	if err := h.repo.AppOwnedBy(c.Request.Context(), h.repo.Pool(), appID, user.ID); err != nil {
+		httpx.WriteErr(c, ownershipErr(err))
+		return
+	}
+	a, ok := assessmentPayload(c, &req)
+	if !ok {
+		return
+	}
+	a.ApplicationID, a.OwnerID = appID, user.ID
+	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.CreateAssessment(ctx, tx, a); err != nil {
+			return err
+		}
+		return h.mirrorProgress(ctx, tx, user.ID, appID, appdomain.ActivityAssessment, a.ID, a.Progress, a.Result)
+	})
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, assessmentToDTO(a))
+}
+
+func (h *Handler) updateAssessment(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	appID, err := h.appID(c)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的岗位 ID"))
+		return
+	}
+	aid, err := httpx.PathID(c, "assessment_id")
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的测评 ID"))
+		return
+	}
+	var req assessmentDTO
+	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	// Ownership gate before mutating (see updateInterview): a missing row is a
+	// clean 404, a real DB failure is not masked as one.
+	existing, err := h.repo.GetAssessment(c.Request.Context(), h.repo.Pool(), appID, user.ID, aid)
+	if err != nil {
+		writeAssessmentErr(c, err)
+		return
+	}
+	if req.Progress == "" {
+		req.Progress = existing.Progress
+	}
+	if req.Result == "" {
+		req.Result = existing.Result
+	}
+	if req.Kind == "" {
+		req.Kind = existing.Kind
+	}
+	a, ok := assessmentPayload(c, &req)
+	if !ok {
+		return
+	}
+	a.ID, a.ApplicationID, a.OwnerID = aid, appID, user.ID
+	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.UpdateAssessment(ctx, tx, a); err != nil {
+			return err
+		}
+		return h.mirrorProgress(ctx, tx, user.ID, appID, appdomain.ActivityAssessment, aid, a.Progress, a.Result)
+	})
+	if err != nil {
+		writeAssessmentErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, assessmentToDTO(a))
+}
+
+func (h *Handler) deleteAssessment(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	appID, err := h.appID(c)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的岗位 ID"))
+		return
+	}
+	aid, err := httpx.PathID(c, "assessment_id")
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的测评 ID"))
+		return
+	}
+	if _, err := h.repo.GetAssessment(c.Request.Context(), h.repo.Pool(), appID, user.ID, aid); err != nil {
+		writeAssessmentErr(c, err)
+		return
+	}
+	if err := h.repo.DeleteAssessment(c.Request.Context(), h.repo.Pool(), appID, user.ID, aid); err != nil {
+		writeAssessmentErr(c, err)
+		return
+	}
+	httpx.Ok(c)
+}
+
+func (h *Handler) completeAssessment(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	appID, err := h.appID(c)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的岗位 ID"))
+		return
+	}
+	aid, err := httpx.PathID(c, "assessment_id")
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的测评 ID"))
+		return
+	}
+	var req completeReq
+	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	if req.Result != "" && !appdomain.ValidActivityResult(req.Result) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_result", "未知的测评结果"))
+		return
+	}
+	var out *actrepo.AssessmentRound
+	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		a, err := h.repo.GetAssessment(ctx, tx, appID, user.ID, aid)
+		if err != nil {
+			return err
+		}
+		a.Progress = actrepo.ProgressCompleted
+		if req.Result != "" {
+			a.Result = req.Result
+		}
+		if req.CompletedAt != nil {
+			at := req.CompletedAt.UTC()
+			a.CompletedAt = &at
+			a.CompletedUnknown = false
+		} else if a.CompletedAt == nil {
+			a.CompletedUnknown = true
+		}
+		if err := h.repo.UpdateAssessment(ctx, tx, a); err != nil {
+			return err
+		}
+		if err := h.mirrorProgress(ctx, tx, user.ID, appID, appdomain.ActivityAssessment, aid, a.Progress, a.Result); err != nil {
+			return err
+		}
+		out = a
+		return nil
+	})
+	if err != nil {
+		writeAssessmentErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, assessmentToDTO(out))
+}
+
+func (h *Handler) reopenAssessment(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	appID, err := h.appID(c)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的岗位 ID"))
+		return
+	}
+	aid, err := httpx.PathID(c, "assessment_id")
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的测评 ID"))
+		return
+	}
+	var out *actrepo.AssessmentRound
+	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		a, err := h.repo.GetAssessment(ctx, tx, appID, user.ID, aid)
+		if err != nil {
+			return err
+		}
+		a.Progress = actrepo.ProgressPreparing
+		a.Result = actrepo.ResultUnknown
+		a.CompletedAt = nil
+		a.CompletedUnknown = false
+		if err := h.repo.UpdateAssessment(ctx, tx, a); err != nil {
+			return err
+		}
+		if err := h.mirrorProgress(ctx, tx, user.ID, appID, appdomain.ActivityAssessment, aid, a.Progress, a.Result); err != nil {
+			return err
+		}
+		out = a
+		return nil
+	})
+	if err != nil {
+		writeAssessmentErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, assessmentToDTO(out))
+}
+
+// writeAssessmentErr maps OA-round repo errors: only a genuine not-found is a
+// 404; real DB failures pass through untouched.
+func writeAssessmentErr(c *gin.Context, err error) {
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, actrepo.ErrNotFound) {
+		httpx.WriteErr(c, httpx.NotFound("测评记录不存在"))
+		return
+	}
+	httpx.WriteErr(c, err)
 }
 
 // writeUpsertErr maps the schedule-link repo errors: not-found → 404; any

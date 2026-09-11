@@ -2,9 +2,11 @@
 // rendering logic (pure parts). API-interactive flows are covered by the
 // Playwright e2e suite.
 import { describe, expect, it } from 'vitest'
-import { statusMeta, STATUSES } from '../src/lib/status'
+import { comboLabel, statusMeta, STATUSES, substatusOptions, validSubstatus } from '../src/lib/status'
 import {
   allowedTargets,
+  canTransition,
+  changeTypeFor,
   needsReason,
   RECRUITING_KEYS,
   SKIP_SUBMISSION_TARGETS,
@@ -49,36 +51,35 @@ describe('status dictionary', () => {
   })
 })
 
-// Guard for the client-side mirror of backend allowedDirect. The list below is
-// transcribed from backend/internal/applications/domain/domain.go — if the two
-// drift, the UI offers targets the API answers with 400 invalid_transition.
-const BACKEND_EDGES: ReadonlyArray<readonly [string, string]> = [
-  ['saved', 'preparing'], ['saved', 'applied'], ['saved', 'screening'], ['saved', 'assessment'],
-  ['saved', 'interviewing'], ['saved', 'offer'], ['saved', 'rejected'], ['saved', 'withdrawn'],
-  ['saved', 'closed'],
-  ['preparing', 'applied'], ['preparing', 'screening'], ['preparing', 'assessment'],
-  ['preparing', 'interviewing'], ['preparing', 'offer'], ['preparing', 'rejected'],
-  ['preparing', 'withdrawn'], ['preparing', 'closed'],
-  ['applied', 'screening'], ['applied', 'assessment'], ['applied', 'interviewing'],
-  ['applied', 'offer'], ['applied', 'rejected'], ['applied', 'withdrawn'], ['applied', 'closed'],
-  ['screening', 'assessment'], ['screening', 'interviewing'], ['screening', 'offer'],
-  ['screening', 'rejected'], ['screening', 'withdrawn'], ['screening', 'closed'],
-  ['assessment', 'screening'], ['assessment', 'interviewing'], ['assessment', 'offer'],
-  ['assessment', 'rejected'], ['assessment', 'withdrawn'], ['assessment', 'closed'],
-  ['interviewing', 'screening'], ['interviewing', 'assessment'], ['interviewing', 'offer'],
-  ['interviewing', 'rejected'], ['interviewing', 'withdrawn'], ['interviewing', 'closed'],
-  ['offer', 'accepted'], ['offer', 'rejected'], ['offer', 'withdrawn'], ['offer', 'closed'],
-  ['accepted', 'offer'], ['accepted', 'withdrawn'],
-  ['rejected', 'applied'], ['rejected', 'screening'], ['rejected', 'assessment'],
-  ['rejected', 'interviewing'], ['rejected', 'offer'], ['rejected', 'saved'], ['rejected', 'preparing'],
-  ['withdrawn', 'saved'], ['withdrawn', 'preparing'], ['withdrawn', 'applied'],
-  ['withdrawn', 'screening'], ['withdrawn', 'assessment'], ['withdrawn', 'interviewing'],
-  ['withdrawn', 'offer'],
-  ['closed', 'saved'], ['closed', 'preparing'], ['closed', 'applied'], ['closed', 'screening'],
-  ['closed', 'assessment'], ['closed', 'interviewing'], ['closed', 'offer'],
-]
+// Guard for the client-side mirror of the backend state model.
+//
+// 方案 §4.1 replaced the hand-written edge list with a RULE (domain.allowedTarget):
+// any non-terminal → any non-terminal, terminal → non-terminal (reopen),
+// →已接受 only from Offer, 已接受 → 已撤回 (毁约), and terminal → terminal
+// otherwise rejected. The transcription below spells that rule out explicitly so
+// a drift in transitions.ts fails here instead of 400-ing at the API.
+const NON_TERMINAL = ['saved', 'preparing', 'applied', 'screening', 'assessment', 'interviewing', 'offer']
+const TERMINAL = ['accepted', 'rejected', 'withdrawn', 'closed']
 
-describe('transition map (mirror of backend allowedDirect)', () => {
+function backendAllows(from: string, to: string): boolean {
+  if (from === to) return true // 子状态 / 关注轮次变更
+  if (to === 'accepted') return from === 'offer'
+  if (from === 'accepted' && to === 'withdrawn') return true
+  if (TERMINAL.includes(from) && TERMINAL.includes(to)) return false
+  return true
+}
+
+// Every pair the backend allows, with the same same-stage carve-out the server
+// applies in TargetCombos (a stage with no subdivision cannot target itself,
+// because nothing would change).
+const ALL_STATUS_KEYS = [...NON_TERMINAL, ...TERMINAL]
+const BACKEND_EDGES: ReadonlyArray<readonly [string, string]> = ALL_STATUS_KEYS.flatMap((f) =>
+  ALL_STATUS_KEYS.filter((t) => backendAllows(f, t) && !(f === t && substatusOptions(f).length === 0)).map(
+    (t) => [f, t] as const,
+  ),
+)
+
+describe('transition rules (mirror of backend allowedTarget, 方案 §4.1)', () => {
   it('offers no edge the backend would reject', () => {
     const backend = new Set(BACKEND_EDGES.map(([f, t]) => `${f}->${t}`))
     const extra: string[] = []
@@ -89,10 +90,25 @@ describe('transition map (mirror of backend allowedDirect)', () => {
   })
 
   it('exposes every backend edge, so no legal move is unreachable in the UI', () => {
-    const missing = BACKEND_EDGES
-      .filter(([f, t]) => !(TRANSITIONS[f] ?? []).includes(t))
-      .map(([f, t]) => `${f}->${t}`)
+    const missing = BACKEND_EDGES.filter(([f, t]) => !(TRANSITIONS[f] ?? []).includes(t)).map(
+      ([f, t]) => `${f}->${t}`,
+    )
     expect(missing).toEqual([])
+  })
+
+  it('allows the rollbacks the old whitelist forbade', () => {
+    // 方案 §4.1: 准备材料 → 待投递、已投递 → 准备材料、Offer → 面试 都必须能选。
+    expect(TRANSITIONS.preparing).toContain('saved')
+    expect(TRANSITIONS.applied).toContain('preparing')
+    expect(TRANSITIONS.offer).toContain('interviewing')
+    expect(canTransition('withdrawn', 'applied')).toBe(true)
+  })
+
+  it('never invents an acceptance and never moves terminal→terminal', () => {
+    expect(canTransition('screening', 'accepted')).toBe(false)
+    expect(canTransition('rejected', 'closed')).toBe(false)
+    // 毁约 is the single legal terminal → terminal move.
+    expect(canTransition('accepted', 'withdrawn')).toBe(true)
   })
 
   it('lets 待投递 jump straight to 面试中 (skip-ahead)', () => {
@@ -100,35 +116,46 @@ describe('transition map (mirror of backend allowedDirect)', () => {
     expect(allowedTargets('saved').map((s) => s.key)).toContain('interviewing')
   })
 
-  it('drops preparing->saved, which the backend never allowed', () => {
-    expect(TRANSITIONS.preparing).not.toContain('saved')
-  })
-
   it('groups targets into 推进 / 回退·更正 / 结束', () => {
-    const labels = targetGroups('applied').map((g) => g.label)
-    expect(labels).toEqual(['推进', '结束'])
-    const forward = targetGroups('applied')[0].options.map((o) => o.value)
+    const groups = targetGroups('applied')
+    expect(groups.map((g) => g.label)).toEqual(['推进', '回退 / 更正', '结束'])
+    const forward = groups.find((g) => g.label === '推进')!.options.map((o) => o.value)
+    const backward = groups.find((g) => g.label === '回退 / 更正')!.options.map((o) => o.value)
     expect(forward).toContain('interviewing')
+    expect(backward).toContain('preparing') // 方案 §4.1 新增的回退边
     expect(forward).not.toContain('rejected')
   })
 
-  it('relabels the forward bucket as 重新开启 for an ended record', () => {
+  it('relabels the reopen bucket for an ended record', () => {
     const groups = targetGroups('rejected')
     expect(groups.map((g) => g.label)).toEqual(['重新开启'])
     expect(groups[0].options.map((o) => o.value)).toContain('saved')
+    // 已接受 can only reopen or 毁约 — never into another terminal outcome.
+    const accepted = targetGroups('accepted')
+    expect(accepted.map((g) => g.label)).toEqual(['重新开启', '毁约 / 更正'])
+    expect(accepted[1].options.map((o) => o.value)).toEqual(['withdrawn'])
   })
 
   it('requires a reason exactly where the backend does', () => {
-    // domain.go: to == rejected|withdrawn|closed, or fromTerminal && !toTerminal
+    // domain.go ReasonRequired: to == rejected|withdrawn|closed, or fromTerminal && !toTerminal
     expect(needsReason('applied', 'rejected')).toBe(true)
     expect(needsReason('offer', 'withdrawn')).toBe(true)
     expect(needsReason('applied', 'closed')).toBe(true)
     expect(needsReason('rejected', 'interviewing')).toBe(true) // 终态重开
     expect(needsReason('accepted', 'offer')).toBe(true)
+    expect(needsReason('accepted', 'withdrawn')).toBe(true) // 毁约要填原因
     // 已接受 needs no justification — gating it blocks a legal transition.
     expect(needsReason('offer', 'accepted')).toBe(false)
     expect(needsReason('applied', 'interviewing')).toBe(false)
+    expect(needsReason('applied', 'preparing')).toBe(false) // 普通回退不需要原因
     expect(needsReason('saved', '')).toBe(false)
+  })
+
+  it('classifies each move as advance / rollback / reopen for the timeline', () => {
+    expect(changeTypeFor('applied', 'interviewing')).toBe('advance')
+    expect(changeTypeFor('applied', 'preparing')).toBe('rollback')
+    expect(changeTypeFor('offer', 'interviewing')).toBe('rollback')
+    expect(changeTypeFor('rejected', 'screening')).toBe('reopen')
   })
 
   it('never offers 未经正式投递 for 已投递 itself', () => {
@@ -144,6 +171,40 @@ describe('transition map (mirror of backend allowedDirect)', () => {
     expect(suggestedTargets('applied').map((s) => s.key)).toEqual(['screening', 'assessment', 'rejected'])
     // An ended record gets reopen targets only — no 被拒绝 chip.
     expect(suggestedTargets('rejected').map((s) => s.key)).not.toContain('rejected')
+  })
+})
+
+describe('substatus dictionary (mirror of backend domain/substatus.go, 方案 §3.1)', () => {
+  it('defines legal combinations per stage and never leaks one across stages', () => {
+    expect(substatusOptions('assessment').map((s) => s.key)).toEqual(['preparing', 'completed', 'passed'])
+    expect(substatusOptions('offer').map((s) => s.key)).toEqual(['reviewing', 'negotiating', 'ready_to_accept'])
+    // 「preparing」 exists in several stages but with its own label each time.
+    expect(substatusOptions('screening').find((s) => s.key === 'preparing')?.label).toBe('准备初筛')
+    expect(substatusOptions('interviewing').find((s) => s.key === 'preparing')?.label).toBe('准备面试')
+    // 待投递 / 已投递 have no subdivision at all.
+    expect(substatusOptions('saved')).toEqual([])
+    expect(substatusOptions('applied')).toEqual([])
+  })
+
+  it('accepts "" (未细分) but rejects a substatus from another stage', () => {
+    expect(validSubstatus('assessment', '')).toBe(true)
+    expect(validSubstatus('assessment', 'preparing')).toBe(true)
+    expect(validSubstatus('saved', 'preparing')).toBe(false)
+    expect(validSubstatus('offer', 'completed')).toBe(false)
+    expect(validSubstatus('assessment', 'bogus')).toBe(false)
+  })
+
+  it('names the un-subdivided state instead of pretending it is 准备 OA', () => {
+    // 方案 §7: 旧数据必须保持「进度未细分」，不能凭停留时长猜成准备中。
+    expect(comboLabel('assessment', '')).toBe('OA / 作业 · 进度未细分')
+    expect(comboLabel('assessment', 'preparing')).toBe('准备 OA')
+    expect(comboLabel('assessment', 'completed')).toBe('已完成 OA · 等结果')
+    // 作业类测评换名词（方案 §3.2）。
+    expect(comboLabel('assessment', 'completed', 'take_home')).toBe('已提交作业 · 等结果')
+    expect(comboLabel('assessment', 'preparing', 'take_home')).toBe('准备作业')
+    expect(comboLabel('applied', '')).toBe('已投递 · 等回复')
+    expect(comboLabel('offer', 'negotiating')).toBe('协商 Offer')
+    expect(comboLabel('rejected', '')).toBe('被拒绝')
   })
 })
 

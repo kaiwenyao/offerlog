@@ -89,6 +89,7 @@ func ValidStatus(s string) bool {
 // validation needs.
 type State struct {
 	Status        string
+	Substatus     string
 	SubmittedAt   *time.Time
 	FirstResponse *time.Time
 	AcceptedAt    *time.Time
@@ -100,8 +101,17 @@ type State struct {
 
 // Transition carries everything needed to validate a requested change.
 type Transition struct {
-	FromStatus   string
-	ToStatus     string
+	FromStatus    string
+	FromSubstatus string
+	ToStatus      string
+	ToSubstatus   string
+	// ChangeType records WHY the change happened: advance (default),
+	// rollback (流程实际退回) or reopen (终态重开). "correct" is not a
+	// transition — mistaken records are repaired through the correction API.
+	ChangeType string
+	// FocusChanged is true when the request changes the focused activity even
+	// though status and substatus stay the same, so the change is not a no-op.
+	FocusChanged bool
 	OccurredAt   time.Time
 	Now          time.Time
 	WasSubmitted bool // true if a submitted_at already existed
@@ -114,6 +124,13 @@ type Transition struct {
 	Note           string
 	Reason         string
 }
+
+// Change types recorded on an event (application_events.change_type).
+const (
+	ChangeAdvance  = "advance"
+	ChangeRollback = "rollback"
+	ChangeReopen   = "reopen"
+)
 
 // ValidationError is a domain-level violation with a stable code.
 type ValidationError struct {
@@ -130,98 +147,56 @@ func errf(code, format string, args ...any) *ValidationError {
 	return &ValidationError{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
-// --- allowed direct transitions ---
+// allowedTarget is the whole permission model (方案 §4.1): order only drives
+// recommendations, never permissions.
+//
+//   - any non-terminal stage may move to any other non-terminal stage (forward,
+//     skip or back), which is what makes 「准备材料 → 待投递」 and
+//     「Offer → 面试」 legal;
+//   - a terminal record reopens into ANY non-terminal stage (reason required);
+//   - 已接受 → 已撤回 (毁约) stays available;
+//   - → accepted still requires having an Offer (accepting is not a way to skip
+//     the pipeline silently);
+//   - terminal → terminal is not a transition — a wrong ending is repaired with
+//     a correction so the audit trail keeps the mistake.
+func allowedTarget(from, to string) bool {
+	if from == to {
+		return true // substatus / focus-activity change inside one stage
+	}
+	if to == StatusAccepted {
+		return from == StatusOffer
+	}
+	if from == StatusAccepted && to == StatusWithdrawn {
+		return true
+	}
+	if TerminalStatuses[from] && TerminalStatuses[to] {
+		return false
+	}
+	return true
+}
 
-// allowedDirect lists transitions that do not need special-case validation.
-var allowedDirect = map[[2]string]bool{
-	// 跳阶（用户常见的「面完了才想起来记录」「内推直接约面」）：从准备期可以
-	// 直接落到任一招聘阶段，进入 in-progress 时仍需投递证据 —— 补一个实际投递
-	// 时间，或显式声明未经过正式投递（Transition.SkipSubmission）。
-	{StatusSaved, StatusPreparing}:         true,
-	{StatusSaved, StatusApplied}:           true,
-	{StatusSaved, StatusScreening}:         true,
-	{StatusSaved, StatusAssessment}:        true,
-	{StatusSaved, StatusInterviewing}:      true,
-	{StatusSaved, StatusOffer}:             true,
-	{StatusSaved, StatusRejected}:          true,
-	{StatusSaved, StatusWithdrawn}:         true,
-	{StatusSaved, StatusClosed}:            true,
-	{StatusPreparing, StatusApplied}:       true,
-	{StatusPreparing, StatusScreening}:     true,
-	{StatusPreparing, StatusAssessment}:    true,
-	{StatusPreparing, StatusInterviewing}:  true,
-	{StatusPreparing, StatusOffer}:         true,
-	{StatusPreparing, StatusRejected}:      true,
-	{StatusPreparing, StatusWithdrawn}:     true,
-	{StatusPreparing, StatusClosed}:        true,
-	{StatusApplied, StatusScreening}:       true,
-	{StatusApplied, StatusAssessment}:      true,
-	{StatusApplied, StatusInterviewing}:    true,
-	{StatusApplied, StatusOffer}:           true,
-	{StatusApplied, StatusRejected}:        true,
-	{StatusApplied, StatusWithdrawn}:       true,
-	{StatusApplied, StatusClosed}:          true,
-	{StatusScreening, StatusAssessment}:    true,
-	{StatusScreening, StatusInterviewing}:  true,
-	{StatusScreening, StatusOffer}:         true,
-	{StatusScreening, StatusRejected}:      true,
-	{StatusScreening, StatusWithdrawn}:     true,
-	{StatusScreening, StatusClosed}:        true,
-	{StatusAssessment, StatusScreening}:    true,
-	{StatusAssessment, StatusInterviewing}: true,
-	{StatusAssessment, StatusOffer}:        true,
-	{StatusAssessment, StatusRejected}:     true,
-	{StatusAssessment, StatusWithdrawn}:    true,
-	{StatusAssessment, StatusClosed}:       true,
-	{StatusInterviewing, StatusScreening}:  true,
-	{StatusInterviewing, StatusAssessment}: true,
-	{StatusInterviewing, StatusOffer}:      true,
-	{StatusInterviewing, StatusRejected}:   true,
-	{StatusInterviewing, StatusWithdrawn}:  true,
-	{StatusInterviewing, StatusClosed}:     true,
-	{StatusOffer, StatusAccepted}:          true,
-	{StatusOffer, StatusRejected}:          true,
-	{StatusOffer, StatusWithdrawn}:         true,
-	{StatusOffer, StatusClosed}:            true,
-	// terminal reopen (终态重开) back into the pipeline is allowed and must
-	// carry a reason (enforced by service layer).
-	{StatusAccepted, StatusOffer}: true,
-	// 毁约：已接受后又放弃（接了更好的 Offer / 个人原因），需填原因。
-	{StatusAccepted, StatusWithdrawn}:     true,
-	{StatusRejected, StatusApplied}:       true,
-	{StatusRejected, StatusScreening}:     true,
-	{StatusRejected, StatusAssessment}:    true,
-	{StatusRejected, StatusInterviewing}:  true,
-	{StatusRejected, StatusOffer}:         true,
-	{StatusRejected, StatusSaved}:         true,
-	{StatusRejected, StatusPreparing}:     true,
-	{StatusWithdrawn, StatusSaved}:        true,
-	{StatusWithdrawn, StatusPreparing}:    true,
-	{StatusWithdrawn, StatusApplied}:      true,
-	{StatusWithdrawn, StatusScreening}:    true,
-	{StatusWithdrawn, StatusAssessment}:   true,
-	{StatusWithdrawn, StatusInterviewing}: true,
-	{StatusWithdrawn, StatusOffer}:        true,
-	{StatusClosed, StatusSaved}:           true,
-	{StatusClosed, StatusPreparing}:       true,
-	{StatusClosed, StatusApplied}:         true,
-	{StatusClosed, StatusScreening}:       true,
-	{StatusClosed, StatusAssessment}:      true,
-	{StatusClosed, StatusInterviewing}:    true,
-	{StatusClosed, StatusOffer}:           true,
+// ReasonRequired mirrors the reason rule the UI must satisfy before it may
+// submit: the three managed endings, and reopening an ended record.
+func ReasonRequired(from, to string) bool {
+	if to == StatusRejected || to == StatusWithdrawn || to == StatusClosed {
+		return true
+	}
+	return TerminalStatuses[from] && !TerminalStatuses[to]
 }
 
 // ValidateTransition returns an error when the requested transition is not
 // permitted by the state model or misses required context fields.
 func ValidateTransition(t Transition) error {
-	if t.FromStatus == t.ToStatus {
-		return errf("same_status", "状态未变化")
-	}
 	if !ValidStatus(t.FromStatus) || !ValidStatus(t.ToStatus) {
 		return errf("invalid_status", "未知状态")
 	}
-	pair := [2]string{t.FromStatus, t.ToStatus}
-	if !allowedDirect[pair] {
+	if !ValidSubstatus(t.FromStatus, t.FromSubstatus) || !ValidSubstatus(t.ToStatus, t.ToSubstatus) {
+		return errf("invalid_substatus", "阶段与子状态不匹配")
+	}
+	if t.FromStatus == t.ToStatus && t.FromSubstatus == t.ToSubstatus && !t.FocusChanged {
+		return errf("same_status", "状态未变化")
+	}
+	if !allowedTarget(t.FromStatus, t.ToStatus) {
 		return errf("invalid_transition", "不允许从 %s 直接变更为 %s", t.FromStatus, t.ToStatus)
 	}
 
@@ -233,8 +208,11 @@ func ValidateTransition(t Transition) error {
 		return errf("future_occurred_at", "业务发生时间不能晚于当前时间")
 	}
 
-	// Entering a recruiter-driven phase requires evidence of submission.
-	if InProgressStatuses[t.ToStatus] && !t.WasSubmitted {
+	// Entering a recruiter-driven phase requires evidence of submission. Only
+	// checked when the stage actually changes: a substatus tweak inside a stage
+	// the record already occupies must not re-ask (a 内推 row entered with
+	// no_formal_submission legitimately has no submitted_at).
+	if t.FromStatus != t.ToStatus && InProgressStatuses[t.ToStatus] && !t.WasSubmitted {
 		if !t.SkipSubmission {
 			return errf("missing_submitted_at", "进入后续招聘阶段需补充实际投递时间或标记未经过正式投递")
 		}
@@ -247,13 +225,8 @@ func ValidateTransition(t Transition) error {
 	if t.ToStatus == StatusAccepted && !t.HadOffer {
 		return errf("accepted_without_offer", "accepted 要求有 Offer 记录或同时补录收到 Offer 事件")
 	}
-	// Terminal reopen (终态重开) and result endings require a reason.
-	fromTerminal := TerminalStatuses[t.FromStatus]
-	toTerminal := TerminalStatuses[t.ToStatus]
-	if (fromTerminal && !toTerminal) || t.ToStatus == StatusRejected || t.ToStatus == StatusWithdrawn || t.ToStatus == StatusClosed {
-		if t.Reason == "" {
-			return errf("missing_reason", "该状态变更需要填写原因")
-		}
+	if ReasonRequired(t.FromStatus, t.ToStatus) && t.Reason == "" {
+		return errf("missing_reason", "该状态变更需要填写原因")
 	}
 	return nil
 }

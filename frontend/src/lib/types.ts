@@ -14,6 +14,14 @@ export interface AppRow {
   salary_currency: string
   channel: string
   status: string
+  /**
+   * 大阶段内的具体进度（方案 §3）。"" = 未细分（旧数据与无细分阶段），
+   * 绝不能把空值当成「准备 OA」。展示请用 comboLabel(status, substatus, ...)。
+   */
+  substatus: string
+  /** 当前关注的活动轮次（方案 §3.3）；kind 为 assessment / interviewing / ""。 */
+  focus_activity_kind: string
+  focus_activity_id: number | null
   priority: string
   tags: string[]
   custom_values: Record<string, unknown>
@@ -39,6 +47,8 @@ export interface AppRow {
    * 工序线（StageTrail/StageRail）把它当 path 用，终态岗位也能画出灰色真实进度。
    */
   stage_history?: Record<string, string>
+  /** include=stage_history 时附加：当前进度是在哪一天进入的（用户时区 YYYY-MM-DD）。 */
+  progress_since?: string
 }
 
 export interface AppEvent {
@@ -47,6 +57,14 @@ export interface AppEvent {
   event_type: string
   from_status: string | null
   to_status: string | null
+  /** 子状态的前后值（方案 §6.2）；旧事件为 null，按「未知」处理。 */
+  from_substatus: string | null
+  to_substatus: string | null
+  /** 关联活动：assessment / interview + 轮次 id。 */
+  activity_kind: string
+  activity_id: number | null
+  /** advance / rollback / reopen / correct —— 只用于展示标签，不决定权限。 */
+  change_type: string
   note: string
   reason: string
   occurred_at: string
@@ -77,10 +95,40 @@ export interface Interview {
   timezone: string
   duration_minutes: number | null
   result: string
+  /** 活动进度：""(未细分) / awaiting_schedule / preparing / completed / cancelled。 */
+  progress: string
+  invited_at: string | null
+  completed_at: string | null
+  /** 完成但时间不详（方案 §3.2）——不伪造精确时间。 */
+  completed_unknown: boolean
   feedback: string
   notes: string
   created_at: string
   schedule?: InterviewSchedule | null
+}
+
+/** OA / 作业轮次（方案 §3.2）：一轮一笔，保留此前提交时间与结果。 */
+export interface AssessmentRound {
+  id: number
+  application_id: number
+  /** online_test / take_home / other */
+  kind: string
+  name: string
+  /** awaiting_schedule / preparing / completed / cancelled */
+  progress: string
+  /** unknown / passed / failed */
+  result: string
+  /** 收到邀请时间 */
+  invited_at: string | null
+  /** 计划开做时间 */
+  planned_at: string | null
+  /** 截止时间 */
+  due_at: string | null
+  completed_at: string | null
+  completed_unknown: boolean
+  link: string
+  notes: string
+  created_at: string
 }
 
 export interface ActionItem {
@@ -154,6 +202,9 @@ export interface Metrics {
   replied_sample: number
   denominator: number
   small_sample: boolean
+  /** 方案 §5：OA 准备中 / 已完成等结果的具体数量（未细分的旧数据不计入）。 */
+  preparing_assessment: number
+  awaiting_oa_result: number
 }
 
 export interface SankeyData {

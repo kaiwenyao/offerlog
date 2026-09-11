@@ -54,7 +54,7 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		JOIN applications a ON a.id=i.application_id AND a.owner_id=i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id=i.id AND sl.owner_id=i.owner_id
 		WHERE i.owner_id=$1 AND i.scheduled_at IS NOT NULL
-		  AND COALESCE(sl.cancelled,FALSE) = FALSE
+		  AND COALESCE(sl.cancelled,FALSE) = FALSE AND COALESCE(i.progress,'') <> 'cancelled'
 		  AND i.scheduled_at >= $2 AND i.scheduled_at < $3
 		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		ORDER BY i.scheduled_at`, ownerID, from, to)

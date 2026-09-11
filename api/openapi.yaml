@@ -25,14 +25,65 @@ components:
           type: string
           enum: [saved, preparing, applied, screening, assessment,
                  interviewing, offer, accepted, rejected, withdrawn, closed]
+        substatus:
+          type: string
+          description: |
+            大阶段内的具体进度（方案 §3.1）。"" = 未细分（旧数据与无细分阶段）。
+            合法组合由后端定义：preparing=ready；screening/interviewing=
+            awaiting_schedule|preparing|completed；assessment=preparing|completed|passed；
+            offer=reviewing|negotiating|ready_to_accept。非法组合返回 invalid_substatus。
+        focus_activity_kind:
+          type: string
+          enum: ['', assessment, interview]
+          description: 当前关注的活动类型；与 focus_activity_id 一起决定列表主标签
+        focus_activity_id: { type: [integer, 'null'] }
         channel: { type: string }
         priority: { type: string, enum: [high, medium, low] }
         tags: { type: array, items: { type: string } }
         deadline: { type: string, format: date, description: YYYY-MM-DD（按用户时区的日历日，非时间戳） }
         next_action_due_at: { type: string, format: date, description: YYYY-MM-DD（按用户时区的日历日，非时间戳） }
+        stage_history:
+          type: object
+          description: include=stage_history 时返回：已到达状态 → 最早到达日（用户时区 YYYY-MM-DD）
+          additionalProperties: { type: string }
+        progress_since:
+          type: string
+          description: include=stage_history 时返回：当前进度进入的日期（更正后按更正时间算）
         version: { type: integer, description: 乐观锁版本 }
         archived: { type: boolean }
         deleted: { type: boolean }
+    AssessmentRoundInput:
+      type: object
+      description: 一轮 OA / 作业（方案 §3.2）。收到、计划、截止、完成四种时间各自保存，互不覆盖。
+      properties:
+        kind: { type: string, enum: [online_test, take_home, other] }
+        name: { type: string }
+        progress: { type: string, enum: [awaiting_schedule, preparing, completed, cancelled] }
+        result:
+          type: string
+          enum: [unknown, passed, failed]
+          description: 完成 ≠ 通过；进度未完成时不允许写 passed/failed（result_before_completion）
+        invited_at: { type: [string, 'null'], format: date-time }
+        planned_at: { type: [string, 'null'], format: date-time }
+        due_at: { type: [string, 'null'], format: date-time }
+        completed_at: { type: [string, 'null'], format: date-time }
+        completed_unknown:
+          type: boolean
+          description: 完成了但时间不详；不伪造精确时间
+        link: { type: string }
+        notes: { type: string }
+    InterviewRoundInput:
+      type: object
+      properties:
+        round_name: { type: string }
+        format: { type: string }
+        scheduled_at: { type: [string, 'null'], format: date-time }
+        timezone: { type: string }
+        progress: { type: string, enum: [awaiting_schedule, preparing, completed, cancelled] }
+        result: { type: string, enum: [unknown, passed, failed] }
+        invited_at: { type: [string, 'null'], format: date-time }
+        completed_at: { type: [string, 'null'], format: date-time }
+        completed_unknown: { type: boolean }
     FilterCondition:
       type: object
       properties:
@@ -117,6 +168,11 @@ paths:
   /applications/{id}/transitions:
     post:
       summary: 状态转换（version + idempotency_key；规则见领域层）
+      description: |
+        方案 §4.1：任意非终态 → 任意非终态（含回退），终态 → 非终态需填原因；
+        进入 accepted 只允许从 offer，accepted → withdrawn（毁约）单独放行。
+        终态之间的更正必须走 /correct-current。「之前选错了」也不能走这里，
+        传 change_type=correct 会被拒绝（use_correction），以免误操作被记成真实经历。
       requestBody:
         content:
           application/json:
@@ -125,6 +181,9 @@ paths:
               required: [to_status, version]
               properties:
                 to_status: { type: string }
+                to_substatus:
+                  type: string
+                  description: 目标阶段内的具体进度；同阶段不传则保留原值，跨阶段不沿用旧值
                 occurred_at: { type: string, format: date-time }
                 reason: { type: string }
                 note: { type: string }
@@ -134,11 +193,44 @@ paths:
                 # 要求，但不写入 submitted_at，避免污染投递→回复口径。
                 no_formal_submission: { type: boolean }
                 idempotency_key: { type: string }
+                change_type:
+                  type: string
+                  enum: ['', rollback, reopen]
+                  description: 变更类型；留空由服务端按流程顺序推导（advance/rollback/reopen）
+                focus_activity_kind: { type: string, enum: ['', assessment, interview] }
+                focus_activity_id: { type: [integer, 'null'] }
+                clear_focus: { type: boolean }
+                assessment:
+                  $ref: '#/components/schemas/AssessmentRoundInput'
+                interview:
+                  $ref: '#/components/schemas/InterviewRoundInput'
+  /applications/{id}/correct-current:
+    post:
+      summary: 更正当前进度（「之前选错了」）
+      description: |
+        方案 §4.2：把当前有效进度改成另一个（阶段, 子状态）。自动挑选最近一条未被
+        更正的状态事件作为更正对象（可用 corrected_event_id 指定），插入 correction
+        事件后按 sequence 重放有效历史，重算 status/substatus/投递与 Offer 事实。
+        旧事件保留审计，不计入有效完成次数。后续事件若因此不成立，返回
+        correction_invalid 而不是静默删除下游记录。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_status, version]
+              properties:
+                to_status: { type: string }
+                to_substatus: { type: string }
+                reason: { type: string }
+                occurred_at: { type: string, format: date-time }
+                version: { type: integer }
+                corrected_event_id: { type: [integer, 'null'] }
   /applications/{id}/events:
-    get: { summary: 状态时间线 }
+    get: { summary: 状态时间线（含前后子状态、活动引用与变更类型） }
   /applications/{id}/corrections:
     post:
-      summary: 历史纠正（保留 corrects_event_id 审计）
+      summary: 历史纠正（指定事件 id，保留 corrects_event_id 审计）
   /applications/{id}/restore: { post: { summary: 从回收站恢复 } }
   /applications/{id}/archive: { post: { summary: 归档 } }
   /applications/{id}/unarchive: { post: { summary: 取消归档 } }
@@ -146,6 +238,37 @@ paths:
     post:
       summary: 批量（标签/优先级/归档，≤100 条）
   /applications/{id}/interviews: { get: {}, post: { summary: 安排面试轮次 } }
+  /applications/{id}/assessments:
+    get: { summary: OA / 作业轮次列表（按轮次，不覆盖上一轮） }
+    post:
+      summary: 新增一轮 OA / 作业（种、名、进度、结果与四种时间）
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssessmentRoundInput' }
+  /applications/{id}/assessments/{assessment_id}:
+    patch:
+      summary: 更新一轮 OA / 作业（未提及的完成事实不会被清空）
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssessmentRoundInput' }
+    delete: { summary: 删除一轮 OA / 作业 }
+  /applications/{id}/assessments/{assessment_id}/complete:
+    post:
+      summary: 标记某轮 OA 已完成（同时把申请进度同步为已完成·等结果）
+  /applications/{id}/assessments/{assessment_id}/reopen: { post: { summary: 撤回某轮 OA 的完成标记 } }
+  /applications/{id}/interviews/{interview_id}/complete:
+    post:
+      summary: 标记本轮面试已完成（完成 ≠ 通过，不会自动通过或结束申请）
+  /applications/{id}/interviews/{interview_id}/reopen: { post: { summary: 撤回本轮面试的完成标记 } }
+  /meta/status-model:
+    get:
+      summary: 大阶段 / 合法子状态组合 / 可用目标白名单（方案 §6.5）
+      description: |
+        前端据此渲染进度选择器，避免两套手写白名单。targets[from] 列出每个阶段
+        可选的 (目标阶段, 子状态) 及是否必须填原因、属于哪个分组
+        （advance / backward / reopen / end）。
   /applications/{id}/actions: { get: {}, post: {} }
   /applications/{id}/notes: { get: {}, post: {} }
   /actions:

@@ -2,14 +2,35 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, fmtBytes, fmtDate, fmtDateTime, fmtDay, relativeDayLabel, toDayString } from '../../lib/api'
 import { effectiveZone, toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
-import type { ActionItem, AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
-import { NEXT_STEP_SUGGESTION, STATUSES, statusMeta } from '../../lib/status'
-import { Button, Card, Eyebrow, Input, LinkButton, PanelTitle, Select } from '../../ds'
+import type { ActionItem, AppEvent, AppRow, AssessmentRound, FileItem, Interview, Note } from '../../lib/types'
+import {
+  comboLabel,
+  NEXT_STEP_SUGGESTION,
+  STATUSES,
+  statusMeta,
+  substatusOptions,
+} from '../../lib/status'
+import { changeTypeLabel } from '../../lib/transitions'
+import { Badge, Button, Card, Eyebrow, Input, LinkButton, PanelTitle, Select, Tag } from '../../ds'
 import { Icon } from '../../components/Icon'
 import { Dot, ErrorText, Modal, Num, Spinner } from '../../components/ui'
-import { ActionForm, InterviewForm, NoteForm } from './forms'
+import { ActionForm, AssessmentForm, InterviewForm, NoteForm } from './forms'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
+
+/**
+ * 一轮活动的状态标签：进度（待安排 / 准备中 / 已完成 / 已取消）优先于结果，
+ * 因为「面完了但结果未知」是常见且必须能表达的状态（方案 §3.3）；只有结果真的
+ * 确定时才显示通过 / 未通过。
+ */
+function activityProgressLabel(progress: string, result: string, scheduled: boolean): string {
+  if (result === 'passed') return '已通过'
+  if (result === 'failed') return '未通过'
+  if (progress === 'completed') return '已完成·等反馈'
+  if (progress === 'cancelled') return '已取消'
+  if (progress === 'preparing') return '准备中'
+  return scheduled ? '待进行' : '待安排'
+}
 
 /** YYYY-MM-DD strictly before today's YYYY-MM-DD in the USER zone. */
 function dayBeforeToday(dayStr: string): boolean {
@@ -83,12 +104,15 @@ export function FilePreview({ f, size = 40 }: { f: FileItem; size?: number }) {
 export function OverviewTab({
   app,
   interviews,
+  assessments = [],
   notes,
   filesCount,
   refetchAll,
 }: {
   app: AppRow
   interviews: Interview[]
+  /** 已记录的 OA / 作业轮次（方案 §3.2）——一轮一笔，不覆盖上一轮。 */
+  assessments?: AssessmentRound[]
   notes: Note[]
   filesCount: number
   refetchAll: () => void
@@ -97,7 +121,30 @@ export function OverviewTab({
   const [showInterview, setShowInterview] = useState(false)
   const [showAction, setShowAction] = useState(false)
   const [showNote, setShowNote] = useState(false)
+  const [showAssessment, setShowAssessment] = useState(false)
   const [actionErr, setActionErr] = useState('')
+
+  // 活动进度快捷操作（方案 §3.3/§5）：只改轮次自身的完成事实，绝不自动改大阶段，
+  // 也不把「完成」当成「通过」。
+  const progressMut = useMutation({
+    mutationFn: ({ kind, id, progress }: { kind: 'interview' | 'assessment'; id: number; progress: string }) =>
+      api.post(
+        kind === 'interview'
+          ? `/api/v1/applications/${app.id}/interviews/${id}/${progress === 'completed' ? 'complete' : 'reopen'}`
+          : `/api/v1/applications/${app.id}/assessments/${id}/${progress === 'completed' ? 'complete' : 'reopen'}`,
+        progress === 'completed' ? { completed_unknown: false } : {},
+      ),
+    onSuccess: () => {
+      setActionErr('')
+      qc.invalidateQueries({ queryKey: ['interviews', app.id] })
+      qc.invalidateQueries({ queryKey: ['assessments', app.id] })
+      qc.invalidateQueries({ queryKey: ['app', app.id] })
+      qc.invalidateQueries({ queryKey: ['events', app.id] })
+      qc.invalidateQueries({ queryKey: ['calendar'] })
+      refetchAll()
+    },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '更新轮次失败，请重试'),
+  })
 
   // Standalone actions for this application — the unified todo source of
   // truth (§5.3). The card below lists open + recently completed so the user
@@ -134,7 +181,8 @@ export function OverviewTab({
   })
 
   const facts: Array<[string, string]> = [
-    ['状态', statusMeta(app.status).label],
+    // §5：详情也直接显示具体进度，而不是笼统的大阶段名。
+    ['状态', comboLabel(app.status, app.substatus)],
     ['渠道', app.channel || '—'],
     ['投递时间', fmtDate(app.submitted_at)],
     ['首次回复', fmtDate(app.first_response_at)],
@@ -258,7 +306,7 @@ export function OverviewTab({
                   <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>反馈：{i.feedback}</span>
                 )}
               </span>
-              {/* 三态标签：已通过 / 待进行 / 待安排（result + scheduled_at 推导） */}
+              {/* 进度与结果分开显示：完成 ≠ 通过（方案 §3.3）。 */}
               <span
                 style={{
                   fontSize: 11,
@@ -269,16 +317,108 @@ export function OverviewTab({
                       ? 'var(--positive)'
                       : i.result === 'failed'
                         ? 'var(--danger)'
-                        : i.scheduled_at
+                        : i.progress === 'completed'
                           ? 'var(--info)'
-                          : 'var(--neutral-600)',
+                          : i.scheduled_at
+                            ? 'var(--info)'
+                            : 'var(--neutral-600)',
                 }}
               >
-                {i.result === 'passed' ? '已通过' : i.result === 'failed' ? '未通过' : i.scheduled_at ? '待进行' : '待安排'}
+                {activityProgressLabel(i.progress, i.result, !!i.scheduled_at)}
               </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={progressMut.isPending}
+                onClick={() =>
+                  progressMut.mutate({
+                    kind: 'interview',
+                    id: i.id,
+                    progress: i.progress === 'completed' ? 'preparing' : 'completed',
+                  })
+                }
+              >
+                {i.progress === 'completed' ? '撤销完成' : '标记完成'}
+              </Button>
             </div>
           ))
         )}
+      </Card>
+
+      <Card padding={0}>
+        <div className="panel-head">
+          <PanelTitle>OA / 作业 ({assessments.length})</PanelTitle>
+          <span style={{ marginLeft: 'auto' }}>
+            <Button variant="secondary" size="sm" onClick={() => setShowAssessment(true)}>
+              ＋ 新增一轮
+            </Button>
+          </span>
+        </div>
+        {assessments.length === 0 ? (
+          <div style={{ padding: '12px 16px', fontSize: 13, color: 'var(--text-muted)' }}>
+            没有测评记录。收到 OA 后点「更新进度 → 准备 OA」即可记下这一轮。
+          </div>
+        ) : (
+          assessments.map((a) => (
+            <div key={a.id} className="panel-row">
+              <span className="grow">
+                <span style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>
+                  {a.name || 'OA'}
+                  {a.kind === 'take_home' ? ' · Take-home 作业' : a.kind === 'other' ? ' · 其他测评' : ' · 在线测试'}
+                </span>
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                  {a.completed_at
+                    ? `完成于 ${fmtDateTime(a.completed_at)}`
+                    : a.planned_at
+                      ? `计划 ${fmtDateTime(a.planned_at)}`
+                      : a.due_at
+                        ? `截止 ${fmtDateTime(a.due_at)}`
+                        : '时间未定'}
+                  {a.due_at && a.progress !== 'completed' ? ` · 截止 ${fmtDateTime(a.due_at)}` : ''}
+                </span>
+                {a.link && (
+                  <span style={{ display: 'block', fontSize: 12 }}>
+                    <a href={a.link} target="_blank" rel="noreferrer">
+                      测试链接
+                    </a>
+                  </span>
+                )}
+              </span>
+              <span
+                style={{
+                  fontSize: 11,
+                  border: '1px solid var(--border)',
+                  padding: '1px 6px',
+                  color:
+                    a.result === 'passed'
+                      ? 'var(--positive)'
+                      : a.result === 'failed'
+                        ? 'var(--danger)'
+                        : 'var(--warning)',
+                }}
+              >
+                {a.result === 'passed' ? '已通过' : a.result === 'failed' ? '未通过' : a.progress === 'completed' ? '已完成·等结果' : '准备中'}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={progressMut.isPending}
+                onClick={() =>
+                  progressMut.mutate({
+                    kind: 'assessment',
+                    id: a.id,
+                    progress: a.progress === 'completed' ? 'preparing' : 'completed',
+                  })
+                }
+              >
+                {a.progress === 'completed' ? '撤回完成' : '标记已完成'}
+              </Button>
+            </div>
+          ))
+        )}
+        <div style={{ padding: '10px 16px', fontSize: 12, color: 'var(--text-muted)' }}>
+          完成时间不详时只标「已完成」，不伪造精确时间；收到、计划、截止、完成四种时间各自保存。
+        </div>
       </Card>
 
       <Card padding={0}>
@@ -347,6 +487,18 @@ export function OverviewTab({
           onDone={() => {
             qc.invalidateQueries()
             setShowAction(false)
+          }}
+        />
+      )}
+      {showAssessment && (
+        <AssessmentForm
+          appId={app.id}
+          suggestedName={assessments.length === 0 ? 'OA' : `OA ${assessments.length + 1}`}
+          onClose={() => setShowAssessment(false)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ['assessments', app.id] })
+            qc.invalidateQueries({ queryKey: ['app', app.id] })
+            setShowAssessment(false)
           }}
         />
       )}
@@ -588,11 +740,23 @@ function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
 
 /* -------------------------------------------------------------------------- */
 
-export function TimelineTab({ appId, events, status }: { appId: number; events: AppEvent[]; status: string }) {
+export function TimelineTab({
+  appId,
+  events,
+  status,
+  version = 0,
+}: {
+  appId: number
+  events: AppEvent[]
+  status: string
+  /** 申请当前版本号：更正也做乐观锁检查（方案 §6.4）。 */
+  version?: number
+}) {
   const qc = useQueryClient()
   const [err, setErr] = useState('')
   const [pick, setPick] = useState<AppEvent | null>(null)
   const [newStatus, setNewStatus] = useState('')
+  const [newSubstatus, setNewSubstatus] = useState('')
   const [newOccurred, setNewOccurred] = useState('')
   // 系统信息（录入时间等数据库时间）默认隐藏，点击逐条展开。
   const [sysInfo, setSysInfo] = useState<Set<number>>(new Set())
@@ -614,8 +778,11 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
       await api.post(`/api/v1/applications/${appId}/corrections`, {
         event_id: pick.id,
         new_status: newStatus,
+        // 方案 §6.3：更正也要能改子状态，否则「误点已完成 OA」无法只退回准备中。
+        new_substatus: newSubstatus,
         occurred_at: edited ?? pick.occurred_at,
         reason: '纠错',
+        version,
       })
     },
     onSuccess: () => {
@@ -638,7 +805,7 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
       {err && <ErrorText>{err}</ErrorText>}
       <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-        当前状态：{statusMeta(status).label}。按你填写的实际发生时间排列；系统录入时间默认隐藏，展开「系统信息」可见。
+        当前状态：{comboLabel(status)}。按你填写的实际发生时间排列；系统录入时间默认隐藏，展开「系统信息」可见。
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -656,11 +823,15 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
                   {e.event_type === 'created' && '建档（开始追踪）'}
                   {e.event_type === 'correction' && '纠正'}
                   {e.event_type === 'status_change' &&
-                    `${e.from_status ? statusMeta(e.from_status).label : '—'} → ${
-                      e.to_status ? statusMeta(e.to_status).label : '—'
+                    `${e.from_status ? comboLabel(e.from_status, e.from_substatus) : '—'} → ${
+                      e.to_status ? comboLabel(e.to_status, e.to_substatus) : '—'
                     }`}
                   {!['created', 'correction', 'status_change'].includes(e.event_type) && e.event_type}
                 </span>
+                {/* 方案 §4.3：变更类型只做展示，帮助区分真实回退、重开与更正。 */}
+                {e.event_type !== 'created' && e.change_type && e.change_type !== 'advance' && (
+                  <Badge tone={e.change_type === 'correct' ? 'warning' : 'neutral'}>{changeTypeLabel(e.change_type)}</Badge>
+                )}
                 <span
                   style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 6 }}
                   title={supersededBy.has(e.id) ? '这条记录已被纠正，以纠正行为准' : '实际发生时间（你填写的业务时间）'}
@@ -725,6 +896,7 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
                     onClick={() => {
                       setPick(e)
                       setNewStatus(e.to_status ?? 'saved')
+                      setNewSubstatus(e.to_substatus ?? '')
                       setNewOccurred(toLocalDateTimeInput(e.occurred_at))
                     }}
                   >
@@ -757,6 +929,21 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
               value={newStatus}
               onChange={(e) => setNewStatus(e.target.value)}
             />
+            {substatusOptions(newStatus).length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                <Eyebrow>具体进度</Eyebrow>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+                  <Tag selected={newSubstatus === ''} onClick={() => setNewSubstatus('')}>
+                    未细分
+                  </Tag>
+                  {substatusOptions(newStatus).map((s) => (
+                    <Tag key={s.key} selected={newSubstatus === s.key} onClick={() => setNewSubstatus(s.key)}>
+                      {s.label}
+                    </Tag>
+                  ))}
+                </div>
+              </div>
+            )}
             <Input
               label="实际发生时间"
               type="datetime-local"
@@ -765,7 +952,7 @@ export function TimelineTab({ appId, events, status }: { appId: number; events: 
               hint="填错了时间就在这里改；时间线按这个时间显示与排序"
             />
             <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
-              纠正会保留审计痕迹（corrects_event_id），并重新计算当前状态。
+              纠正会保留审计痕迹（corrects_event_id），并重新计算当前状态。后续事件的依赖冲突会在提交时提示。
             </p>
           </div>
         </Modal>

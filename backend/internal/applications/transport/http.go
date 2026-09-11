@@ -63,41 +63,49 @@ func (h *Handler) clearAppReminders(c *gin.Context, ownerID, appID int64) {
 
 // appDTO is the wire representation of an application row.
 type appDTO struct {
-	ID              int64           `json:"id"`
-	CompanyID       int64           `json:"company_id"`
-	CompanyName     string          `json:"company_name"`
-	Position        string          `json:"position"`
-	JobURL          string          `json:"job_url"`
-	JDSnapshot      string          `json:"jd_snapshot"`
-	Location        string          `json:"location"`
-	RemotePolicy    string          `json:"remote_policy"`
-	EmploymentType  string          `json:"employment_type"`
-	SalaryMin       *int64          `json:"salary_min"`
-	SalaryMax       *int64          `json:"salary_max"`
-	SalaryCurrency  string          `json:"salary_currency"`
-	Channel         string          `json:"channel"`
-	Status          string          `json:"status"`
-	Priority        string          `json:"priority"`
-	Tags            []string        `json:"tags"`
-	CustomValues    json.RawMessage `json:"custom_values"`
-	Notes           string          `json:"notes"`
-	SavedAt         *time.Time      `json:"saved_at"`
-	SubmittedAt     *time.Time      `json:"submitted_at"`
-	FirstResponseAt *time.Time      `json:"first_response_at"`
-	Deadline        *string         `json:"deadline"` // calendar day YYYY-MM-DD (DATE column)
-	AcceptedAt      *time.Time      `json:"accepted_at"`
-	RejectedAt      *time.Time      `json:"rejected_at"`
-	Reason          string          `json:"reason"`
-	NextAction      string          `json:"next_action"`
-	NextActionDueAt *string         `json:"next_action_due_at"` // calendar day YYYY-MM-DD (DATE column)
-	Version         int             `json:"version"`
-	Archived        bool            `json:"archived"`
-	Deleted         bool            `json:"deleted"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID             int64  `json:"id"`
+	CompanyID      int64  `json:"company_id"`
+	CompanyName    string `json:"company_name"`
+	Position       string `json:"position"`
+	JobURL         string `json:"job_url"`
+	JDSnapshot     string `json:"jd_snapshot"`
+	Location       string `json:"location"`
+	RemotePolicy   string `json:"remote_policy"`
+	EmploymentType string `json:"employment_type"`
+	SalaryMin      *int64 `json:"salary_min"`
+	SalaryMax      *int64 `json:"salary_max"`
+	SalaryCurrency string `json:"salary_currency"`
+	Channel        string `json:"channel"`
+	Status         string `json:"status"`
+	Substatus      string `json:"substatus"`
+	// FocusActivityKind/ID point at the round the stage label is derived from
+	// (方案 §3.3: 列表主标签展示用户选定的关注阶段).
+	FocusActivityKind string          `json:"focus_activity_kind"`
+	FocusActivityID   *int64          `json:"focus_activity_id"`
+	Priority          string          `json:"priority"`
+	Tags              []string        `json:"tags"`
+	CustomValues      json.RawMessage `json:"custom_values"`
+	Notes             string          `json:"notes"`
+	SavedAt           *time.Time      `json:"saved_at"`
+	SubmittedAt       *time.Time      `json:"submitted_at"`
+	FirstResponseAt   *time.Time      `json:"first_response_at"`
+	Deadline          *string         `json:"deadline"` // calendar day YYYY-MM-DD (DATE column)
+	AcceptedAt        *time.Time      `json:"accepted_at"`
+	RejectedAt        *time.Time      `json:"rejected_at"`
+	Reason            string          `json:"reason"`
+	NextAction        string          `json:"next_action"`
+	NextActionDueAt   *string         `json:"next_action_due_at"` // calendar day YYYY-MM-DD (DATE column)
+	Version           int             `json:"version"`
+	Archived          bool            `json:"archived"`
+	Deleted           bool            `json:"deleted"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 	// StageHistory (include=stage_history) maps each reached status to the
 	// earliest calendar day (user-zone YYYY-MM-DD) the application entered it.
 	StageHistory map[string]string `json:"stage_history,omitempty"`
+	// ProgressSince is the calendar day the CURRENT progress was entered
+	// (方案 §5). Corrections move it; the superseded record no longer counts.
+	ProgressSince string `json:"progress_since,omitempty"`
 }
 
 func toDTO(r *apprepo.Row) *appDTO {
@@ -106,7 +114,9 @@ func toDTO(r *apprepo.Row) *appDTO {
 		JobURL: r.JobURL, JDSnapshot: r.JDSnapshot, Location: r.Location,
 		RemotePolicy: r.RemotePolicy, EmploymentType: r.EmploymentType,
 		SalaryMin: r.SalaryMin, SalaryMax: r.SalaryMax, SalaryCurrency: r.SalaryCurrency,
-		Channel: r.Channel, Status: r.Status, Priority: r.Priority, Tags: r.Tags,
+		Channel: r.Channel, Status: r.Status, Substatus: r.Substatus,
+		FocusActivityKind: r.FocusActivityKind, FocusActivityID: r.FocusActivityID,
+		Priority: r.Priority, Tags: r.Tags,
 		CustomValues: r.CustomValues, Notes: r.Notes, SavedAt: r.SavedAt,
 		SubmittedAt: r.SubmittedAt, FirstResponseAt: r.FirstResponseAt,
 		AcceptedAt: r.AcceptedAt, RejectedAt: r.RejectedAt, Reason: r.Reason,
@@ -159,6 +169,7 @@ func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.PATCH("/:id", h.patch)
 	g.DELETE("/:id", h.softDelete)
 	g.POST("/:id/transitions", h.transition)
+	g.POST("/:id/correct-current", h.correctCurrent)
 	g.GET("/:id/events", h.events)
 	g.POST("/:id/corrections", h.correction)
 	g.POST("/:id/restore", h.restore)
@@ -184,7 +195,10 @@ func (h *Handler) list(c *gin.Context) {
 		return
 	}
 	withStage := listIncludes(q.Get("include"))["stage_history"]
-	stage := map[int64]map[string]string{}
+	summary := &apprepo.TimelineSummary{
+		StageHistory:  map[int64]map[string]string{},
+		ProgressSince: map[int64]string{},
+	}
 	if withStage && len(rows) > 0 {
 		ids := make([]int64, 0, len(rows))
 		submitted := make(map[int64]*time.Time, len(rows))
@@ -195,16 +209,20 @@ func (h *Handler) list(c *gin.Context) {
 			}
 		}
 		loc, _ := timeutil.SafeLocation(user.Timezone)
-		if stage, err = h.svc.Repo().StageHistoryFor(c.Request.Context(), user.ID, ids, loc, submitted); err != nil {
+		if summary, err = h.svc.Repo().TimelineSummaryFor(c.Request.Context(), user.ID, ids, loc, submitted); err != nil {
 			// Stage history is an enrichment: never fail the page over it.
-			stage = map[int64]map[string]string{}
+			summary = &apprepo.TimelineSummary{
+				StageHistory:  map[int64]map[string]string{},
+				ProgressSince: map[int64]string{},
+			}
 		}
 	}
 	out := make([]*appDTO, 0, len(rows))
 	for _, row := range rows {
 		d := toDTO(row)
 		if withStage {
-			d.StageHistory = stage[row.ID]
+			d.StageHistory = summary.StageHistory[row.ID]
+			d.ProgressSince = summary.ProgressSince[row.ID]
 		}
 		out = append(out, d)
 	}
@@ -235,6 +253,7 @@ type createReq struct {
 	SalaryCurrency string     `json:"salary_currency"`
 	Channel        string     `json:"channel"`
 	Status         string     `json:"status"`
+	Substatus      string     `json:"substatus"`
 	Priority       string     `json:"priority"`
 	Tags           []string   `json:"tags"`
 	Deadline       *string    `json:"deadline"` // YYYY-MM-DD
@@ -258,7 +277,8 @@ func (h *Handler) create(c *gin.Context) {
 		CompanyName: req.CompanyName, Position: req.Position, JobURL: req.JobURL,
 		Location: req.Location, RemotePolicy: req.RemotePolicy, EmploymentType: req.EmploymentType,
 		SalaryMin: req.SalaryMin, SalaryMax: req.SalaryMax, SalaryCurrency: req.SalaryCurrency,
-		Channel: req.Channel, Status: req.Status, Priority: req.Priority, Tags: req.Tags,
+		Channel: req.Channel, Status: req.Status, Substatus: req.Substatus,
+		Priority: req.Priority, Tags: req.Tags,
 		Deadline: deadline, Notes: req.Notes, SubmittedAt: req.SubmittedAt,
 	}
 	row, err := h.svc.Create(c.Request.Context(), user.ID, in)
@@ -446,6 +466,7 @@ func (h *Handler) unarchive(c *gin.Context) {
 
 type transitionReq struct {
 	ToStatus        string     `json:"to_status"`
+	ToSubstatus     string     `json:"to_substatus"`
 	OccurredAt      *time.Time `json:"occurred_at"`
 	Reason          string     `json:"reason"`
 	Note            string     `json:"note"`
@@ -455,6 +476,16 @@ type transitionReq struct {
 	NoFormalSubmission bool   `json:"no_formal_submission"`
 	Version            int    `json:"version"`
 	IdempotencyKey     string `json:"idempotency_key"`
+	// change_type: "" 自动判定 / rollback 流程实际退回 / reopen 重新开启。
+	// 选错了要用「更正」而不是回退，见 POST /:id/correct-current。
+	ChangeType string `json:"change_type"`
+	// 关注轮次：把阶段指向某一轮活动。
+	FocusActivityKind string `json:"focus_activity_kind"`
+	FocusActivityID   *int64 `json:"focus_activity_id"`
+	ClearFocus        bool   `json:"clear_focus"`
+	// 与状态变更同事务写入的新轮次（方案 §6.3）。
+	Assessment *assessmentReq `json:"assessment"`
+	Interview  *interviewReq  `json:"interview"`
 }
 
 func (h *Handler) transition(c *gin.Context) {
@@ -470,10 +501,20 @@ func (h *Handler) transition(c *gin.Context) {
 	}
 	user := httpx.UserFrom(c)
 	in := &appservice.TransitionInput{
-		ToStatus: req.ToStatus, OccurredAt: req.OccurredAt, Reason: req.Reason, Note: req.Note,
+		ToStatus: req.ToStatus, ToSubstatus: req.ToSubstatus,
+		OccurredAt: req.OccurredAt, Reason: req.Reason, Note: req.Note,
 		SubmittedAt: req.SubmittedAt, FirstResponseAt: req.FirstResponseAt,
 		NoFormalSubmission: req.NoFormalSubmission,
 		Version:            req.Version, IdempotencyKey: req.IdempotencyKey,
+		ChangeType:        req.ChangeType,
+		FocusActivityKind: req.FocusActivityKind, FocusActivityID: req.FocusActivityID,
+		ClearFocus: req.ClearFocus,
+	}
+	if req.Assessment != nil {
+		in.Assessment = req.Assessment.toInput()
+	}
+	if req.Interview != nil {
+		in.Interview = req.Interview.toInput()
 	}
 	row, err := h.svc.Transition(c.Request.Context(), user.ID, id, in)
 	if err != nil {
@@ -492,6 +533,38 @@ func (h *Handler) transition(c *gin.Context) {
 	c.JSON(http.StatusOK, toDTO(row))
 }
 
+// correctCurrent repairs a mis-recorded stage (方案 §4.2 「之前选错了」): the
+// wrong event is kept for audit and a correction row points at it.
+func (h *Handler) correctCurrent(c *gin.Context) {
+	id, err := httpx.PathID(c, "id")
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的岗位 ID"))
+		return
+	}
+	var req struct {
+		ToStatus         string     `json:"to_status"`
+		ToSubstatus      string     `json:"to_substatus"`
+		Reason           string     `json:"reason"`
+		OccurredAt       *time.Time `json:"occurred_at"`
+		Version          int        `json:"version"`
+		CorrectedEventID *int64     `json:"corrected_event_id"`
+	}
+	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	user := httpx.UserFrom(c)
+	row, err := h.svc.CorrectCurrent(c.Request.Context(), user.ID, id, &appservice.CorrectCurrentInput{
+		ToStatus: req.ToStatus, ToSubstatus: req.ToSubstatus, Reason: req.Reason,
+		OccurredAt: req.OccurredAt, Version: req.Version, CorrectedEventID: req.CorrectedEventID,
+	})
+	if err != nil {
+		httpx.WriteErr(c, mapConflict(err))
+		return
+	}
+	c.JSON(http.StatusOK, toDTO(row))
+}
+
 func (h *Handler) events(c *gin.Context) {
 	id, _ := httpx.PathID(c, "id")
 	user := httpx.UserFrom(c)
@@ -501,32 +574,41 @@ func (h *Handler) events(c *gin.Context) {
 		return
 	}
 	type evDTO struct {
-		ID        int64     `json:"id"`
-		Sequence  int       `json:"sequence"`
-		EventType string    `json:"event_type"`
-		From      *string   `json:"from_status"`
-		To        *string   `json:"to_status"`
-		Note      string    `json:"note"`
-		Reason    string    `json:"reason"`
-		Occurred  time.Time `json:"occurred_at"`
-		Recorded  time.Time `json:"recorded_at"`
-		Corrects  *int64    `json:"corrects_event_id"`
-		Actor     *int64    `json:"actor_id"`
+		ID         int64     `json:"id"`
+		Sequence   int       `json:"sequence"`
+		EventType  string    `json:"event_type"`
+		From       *string   `json:"from_status"`
+		To         *string   `json:"to_status"`
+		FromSub    *string   `json:"from_substatus"`
+		ToSub      *string   `json:"to_substatus"`
+		ActKind    *string   `json:"activity_kind"`
+		ActID      *int64    `json:"activity_id"`
+		ChangeType string    `json:"change_type"`
+		Note       string    `json:"note"`
+		Reason     string    `json:"reason"`
+		Occurred   time.Time `json:"occurred_at"`
+		Recorded   time.Time `json:"recorded_at"`
+		Corrects   *int64    `json:"corrects_event_id"`
+		Actor      *int64    `json:"actor_id"`
 	}
 	out := make([]evDTO, 0, len(evs))
 	for _, e := range evs {
 		out = append(out, evDTO{ID: e.ID, Sequence: e.Sequence, EventType: e.EventType,
-			From: e.FromStatus, To: e.ToStatus, Note: e.Note, Reason: e.Reason,
+			From: e.FromStatus, To: e.ToStatus, FromSub: e.FromSubstatus, ToSub: e.ToSubstatus,
+			ActKind: e.ActivityKind, ActID: e.ActivityID, ChangeType: e.ChangeType,
+			Note: e.Note, Reason: e.Reason,
 			Occurred: e.OccurredAt, Recorded: e.RecordedAt, Corrects: e.CorrectsEventID, Actor: e.ActorID})
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
 type correctionReq struct {
-	EventID    int64     `json:"event_id"`
-	NewStatus  string    `json:"new_status"`
-	OccurredAt time.Time `json:"occurred_at"`
-	Reason     string    `json:"reason"`
+	EventID      int64     `json:"event_id"`
+	NewStatus    string    `json:"new_status"`
+	NewSubstatus string    `json:"new_substatus"`
+	OccurredAt   time.Time `json:"occurred_at"`
+	Reason       string    `json:"reason"`
+	Version      int       `json:"version"`
 }
 
 func (h *Handler) correction(c *gin.Context) {
@@ -538,12 +620,63 @@ func (h *Handler) correction(c *gin.Context) {
 	}
 	user := httpx.UserFrom(c)
 	if err := h.svc.Correct(c.Request.Context(), user.ID, id, &appservice.CorrectionInput{
-		EventID: req.EventID, NewStatus: req.NewStatus, OccurredAt: req.OccurredAt, Reason: req.Reason,
+		EventID: req.EventID, NewStatus: req.NewStatus, NewSubstatus: req.NewSubstatus,
+		OccurredAt: req.OccurredAt, Reason: req.Reason, Version: req.Version,
 	}); err != nil {
-		httpx.WriteErr(c, err)
+		httpx.WriteErr(c, mapConflict(err))
 		return
 	}
 	httpx.Ok(c)
+}
+
+// -- activity payloads accepted inline on a transition (方案 §6.3) --
+
+type assessmentReq struct {
+	Kind             string     `json:"kind"`
+	Name             string     `json:"name"`
+	Progress         string     `json:"progress"`
+	Result           string     `json:"result"`
+	InvitedAt        *time.Time `json:"invited_at"`
+	PlannedAt        *time.Time `json:"planned_at"`
+	DueAt            *time.Time `json:"due_at"`
+	CompletedAt      *time.Time `json:"completed_at"`
+	CompletedUnknown bool       `json:"completed_unknown"`
+	Link             string     `json:"link"`
+	Notes            string     `json:"notes"`
+}
+
+func (r *assessmentReq) toInput() *appservice.AssessmentInput {
+	return &appservice.AssessmentInput{
+		Kind: r.Kind, Name: r.Name, Progress: r.Progress, Result: r.Result,
+		InvitedAt: r.InvitedAt, PlannedAt: r.PlannedAt, DueAt: r.DueAt,
+		CompletedAt: r.CompletedAt, CompletedUnknown: r.CompletedUnknown,
+		Link: r.Link, Notes: r.Notes,
+	}
+}
+
+type interviewReq struct {
+	RoundName        string     `json:"round_name"`
+	Format           string     `json:"format"`
+	ScheduledAt      *time.Time `json:"scheduled_at"`
+	Timezone         string     `json:"timezone"`
+	DurationMinutes  *int       `json:"duration_minutes"`
+	Progress         string     `json:"progress"`
+	Result           string     `json:"result"`
+	InvitedAt        *time.Time `json:"invited_at"`
+	CompletedAt      *time.Time `json:"completed_at"`
+	CompletedUnknown bool       `json:"completed_unknown"`
+	Feedback         string     `json:"feedback"`
+	Notes            string     `json:"notes"`
+}
+
+func (r *interviewReq) toInput() *appservice.InterviewInput {
+	return &appservice.InterviewInput{
+		RoundName: r.RoundName, Format: r.Format, ScheduledAt: r.ScheduledAt,
+		Timezone: r.Timezone, DurationMinutes: r.DurationMinutes,
+		Progress: r.Progress, Result: r.Result, InvitedAt: r.InvitedAt,
+		CompletedAt: r.CompletedAt, CompletedUnknown: r.CompletedUnknown,
+		Feedback: r.Feedback, Notes: r.Notes,
+	}
 }
 
 // bulk performs the limited batch ops shipped in v1: tag, priority, archive
@@ -605,3 +738,13 @@ func parseInt(s string, def int) int {
 }
 
 var _ = appdomain.StatusSaved
+
+// MetaRoutes mounts the server-owned status/substatus whitelist. The frontend
+// renders from this single source instead of hand-maintaining a second copy of
+// the state model (方案 §6.5).
+func (h *Handler) MetaRoutes(g *gin.RouterGroup) {
+	g.Use(httpx.RequireUser)
+	g.GET("/status-model", func(c *gin.Context) {
+		c.JSON(http.StatusOK, h.svc.StatusModel())
+	})
+}

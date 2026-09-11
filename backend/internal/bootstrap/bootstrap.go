@@ -52,6 +52,8 @@ type App struct {
 	Jobs  *jobs.Store
 
 	appsSvc  *appservice.Service
+	appsRepo *apprepo.Repo
+	actRepo  *actrepo.Repo
 	viewsSvc *vservice.Service
 
 	Prefs *prefsrepo.Repo
@@ -79,7 +81,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	auth := idservice.New(db, users, cfg.HTTP.SessionHours, cfg.App.CSRFSecret)
 
 	appsRepo := apprepo.New(db)
-	appsSvc := appservice.New(db, appsRepo)
+	// activities (interviews, OA rounds) share the applications transaction so a
+	// status change and the round it records commit together (方案 §6.3).
+	actRepo := actrepo.New(db)
+	appsSvc := appservice.New(db, appsRepo).WithActivities(actRepo)
 	viewsRepo := vrepo.New(db)
 	viewsSvc := vservice.New(db, viewsRepo).WithStageHistory(appsRepo)
 	jobStore := jobs.NewStore(db)
@@ -90,7 +95,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	return &App{
 		Cfg: cfg, DB: db, Store: obj, Auth: auth, Jobs: jobStore,
-		appsSvc: appsSvc, viewsSvc: viewsSvc,
+		appsSvc: appsSvc, appsRepo: appsRepo, actRepo: actRepo, viewsSvc: viewsSvc,
 		Prefs: prefsRepo, Nots: notifRepo, Home: homeRepo,
 	}, nil
 }
@@ -122,8 +127,9 @@ func (a *App) Handler() http.Handler {
 	appH.Routes(api.Group("/applications"))
 
 	// activities under /applications/:id
-	actRepo := actrepo.New(a.DB)
-	actH := acttransport.New(actRepo).WithNotifications(a.Nots)
+	// The activity routes keep the application's substatus in step with the
+	// round's own progress (方案 §6.1).
+	actH := acttransport.New(a.actRepo).WithNotifications(a.Nots).WithApplicationSync(a.appsRepo)
 	actH.Routes(api.Group("/applications/:id"))
 	// standalone actions list for “今日待办” (all applications)
 	actH.ActionsRoot(api.Group("/actions"))
@@ -170,8 +176,10 @@ func (a *App) Handler() http.Handler {
 	srchH := searchtransport.New(searchrepo.New(a.DB))
 	srchH.Routes(api.Group("/search"))
 
-	// health (no auth)
-	r.GET("/health/live", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	// meta: server-owned status / substatus whitelist for the client
+	appH.MetaRoutes(api.Group("/meta"))
+
+	// health (no auth)	r.GET("/health/live", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	r.GET("/health/ready", a.ready)
 
 	// SPA fallback handled by the static file server in cmd/api.
