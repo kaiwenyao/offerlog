@@ -159,3 +159,53 @@ func TestHomeSummaryWeekWindows(t *testing.T) {
 		t.Fatalf("week bounds = [%v,%v) want [%v,%v)", s.Week.Start, s.Week.End, ws, we)
 	}
 }
+
+// OA 轮次进首页（PR #23 review P1 #4）：有计划时间的轮次出现在 upcoming 列表，
+// 计划 / 截止时间进本周周条（OA / OA截止 chips）。
+func TestHomeSummaryUpcomingAssessmentsAndWeekChips(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	var tz string
+	_ = db.Pool().QueryRow(ctx, `SELECT timezone FROM users WHERE id=$1`, owner).Scan(&tz)
+	loc, _ := time.LoadLocation(tz)
+	repo := home.New(db)
+	now := time.Now().In(loc)
+	ws, we := timeutil.WeekBounds(now, loc, time.Monday)
+	at := ws
+	if !at.After(now) {
+		at = now.Add(2 * time.Hour)
+	}
+	if !at.Before(we) {
+		t.Skip("week nearly over — cannot place a chip deterministically")
+	}
+	app := mustCreate(t, svc, owner, "OAHomeCo", "Role")
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO assessment_rounds(application_id, owner_id, kind, name, progress, planned_at, due_at)
+		VALUES($1,$2,'online_test','笔试','preparing',$3,$4)`, app.ID, owner, at, at.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	s, err := repo.Get(ctx, owner, tz, time.Monday, now, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundUpcoming := false
+	for _, u := range s.UpcomingAssessments {
+		if u.CompanyName == "OAHomeCo" && u.Name == "笔试" {
+			foundUpcoming = true
+		}
+	}
+	if !foundUpcoming {
+		t.Fatalf("upcoming_assessments = %+v, want the planned OA round", s.UpcomingAssessments)
+	}
+	oaChip, dueChip := false, false
+	for _, wi := range s.WeekItems {
+		if wi.Kind == "OA" {
+			oaChip = true
+		}
+		if wi.Kind == "OA截止" {
+			dueChip = true
+		}
+	}
+	if !oaChip || !dueChip {
+		t.Fatalf("week chips = %+v, want both OA and OA截止", s.WeekItems)
+	}
+}

@@ -26,6 +26,10 @@ function toneOf(e: CalendarEvent): string {
   switch (e.kind) {
     case 'interview':
       return 'var(--accent)'
+    case 'assessment':
+      return 'var(--warning)'
+    case 'assessment_due':
+      return 'var(--danger)'
     case 'action':
       return 'var(--warning)'
     case 'offer_decision':
@@ -37,6 +41,8 @@ function toneOf(e: CalendarEvent): string {
 
 function kindLabel(e: CalendarEvent): string {
   if (e.kind === 'interview') return e.round_name || '面试'
+  if (e.kind === 'assessment') return e.round_name || 'OA'
+  if (e.kind === 'assessment_due') return e.round_name ? `${e.round_name} 截止` : 'OA 截止'
   if (e.kind === 'action') return '待办'
   if (e.kind === 'offer_decision') return 'Offer 答复'
   return '截止'

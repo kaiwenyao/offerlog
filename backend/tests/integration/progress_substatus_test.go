@@ -6,8 +6,12 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -693,4 +697,149 @@ func TestCorrectionCannotMintAnAcceptance(t *testing.T) {
 	if row.Status != domain.StatusAccepted {
 		t.Fatalf("status = %q, want accepted", row.Status)
 	}
+}
+
+// 回归（PR #23 review P1 #2）：focus_activity_id 必须真实存在且属于本申请，
+// 任意 ID 不得在落库后才以 500 的形式爆出来。
+func TestTransitionRejectsUnknownFocusRound(t *testing.T) {
+	_, svc, _, owner := newProgressService(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "BogusFocus", "后端工程师")
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: submittedAt(2),
+	}); err != nil {
+		t.Fatalf("applied: %v", err)
+	}
+	bogus := int64(99999999)
+	_, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusAssessment, ToSubstatus: domain.SubPreparing, Version: 2,
+		FocusActivityKind: domain.ActivityAssessment, FocusActivityID: &bogus,
+	})
+	if err == nil {
+		t.Fatal("a transition naming a nonexistent round must fail")
+	}
+	var verr *domain.ValidationError
+	if !errors.As(err, &verr) || verr.Code != "activity_not_found" {
+		t.Fatalf("err = %v, want activity_not_found validation error", err)
+	}
+}
+
+// 回归（PR #23 review P1 #3）：focus 是用户选定的关注轮次，编辑 / 完成其它轮次
+// 不得把 focus 抢走；取消关注轮次必须清掉它派生的「已完成」子状态，不能永远
+// 显示「已完成 OA」。
+func TestRoundEditDoesNotStealFocusAndCancelClearsSubstatus(t *testing.T) {
+	db, svc, _, owner := newProgressService(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "FocusSteal", "后端工程师")
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: submittedAt(2),
+	}); err != nil {
+		t.Fatalf("applied: %v", err)
+	}
+	// 第一轮：focus 指向它。
+	row, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusAssessment, Version: 2,
+		Assessment: &appservice.AssessmentInput{Kind: "online_test", Name: "第一轮"},
+	})
+	if err != nil {
+		t.Fatalf("assessment: %v", err)
+	}
+	focusA := row.FocusActivityID
+	if focusA == nil {
+		t.Fatal("focus must be set to the first round")
+	}
+
+	srv, _ := activityServerWithSync(t, db, owner)
+	defer srv.Close()
+	base := "/api/v1/applications/" + itoa(app.ID)
+
+	// 第二轮：focus 已在一轮上，新建不得抢占。
+	code, body := postActivityJSON(t, srv, base+"/assessments",
+		`{"kind":"take_home","name":"作业","progress":"preparing"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create round B status = %d (%v), want 201", code, body)
+	}
+	roundB := int64(body["id"].(float64))
+	row, _ = svc.Get(ctx, owner, app.ID, false)
+	if row.FocusActivityID == nil || *row.FocusActivityID != *focusA {
+		t.Fatalf("creating round B stole the focus: %v, want %d", row.FocusActivityID, *focusA)
+	}
+
+	// 完成第二轮：子状态跟过去，但 focus 仍是一轮。
+	code, _ = postActivityJSON(t, srv, base+"/assessments/"+itoa(roundB)+"/complete", `{}`)
+	if code != http.StatusOK {
+		t.Fatalf("complete round B status = %d, want 200", code)
+	}
+	row, _ = svc.Get(ctx, owner, app.ID, false)
+	if row.Substatus != domain.SubCompleted {
+		t.Fatalf("substatus = %q, want completed", row.Substatus)
+	}
+	if row.FocusActivityID == nil || *row.FocusActivityID != *focusA {
+		t.Fatalf("completing round B stole the focus: %v, want %d", row.FocusActivityID, *focusA)
+	}
+
+	// 取消一轮（focus 所在轮）：派生的「已完成」必须清掉，回到未细分。
+	code, cancBody := patchActivityJSON(t, srv, base+"/assessments/"+itoa(*focusA),
+		`{"progress":"cancelled"}`)
+	if code != http.StatusOK {
+		t.Fatalf("cancel round A status = %d body=%v, want 200", code, cancBody)
+	}
+	row, _ = svc.Get(ctx, owner, app.ID, false)
+	if row.Substatus != "" {
+		t.Fatalf("cancelling the focused round must clear its derived substatus, got %q", row.Substatus)
+	}
+}
+
+// 回归（PR #23 review P1 #2 附带）：删除轮次必须清掉悬挂的 focus 引用，
+// 否则下一次同阶段流转派生子状态时会踩到不存在的轮次。
+func TestDeleteRoundClearsDanglingFocus(t *testing.T) {
+	db, svc, _, owner := newProgressService(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "DeleteFocus", "后端工程师")
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusApplied, Version: 1, SubmittedAt: submittedAt(2),
+	}); err != nil {
+		t.Fatalf("applied: %v", err)
+	}
+	row, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusAssessment, Version: 2,
+		Assessment: &appservice.AssessmentInput{Kind: "online_test", Name: "唯一一轮"},
+	})
+	if err != nil {
+		t.Fatalf("assessment: %v", err)
+	}
+	if row.FocusActivityID == nil {
+		t.Fatal("focus must point at the round")
+	}
+
+	srv, _ := activityServerWithSync(t, db, owner)
+	defer srv.Close()
+	base := "/api/v1/applications/" + itoa(app.ID)
+	req, _ := http.NewRequest("DELETE", srv.URL+base+"/assessments/"+itoa(*row.FocusActivityID), nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200", res.StatusCode)
+	}
+	row, _ = svc.Get(ctx, owner, app.ID, false)
+	if row.FocusActivityKind != "" || row.FocusActivityID != nil {
+		t.Fatalf("focus = %q/%v after delete, want cleared", row.FocusActivityKind, row.FocusActivityID)
+	}
+}
+
+func patchActivityJSON(t *testing.T, srv *httptest.Server, path, body string) (int, map[string]any) {
+	t.Helper()
+	req, _ := http.NewRequest("PATCH", srv.URL+path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out
 }

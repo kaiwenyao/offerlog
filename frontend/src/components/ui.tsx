@@ -7,7 +7,7 @@ import { Badge, Card, Dialog } from '../ds'
  * while rendering the design's dot + label badge.
  *
  * Status badge. With a substatus it shows the concrete progress（「准备 OA」
- * 而不是笼统的「笔试作业」），方案 §5。子状态为空时保持大阶段标签。
+ * 而不是笼统的「OA / 作业」），方案 §5。子状态为空时保持大阶段标签。
  */
 export function StatusChip({ status, substatus }: { status: string; substatus?: string | null }) {
   const m = statusMeta(status)

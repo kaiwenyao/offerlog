@@ -658,46 +658,59 @@ func (h *Handler) updateAssessment(c *gin.Context) {
 	}
 	// Ownership gate before mutating (see updateInterview): a missing row is a
 	// clean 404, a real DB failure is not masked as one.
-	existing, err := h.repo.GetAssessment(c.Request.Context(), h.repo.Pool(), appID, user.ID, aid)
-	if err != nil {
+	if _, err := h.repo.GetAssessment(c.Request.Context(), h.repo.Pool(), appID, user.ID, aid); err != nil {
 		writeAssessmentErr(c, err)
 		return
 	}
-	if req.Progress == "" {
-		req.Progress = existing.Progress
-	}
-	if req.Result == "" {
-		req.Result = existing.Result
-	}
-	if req.Kind == "" {
-		req.Kind = existing.Kind
-	}
-	// Mirror updateInterview: a PATCH that does not mention a recorded time
-	// must not erase it. The wire shape cannot distinguish 「omitted」 from
-	// 「null」 for a timestamp, so a note-only PATCH would otherwise drop the
-	// invited/planned/due/completed facts one by one (方案 §3.2 四种时间各自保存).
-	if req.InvitedAt == nil {
-		req.InvitedAt = existing.InvitedAt
-	}
-	if req.PlannedAt == nil {
-		req.PlannedAt = existing.PlannedAt
-	}
-	if req.DueAt == nil {
-		req.DueAt = existing.DueAt
-	}
-	if req.CompletedAt == nil {
-		req.CompletedAt = existing.CompletedAt
-	}
-	if req.CompletedAt == nil && existing.CompletedUnknown {
-		// 完成时间不详的标记同样不能被顺带清掉。
-		req.CompletedUnknown = true
-	}
+	// The row itself is re-read INSIDE the transaction with a lock, exactly like
+	// updateInterview: merging the patch into a pre-transaction copy is the
+	// stale-snapshot race d62f433 fixed for interviews (PR #23 review).
 	a, ok := assessmentPayload(c, &req)
 	if !ok {
 		return
 	}
 	a.ID, a.ApplicationID, a.OwnerID = aid, appID, user.ID
 	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		existing, err := h.repo.GetAssessmentForUpdate(ctx, tx, appID, user.ID, aid)
+		if err != nil {
+			return err
+		}
+		if req.Progress == "" {
+			a.Progress = existing.Progress
+		}
+		if req.Result == "" {
+			a.Result = existing.Result
+		}
+		if req.Kind == "" {
+			a.Kind = existing.Kind
+		}
+		// Mirror updateInterview: a PATCH that does not mention a recorded time
+		// must not erase it. The wire shape cannot distinguish 「omitted」 from
+		// 「null」 for a timestamp, so a note-only PATCH would otherwise drop the
+		// invited/planned/due/completed facts one by one (方案 §3.2 四种时间各自保存).
+		if req.InvitedAt == nil {
+			a.InvitedAt = existing.InvitedAt
+		}
+		if req.PlannedAt == nil {
+			a.PlannedAt = existing.PlannedAt
+		}
+		if req.DueAt == nil {
+			a.DueAt = existing.DueAt
+		}
+		if req.CompletedAt == nil {
+			a.CompletedAt = existing.CompletedAt
+		}
+		if req.CompletedAt == nil && existing.CompletedUnknown {
+			// 完成时间不详的标记同样不能被顺带清掉。
+			a.CompletedUnknown = true
+		}
+		if a.Progress == actrepo.ProgressCompleted && a.CompletedAt == nil && !a.CompletedUnknown {
+			// Same normalization as assessmentPayload: a completed round must at
+			// least record that it completed — a nil time with no unknown flag
+			// would read as 「没做完」 in every derived view. Payload ran before the
+			// merge, so it could not see the merged facts; do it here instead.
+			a.CompletedUnknown = true
+		}
 		if err := h.repo.UpdateAssessment(ctx, tx, a); err != nil {
 			return err
 		}
@@ -756,7 +769,7 @@ func (h *Handler) completeAssessment(c *gin.Context) {
 	}
 	var out *actrepo.AssessmentRound
 	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
-		a, err := h.repo.GetAssessment(ctx, tx, appID, user.ID, aid)
+		a, err := h.repo.GetAssessmentForUpdate(ctx, tx, appID, user.ID, aid)
 		if err != nil {
 			return err
 		}
@@ -801,7 +814,7 @@ func (h *Handler) reopenAssessment(c *gin.Context) {
 	}
 	var out *actrepo.AssessmentRound
 	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
-		a, err := h.repo.GetAssessment(ctx, tx, appID, user.ID, aid)
+		a, err := h.repo.GetAssessmentForUpdate(ctx, tx, appID, user.ID, aid)
 		if err != nil {
 			return err
 		}

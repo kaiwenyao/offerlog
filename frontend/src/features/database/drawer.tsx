@@ -60,13 +60,20 @@ export function AppDetailContent({
   const assessments = assessmentsQ.data?.items ?? []
   const notes = notesQ.data?.items ?? []
 
-  const path = useMemo(
-    () =>
-      events
-        .filter((e) => (e.event_type === 'created' || e.event_type === 'status_change') && e.to_status)
-        .map((e) => e.to_status as string),
-    [events],
-  )
+  // Stage path with the SAME correction overlay as stageDates below: a stage
+  // later corrected away must not light up on the stage trail (PR #23 review
+  // P1 #6 — the list page reads the server's stage_history, so the drawer must
+  // replay corrections with the same semantics to stay consistent).
+  const path = useMemo(() => {
+    const corrected = new Map<number, string>()
+    for (const e of events) {
+      if (e.event_type === 'correction' && e.corrects_event_id != null && e.to_status) corrected.set(e.corrects_event_id, e.to_status)
+    }
+    return events
+      .filter((e) => (e.event_type === 'created' || e.event_type === 'status_change') && e.to_status)
+      .map((e) => corrected.get(e.id) ?? (e.to_status as string))
+      .filter((s): s is string => s !== '')
+  }, [events])
 
   // Earliest user-zone calendar day per reached status, replaying the same
   // correction semantics as the server's include=stage_history (the drawer has
@@ -212,7 +219,7 @@ export function AppDetailContent({
       )}
       {tab === 'files' && <FilesTab appId={app.id} files={files} interviews={interviews} />}
       {tab === 'timeline' && (
-        <TimelineTab appId={app.id} events={events} status={app.status} version={app.version} />
+        <TimelineTab appId={app.id} events={events} status={app.status} substatus={app.substatus} version={app.version} />
       )}
     </>
   )

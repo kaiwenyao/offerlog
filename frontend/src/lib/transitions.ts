@@ -1,12 +1,14 @@
-// Client-side mirror of the backend state machine.
+// Client-side fallback of the backend state machine.
 //
-// ⚠️ SOURCE OF TRUTH IS THE BACKEND: backend/internal/applications/domain/domain.go
-// (`allowedTarget` / `ReasonRequired` / `BucketFor`) and substatus.go
-// (`ValidSubstatus`). The server re-validates every request and answers
-// `invalid_transition` / `invalid_substatus` / `missing_reason`, so anything
-// offered here that the server does not allow is a dead option the user can
-// pick and get a 400 for. Change one, change both, and update the guard test in
-// frontend/tests/unit.test.ts.
+// ⚠️ SOURCE OF TRUTH IS THE BACKEND: the rule mirror below only runs until
+// hydrateTransitions() installs the server-owned target map from
+// GET /api/v1/meta/status-model at bootstrap (方案 §6.5). The server
+// re-validates every request and answers `invalid_transition` /
+// `invalid_substatus` / `missing_reason`, so anything offered here that the
+// server does not allow is a dead option the user can pick and get a 400 for.
+// Keep this mirror in sync with backend/internal/applications/domain
+// (allowedTarget / ReasonRequired / BucketFor / ValidSubstatus) for offline
+// rendering, and update the guard test in frontend/tests/unit.test.ts.
 //
 // 方案 §4.1 relaxed the rules from a hand-written edge list to a rule:
 //   • any non-terminal → any non-terminal (forward, skip or back),
@@ -17,17 +19,21 @@
 import { ENDED, FLOW_ORDER, STATUSES, statusMeta, substatusOptions, type StatusMeta } from './status'
 import type { ListboxGroup } from '../ds'
 
-/** Every stage key, in dictionary order. */
-export const ALL_STATUS_KEYS = STATUSES.map((s) => s.key)
+/** Every stage key, in dictionary order (rebuilt when the server model hydrates). */
+export let ALL_STATUS_KEYS: string[] = STATUSES.map((s) => s.key)
 
 export const isTerminal = (k: string): boolean => ENDED.has(k)
 
 /**
- * Mirrors domain.allowedTarget exactly. `same stage` returns true because a
- * substatus / focus-round change inside one stage is a real transition; whether
- * it is a *change* at all is decided separately (same_status).
+ * Mirrors domain.allowedTarget exactly — for the OFFLINE fallback. At runtime
+ * the server-owned target map hydrated from GET /api/v1/meta/status-model
+ * takes over (方案 §6.5), so backend drift changes what the UI offers without
+ * a frontend release. `same stage` returns true because a substatus / focus
+ * round change inside one stage is a real transition; whether it is a *change*
+ * at all is decided separately (same_status).
  */
 export function canTransition(from: string, to: string): boolean {
+  if (serverTargets) return (serverTargets[from] ?? []).includes(to)
   if (!ALL_STATUS_KEYS.includes(from) || !ALL_STATUS_KEYS.includes(to)) return false
   if (from === to) return true // 子状态 / 关注轮次变更
   if (to === 'accepted') return from === 'offer'
@@ -36,17 +42,39 @@ export function canTransition(from: string, to: string): boolean {
   return true
 }
 
+// serverTargets is the hydrated whitelist (status -> reachable target keys),
+// null until hydrateTransitions runs at bootstrap.
+let serverTargets: Record<string, string[]> | null = null
+
 /**
- * The reachable targets from `from`, in dictionary order — the same shape the
- * backend serves at GET /api/v1/meta/status-model (`targets[from]`).
+ * Install the server-owned transition map (方案 §6.5). From here on
+ * canTransition / allowedTargets answer from the backend's TargetCombos
+ * instead of the offline rule mirror below.
+ */
+export function hydrateTransitions(targets: Record<string, Array<{ status: string }>>): void {
+  serverTargets = Object.fromEntries(Object.entries(targets).map(([k, v]) => [k, v.map((t) => t.status)]))
+  ALL_STATUS_KEYS = STATUSES.map((s) => s.key)
+  TRANSITIONS = Object.fromEntries(ALL_STATUS_KEYS.map((from) => [from, allowedTargets(from).map((s) => s.key)]))
+}
+
+/**
+ * The reachable targets from `from`, in dictionary order. When the server
+ * model is hydrated this is exactly `targets[from]` from
+ * GET /api/v1/meta/status-model; offline it falls back to the rule mirror.
  * A stage with no subdivision cannot target itself (nothing to change).
  */
 export function allowedTargets(from: string): StatusMeta[] {
-  return STATUSES.filter((s) => canTransition(from, s.key) && !(s.key === from && substatusOptions(from).length === 0))
+  const pool =
+    serverTargets && serverTargets[from]
+      ? STATUSES.filter((s) => serverTargets![from].includes(s.key))
+      : STATUSES.filter(
+          (s) => canTransition(from, s.key) && !(s.key === from && substatusOptions(from).length === 0),
+        )
+  return pool.filter((s) => !(s.key === from && substatusOptions(from).length === 0))
 }
 
 /** Reachable status keys from `from` (shape used by the guard test). */
-export const TRANSITIONS: Record<string, string[]> = Object.fromEntries(
+export let TRANSITIONS: Record<string, string[]> = Object.fromEntries(
   ALL_STATUS_KEYS.map((from) => [from, allowedTargets(from).map((s) => s.key)]),
 )
 

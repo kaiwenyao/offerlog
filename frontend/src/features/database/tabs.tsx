@@ -744,11 +744,14 @@ export function TimelineTab({
   appId,
   events,
   status,
+  substatus = '',
   version = 0,
 }: {
   appId: number
   events: AppEvent[]
   status: string
+  /** 当前子状态：页头标签必须显示细化后的进度，而不是「进度未细分」。 */
+  substatus?: string
   /** 申请当前版本号：更正也做乐观锁检查（方案 §6.4）。 */
   version?: number
 }) {
@@ -805,7 +808,7 @@ export function TimelineTab({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
       {err && <ErrorText>{err}</ErrorText>}
       <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-        当前状态：{comboLabel(status)}。按你填写的实际发生时间排列；系统录入时间默认隐藏，展开「系统信息」可见。
+        当前状态：{comboLabel(status, substatus)}。按你填写的实际发生时间排列；系统录入时间默认隐藏，展开「系统信息」可见。
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column' }}>

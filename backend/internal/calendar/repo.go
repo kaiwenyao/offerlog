@@ -1,6 +1,7 @@
 // Package calendar backs the interview/agenda calendar (plan §5.5): a date
-// range of cross-application events — interviews (non-cancelled), action due
-// dates, application deadlines and (where present) offer decision deadlines.
+// range of cross-application events — interviews and OA rounds (non-cancelled),
+// OA deadlines (open rounds only), action due dates, application deadlines and
+// (where present) offer decision deadlines.
 // Every row carries the original timezone alongside the UTC instant so the UI
 // can show "原始时区 / 用户时区" distinctly, and DST/cross-midnight events
 // round-trip correctly because the backend stores instants and the original
@@ -19,7 +20,19 @@ type Repo struct{ db *database.DB }
 
 func New(db *database.DB) *Repo { return &Repo{db: db} }
 
-// Event is one calendar row. Kind: interview | action | deadline | offer_decision.
+// assessmentNoun is the short label for a round's kind (OA / 作业 / 测评).
+func assessmentNoun(kind string) string {
+	switch kind {
+	case "take_home":
+		return "作业"
+	case "other":
+		return "测评"
+	default:
+		return "OA"
+	}
+}
+
+// Event is one calendar row. Kind: interview | assessment | assessment_due | action | deadline | offer_decision.
 type Event struct {
 	ID            int64      `json:"id"`
 	Kind          string     `json:"kind"`
@@ -86,6 +99,77 @@ func (r *Repo) Range(ctx context.Context, ownerID int64, tz string, from, to tim
 		return nil, err
 	}
 	rows.Close()
+
+	// OA / 作业 rounds: planned_at is a timed event for every non-cancelled
+	// round (completed ones render greyed, like interviews); due_at becomes an
+	// OA 截止 event only while the round is still open — a completed round stops
+	// reminding about its deadline (方案 §8: OA 已完成但暂无结果 → 停止截止提醒).
+	// Rounds carry no original-timezone label, so the user's zone is the
+	// display zone.
+	srows, err := r.db.Pool().Query(ctx, `SELECT r.id, a.id, a.company_name, a.position,
+		r.name, r.kind, r.planned_at, COALESCE(r.progress,'')
+		FROM assessment_rounds r
+		JOIN applications a ON a.id = r.application_id AND a.owner_id = r.owner_id
+		WHERE r.owner_id=$1 AND r.planned_at IS NOT NULL
+		  AND COALESCE(r.progress,'') <> 'cancelled'
+		  AND r.planned_at >= $2 AND r.planned_at < $3
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		ORDER BY r.planned_at`, ownerID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	for srows.Next() {
+		var e Event
+		var appID int64
+		var kind, progress string
+		if err := srows.Scan(&e.ID, &appID, &e.CompanyName, &e.Position, &e.RoundName, &kind, &e.Start, &progress); err != nil {
+			srows.Close()
+			return nil, err
+		}
+		e.ApplicationID = appID
+		e.Kind = "assessment"
+		e.Title = e.CompanyName + " · " + assessmentNoun(kind) + " " + e.RoundName
+		e.AllDay = false
+		e.Timezone = tzSafe
+		e.Done = progress == "completed"
+		out = append(out, e)
+	}
+	if err := srows.Err(); err != nil {
+		return nil, err
+	}
+	srows.Close()
+
+	dueRows, err := r.db.Pool().Query(ctx, `SELECT r.id, a.id, a.company_name, a.position,
+		r.name, r.kind, r.due_at
+		FROM assessment_rounds r
+		JOIN applications a ON a.id = r.application_id AND a.owner_id = r.owner_id
+		WHERE r.owner_id=$1 AND r.due_at IS NOT NULL
+		  AND COALESCE(r.progress,'') NOT IN ('completed','cancelled')
+		  AND r.due_at >= $2 AND r.due_at < $3
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		ORDER BY r.due_at`, ownerID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	for dueRows.Next() {
+		var e Event
+		var appID int64
+		var kind string
+		if err := dueRows.Scan(&e.ID, &appID, &e.CompanyName, &e.Position, &e.RoundName, &kind, &e.Start); err != nil {
+			dueRows.Close()
+			return nil, err
+		}
+		e.ApplicationID = appID
+		e.Kind = "assessment_due"
+		e.Title = e.CompanyName + " · " + assessmentNoun(kind) + " " + e.RoundName + " 截止"
+		e.AllDay = false
+		e.Timezone = tzSafe
+		out = append(out, e)
+	}
+	if err := dueRows.Err(); err != nil {
+		return nil, err
+	}
+	dueRows.Close()
 
 	// Action due dates (open) with date/ts in the window. due_date is the
 	// user's calendar day — its instant is the user's *local* midnight, so the

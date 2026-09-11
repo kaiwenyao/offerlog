@@ -342,12 +342,12 @@ paths:
     get: { summary: 检查 DB 与 schema }
   /home/summary:
     get:
-      summary: 首页全量汇总（服务端统计，周窗口与周条均为用户每周起始日的半开区间；含跨岗位近期面试与统一待办计数）
+      summary: 首页全量汇总（服务端统计，周窗口与周条均为用户每周起始日的半开区间；含跨岗位近期面试、OA 轮次与统一待办计数）
       parameters:
         - name: limit
           in: query
           schema: { type: integer, maximum: 50 }
-          description: 近期面试条数上限（默认 5）
+          description: 近期面试 / OA 条数上限（默认 5）；upcoming 与 upcoming_assessments 同用
   /preferences:
     get: { summary: 当前账号偏好（显示名/时区/每周起始/提醒开关），默认值未保存时返回缺省 }
     put:
@@ -376,7 +376,11 @@ paths:
     post: { summary: 忽略（不删除，保留历史） }
   /calendar:
     get:
-      summary: 跨岗位日程（?from=ISO&to=ISO，半开区间；面试/待办/截止/Offer 答复）
+      summary: 跨岗位日程（?from=ISO&to=ISO，半开区间；面试/OA 轮次/OA 截止/待办/截止/Offer 答复）
+      description: |
+        kind 取值：interview（面试）、assessment（OA / 作业轮次的计划时间，
+        已完成灰显）、assessment_due（仍开放轮次的截止时间，完成 / 取消后不再
+        返回）、action、deadline、offer_decision。
       parameters:
         - name: from
           in: query

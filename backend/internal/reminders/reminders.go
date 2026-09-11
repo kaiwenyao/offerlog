@@ -188,6 +188,56 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 			return inserted, err
 		}
 		rows.Close()
+
+		// 2b) OA 截止前一天：open assessment rounds whose due falls in
+		// [tomorrow, tomorrow+1d) local. Governed by the same 流程提醒 switch as
+		// 面试前一天 — both are recruiting-milestone nags, not overdue bookkeeping.
+		// A completed / cancelled round never reminds about its deadline again
+		// (方案 §8: OA 已完成但暂无结果 → 停止截止提醒).
+		arows, err := g.db.Pool().Query(ctx, `SELECT r.id, COALESCE(ap.company_name,''), COALESCE(ap.position,''),
+				r.name, r.kind, r.due_at, COALESCE(ap.id, 0)
+			FROM assessment_rounds r JOIN applications ap ON ap.id = r.application_id AND ap.owner_id = r.owner_id
+			WHERE r.owner_id=$1 AND r.due_at IS NOT NULL
+			  AND COALESCE(r.progress,'') NOT IN ('completed','cancelled')
+			  AND r.due_at >= $2 AND r.due_at < $3
+			  AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
+			ORDER BY r.id`, ownerID, tomorrowStart, tomorrowEnd)
+		if err != nil {
+			return inserted, err
+		}
+		for arows.Next() {
+			var id int64
+			var company, position, name, kind string
+			var due time.Time
+			var appID int64
+			if err := arows.Scan(&id, &company, &position, &name, &kind, &due, &appID); err != nil {
+				arows.Close()
+				return inserted, err
+			}
+			noun := "OA"
+			if kind == "take_home" {
+				noun = "作业"
+			} else if kind == "other" {
+				noun = "测评"
+			}
+			when := due.In(loc).Format("15:04")
+			body := fmt.Sprintf("%s · %s（%s %s）明天 %s 截止", company, position, noun, name, when)
+			ok, err := g.nots.InsertIdempotent(ctx, &notifications.Notification{
+				OwnerID: ownerID, Kind: "assessment_due", Title: noun + "明天截止",
+				Body: body, ApplicationID: &appID,
+			}, fmt.Sprintf("assessment_due:%d:%s", id, timeutil.DateOnly(due, loc)))
+			if err != nil {
+				arows.Close()
+				return inserted, err
+			}
+			if ok {
+				inserted++
+			}
+		}
+		if err := arows.Err(); err != nil {
+			return inserted, err
+		}
+		arows.Close()
 	}
 
 	// 3) 投递满 N 天未回复（有效回复停止跟进提醒，不自动判定拒绝）。

@@ -459,15 +459,25 @@ func StageForActivityKind(kind string) string {
 // deliberately scoped to applications that are CURRENTLY in the activity's
 // stage: finishing an old OA after the record already moved on to 面试 must not
 // drag the stage back or relabel it.
+//
+// 方案 §3.3: the focus is the USER'S choice (列表主标签展示用户选定的关注
+// 阶段) — editing a round never steals an existing focus, it only claims the
+// slot when none is set. And a cancelled round derives no substatus (""), which
+// must CLEAR a substatus previously derived from that same round, not leave the
+// application showing 已完成 OA forever (PR #23 review).
 func (r *Repo) SyncFromActivity(ctx context.Context, q database.Querier, ownerID, appID int64, kind string, activityID int64, substatus string) error {
 	stage := StageForActivityKind(kind)
 	if stage == "" {
 		return nil
 	}
 	_, err := q.Exec(ctx, `UPDATE applications SET
-			focus_activity_kind = $1,
-			focus_activity_id = $2,
-			substatus = CASE WHEN $3::text <> '' THEN $3::text ELSE substatus END,
+			focus_activity_kind = CASE WHEN focus_activity_id IS NULL AND $3::text <> '' THEN $1 ELSE focus_activity_kind END,
+			focus_activity_id   = CASE WHEN focus_activity_id IS NULL AND $3::text <> '' THEN $2 ELSE focus_activity_id END,
+			substatus = CASE
+				WHEN $3::text <> '' THEN $3::text
+				WHEN focus_activity_id IS NULL OR focus_activity_id = $2 THEN ''
+				ELSE substatus
+			END,
 			version = version + 1, updated_at = now()
 		WHERE id = $4 AND owner_id = $5 AND status = $6`,
 		kind, activityID, substatus, appID, ownerID, stage)

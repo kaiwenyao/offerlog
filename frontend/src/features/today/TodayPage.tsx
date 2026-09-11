@@ -176,6 +176,7 @@ export function TodayPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           <UpcomingInterviews
             upcoming={summary.upcoming}
+            assessments={summary.upcoming_assessments ?? []}
             loading={summaryQ.isLoading}
             onOpen={(id) => nav(`/apps/${id}`)}
           />
@@ -353,38 +354,69 @@ function TodoRow({
   )
 }
 
+/** OA / 作业轮次的短名词：与日历 / 提醒的措辞一致。 */
+function oaNoun(kind: string): string {
+  if (kind === 'take_home') return '作业'
+  if (kind === 'other') return '测评'
+  return 'OA'
+}
+
 function UpcomingInterviews({
   upcoming,
+  assessments,
   loading,
   onOpen,
 }: {
   upcoming: HomeSummary['upcoming']
+  assessments: HomeSummary['upcoming_assessments']
   loading: boolean
   onOpen: (id: number) => void
 }) {
   if (loading) return null
+  // Interviews and OA rounds share one chronological panel (方案 §5: 首页接入
+  // OA 计划 / 截止时间): both are "接下来要做的事", and merging keeps the feed
+  // honest about what comes next instead of hiding OAs below the fold.
+  const rows = [
+    ...upcoming.map((i) => ({
+      key: `i-${i.id}`,
+      at: i.scheduled_at,
+      applicationId: i.application_id,
+      head: `${i.company_name} · ${i.round_name || '面试'}`,
+      detail: `${fmtDateTime(i.scheduled_at)} · ${i.format || '待定'}${i.location ? ` · ${i.location}` : ''}`,
+    })),
+    ...assessments.map((a) => ({
+      key: `a-${a.id}`,
+      at: a.planned_at,
+      applicationId: a.application_id,
+      head: `${a.company_name} · ${oaNoun(a.kind)} ${a.name || ''}`.trimEnd(),
+      detail:
+        `${fmtDateTime(a.planned_at)} · ${oaNoun(a.kind)}做起来` +
+        (a.due_at ? ` · 截止 ${fmtDateTime(a.due_at)}` : '') +
+        (a.progress === 'completed' ? ' · 已完成' : ''),
+    })),
+  ].sort((x, y) => x.at.localeCompare(y.at))
   return (
     <Card style={PANEL}>
       <div className="panel-head">
-        <PanelTitle>即将到来的面试</PanelTitle>
+        <PanelTitle>即将到来的面试 / OA</PanelTitle>
       </div>
-      {upcoming.length === 0 ? (
+      {rows.length === 0 ? (
         <div style={{ padding: '14px 16px', fontSize: 13, color: 'var(--text-muted)' }}>
-          还没有排期的面试。在岗位详情里「＋ 安排」一轮面试后会显示在这里。
+          还没有排期的面试或 OA。在岗位详情里安排面试 / 记录一轮测评后会显示在这里。
         </div>
       ) : (
-        upcoming.map((i) => {
+        rows.map((e) => {
           // The date badge must show the USER-zone calendar day: the home feed
           // and calendar column bucket events in the user's configured zone, so
           // rendering the day with the browser's local getters would disagree
           // when the browser zone differs (e.g. a Dublin browser + Shanghai
           // user — an interview that is tomorrow in the user's zone would show
           // the wrong day on the badge). Derive it from the zone day key.
-          const dayKey = toDayString(i.scheduled_at, effectiveZone()) ?? ''
+          const dayKey = toDayString(e.at, effectiveZone()) ?? ''
           const dayNum = dayKey.slice(8, 10) || ''
           const monthNum = dayKey.slice(5, 7) || ''
           return (
-            <button key={i.id} className="panel-row" onClick={() => onOpen(i.application_id)}>
+            <button key={e.key} className="panel-row" onClick={() => onOpen(e.applicationId)}>
               <span
                 style={{
                   width: 42,
@@ -409,11 +441,10 @@ function UpcomingInterviews({
               </span>
               <span className="grow">
                 <span className="ellipsis" style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>
-                  {i.company_name} · {i.round_name || '面试'}
+                  {e.head}
                 </span>
                 <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {fmtDateTime(i.scheduled_at)} · {i.format || '待定'}
-                  {i.location ? ` · ${i.location}` : ''}
+                  {e.detail}
                 </span>
               </span>
             </button>

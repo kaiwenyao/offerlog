@@ -418,6 +418,28 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 				return &domain.ValidationError{Code: "activity_stage_mismatch", Message: "活动类型与目标阶段不匹配"}
 			}
 			focusKind, focusID = in.FocusActivityKind, in.FocusActivityID
+			// The named round must actually exist and belong to this application:
+			// an arbitrary ID would otherwise be stored as the focus and either
+			// 500 the substatus mirror (applySubstatusToRound surfaces pgx.ErrNoRows)
+			// or leave a dangling reference the next transition trips over.
+			if focusID != nil {
+				switch in.FocusActivityKind {
+				case domain.ActivityAssessment:
+					if _, err := s.acts.GetAssessment(ctx, tx, id, ownerID, *focusID); err != nil {
+						if errors.Is(err, pgx.ErrNoRows) {
+							return &domain.ValidationError{Code: "activity_not_found", Message: "关注的测评轮次不存在"}
+						}
+						return err
+					}
+				case domain.ActivityInterview:
+					if _, err := s.acts.GetInterview(ctx, tx, id, ownerID, *focusID); err != nil {
+						if errors.Is(err, pgx.ErrNoRows) {
+							return &domain.ValidationError{Code: "activity_not_found", Message: "关注的面试轮次不存在"}
+						}
+						return err
+					}
+				}
+			}
 		}
 
 		// A new round may be recorded inline with the transition.
@@ -454,18 +476,26 @@ func (s *Service) Transition(ctx context.Context, ownerID, id int64, in *Transit
 			focusKind, focusID = "", nil
 		}
 		// Derive the substatus from the focused round when the caller did not
-		// name one (方案 §6.1: 子状态由选中的活动进度派生).
+		// name one (方案 §6.1: 子状态由选中的活动进度派生). A missing round only
+		// means "nothing derivable" (a legacy dangling reference); a real DB
+		// error must surface, not be silently read as 没这轮.
 		if toSub == "" && focusKind != "" && focusID != nil {
-			if st, err := s.substatusOfRound(ctx, tx, ownerID, id, focusKind, *focusID); err == nil {
-				toSub = st
+			st, err := s.substatusOfRound(ctx, tx, ownerID, id, focusKind, *focusID)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
 			}
+			toSub = st
 		}
 		// 反向同步（方案 §6.1）：用户直接选了具体进度（例如「已完成 OA」）而没有
 		// 新建轮次时，要把关注的那一轮也改成同一事实，否则申请说已完成、轮次还
 		// 说准备中，下一次派生又会把它拉回去。
 		if in.Assessment == nil && in.Interview == nil && toSub != "" && focusKind != "" && focusID != nil {
 			if err := s.applySubstatusToRound(ctx, tx, ownerID, id, focusKind, *focusID, toSub); err != nil {
-				return err
+				// A dangling legacy focus (round deleted before delete cleanup
+				// existed) means there is nothing to sync — not a 500.
+				if !errors.Is(err, pgx.ErrNoRows) {
+					return err
+				}
 			}
 		}
 

@@ -110,8 +110,11 @@ export function TransitionModal({
 
   const needsReason = reasonRequired(currentStatus, to)
   // Only ask for a submission time when the record genuinely has none. A record
-  // that was already submitted must not be re-asked on every later stage.
-  const needsSubmitted = RECRUITING_KEYS.includes(to) && !submittedAt
+  // that was already submitted must not be re-asked on every later stage. In
+  // correction mode the submission facts are irrelevant — the correction
+  // replay never touches them — so the fields stay hidden instead of forcing
+  // input that would be silently discarded (PR #23 review P1 #7).
+  const needsSubmitted = mode === 'flow' && RECRUITING_KEYS.includes(to) && !submittedAt
   // 已投递 always needs a real time — offering the escape hatch there would
   // produce a row that reads as submitted but counts as unsubmitted everywhere.
   const canSkipSubmission = SKIP_SUBMISSION_TARGETS.includes(to)
@@ -180,7 +183,9 @@ export function TransitionModal({
                 due_at: oaDue ? toInstantInUserZone(oaDue).iso : null,
                 completed_at:
                   tosub === 'completed' || tosub === 'passed'
-                    ? occurred?.iso ?? null
+                    ? oaCompletedUnknown
+                      ? null
+                      : occurred?.iso ?? null
                     : null,
                 completed_unknown: oaCompletedUnknown,
                 link: oaLink,

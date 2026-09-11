@@ -185,3 +185,47 @@ func TestCalendarExcludesArchivedAppsAcrossKinds(t *testing.T) {
 		t.Fatalf("after archive calendar still returns %d events, want 0 (archived apps excluded across kinds)", len(items2))
 	}
 }
+
+// OA 轮次进日历（PR #23 review P1 #4）：计划时间是一个 timed 事件；截止时间只在
+// 轮次仍开放时出现 —— 已完成的轮次不再带着它的截止日（方案 §8 停止截止提醒）。
+func TestCalendarIncludesAssessmentPlannedAndOpenDue(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	repo := calendar.New(db)
+	now := time.Now()
+	app := mustCreate(t, svc, owner, "OACal", "Role")
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO assessment_rounds(application_id, owner_id, kind, name, progress, planned_at, due_at)
+		VALUES($1,$2,'online_test','笔试','preparing',$3,$4)`, app.ID, owner, now.AddDate(0, 0, 1), now.AddDate(0, 0, 2)); err != nil {
+		t.Fatal(err)
+	}
+	// completed round: planned event stays (greyed), due event disappears.
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO assessment_rounds(application_id, owner_id, kind, name, progress, result, planned_at, due_at, completed_at)
+		VALUES($1,$2,'take_home','作业','completed','passed',$3,$4,now())`, app.ID, owner, now.AddDate(0, 0, 1), now.AddDate(0, 0, 3)); err != nil {
+		t.Fatal(err)
+	}
+	items, err := repo.Range(ctx, owner, "Europe/Dublin", now, now.AddDate(0, 0, 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned, due := 0, 0
+	for _, e := range items {
+		switch e.Kind {
+		case "assessment":
+			planned++
+			if e.Done && e.RoundName == "笔试" {
+				t.Fatalf("an open round must not render as done: %+v", e)
+			}
+		case "assessment_due":
+			due++
+			if e.RoundName == "作业" {
+				t.Fatalf("a completed round must not surface its deadline: %+v", e)
+			}
+		}
+	}
+	if planned != 2 {
+		t.Fatalf("assessment planned events = %d, want 2", planned)
+	}
+	if due != 1 {
+		t.Fatalf("assessment due events = %d, want 1 (open round only)", due)
+	}
+}

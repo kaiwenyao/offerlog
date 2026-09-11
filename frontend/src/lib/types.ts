@@ -245,7 +245,7 @@ export interface Preferences {
 export interface Notification {
   id: number
   owner_id: number
-  kind: 'overdue' | 'interview' | 'stale' | 'weekly'
+  kind: 'overdue' | 'interview' | 'assessment_due' | 'stale' | 'weekly'
   title: string
   body: string
   application_id: number | null
@@ -301,6 +301,18 @@ export interface HomeSummary {
     cancelled: boolean
     result: string
   }>
+  /** 有计划时间的 OA / 作业轮次（跨申请，按计划时间排序） */
+  upcoming_assessments: Array<{
+    id: number
+    application_id: number
+    company_name: string
+    position: string
+    name: string
+    kind: 'online_test' | 'take_home' | 'other'
+    planned_at: string
+    due_at: string | null
+    progress: string
+  }>
   recent: Array<{
     id: number
     company_name: string
@@ -334,7 +346,7 @@ export interface InterviewSchedule {
 // fmtDay/toDayString (never new Date() on a bare day).
 export interface CalendarEvent {
   id: number
-  kind: 'interview' | 'action' | 'deadline' | 'offer_decision'
+  kind: 'interview' | 'assessment' | 'assessment_due' | 'action' | 'deadline' | 'offer_decision'
   application_id: number
   company_name: string
   position: string

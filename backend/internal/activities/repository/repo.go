@@ -204,6 +204,15 @@ func (r *Repo) GetAssessment(ctx context.Context, q database.Querier, appID, own
 		FROM assessment_rounds WHERE id=$1 AND application_id=$2 AND owner_id=$3`, id, appID, ownerID))
 }
 
+// GetAssessmentForUpdate is GetAssessment with a row lock, for the write paths
+// that read-merge inside a transaction (PATCH / complete / reopen / the
+// substatus mirror). Same rationale as GetInterviewForUpdate: a concurrent
+// edit between the read and the write would otherwise be silently overwritten.
+func (r *Repo) GetAssessmentForUpdate(ctx context.Context, q database.Querier, appID, ownerID, id int64) (*AssessmentRound, error) {
+	return scanAssessment(q.QueryRow(ctx, `SELECT `+assessmentCols+`
+		FROM assessment_rounds WHERE id=$1 AND application_id=$2 AND owner_id=$3 FOR UPDATE`, id, appID, ownerID))
+}
+
 func (r *Repo) CreateAssessment(ctx context.Context, q database.Querier, a *AssessmentRound) error {
 	if a.Kind == "" {
 		a.Kind = "online_test"
@@ -245,7 +254,12 @@ func (r *Repo) DeleteAssessment(ctx context.Context, q database.Querier, appID, 
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
-	return nil
+	// A deleted round must not dangle as an application's focus: later
+	// transitions derive the substatus from the focused round and would fail.
+	_, err = q.Exec(ctx, `UPDATE applications SET focus_activity_kind=NULL, focus_activity_id=NULL,
+		version=version+1, updated_at=now()
+		WHERE owner_id=$1 AND focus_activity_kind=$2 AND focus_activity_id=$3`, ownerID, "assessment", id)
+	return err
 }
 
 // OpenAssessmentCount counts rounds that are still in progress, used for the
@@ -300,7 +314,11 @@ func (r *Repo) DeleteInterview(ctx context.Context, q database.Querier, appID, o
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
-	return nil
+	// Same dangling-focus cleanup as DeleteAssessment.
+	_, err = q.Exec(ctx, `UPDATE applications SET focus_activity_kind=NULL, focus_activity_id=NULL,
+		version=version+1, updated_at=now()
+		WHERE owner_id=$1 AND focus_activity_kind=$2 AND focus_activity_id=$3`, ownerID, "interview", id)
+	return err
 }
 
 // -- actions --

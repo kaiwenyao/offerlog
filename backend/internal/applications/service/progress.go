@@ -179,7 +179,11 @@ func (s *Service) applySubstatusToRound(ctx context.Context, q database.Querier,
 	}
 	switch kind {
 	case domain.ActivityAssessment:
-		round, err := s.acts.GetAssessment(ctx, q, appID, ownerID, id)
+		// The lock matters for exactly the reason the interview branch
+		// documents below: this runs inside the transition's transaction and
+		// without FOR UPDATE a concurrent round edit could land between our
+		// read and write and be silently overwritten (PR #23 review).
+		round, err := s.acts.GetAssessmentForUpdate(ctx, q, appID, ownerID, id)
 		if err != nil {
 			return err
 		}
@@ -226,17 +230,20 @@ func (s *Service) applySubstatusToRound(ctx context.Context, q database.Querier,
 
 // substatusOfRound loads the round's current progress/result and derives the
 // matching substatus, so a transition that only points at an existing round
-// still lands on the right concrete progress.
+// still lands on the right concrete progress. The read is locked: the caller
+// writes the derived value back to the same round inside this transaction
+// (applySubstatusToRound), and an unlocked read could derive from facts a
+// concurrent edit is about to replace (PR #23 review).
 func (s *Service) substatusOfRound(ctx context.Context, q database.Querier, ownerID, appID int64, kind string, id int64) (string, error) {
 	switch kind {
 	case domain.ActivityAssessment:
-		round, err := s.acts.GetAssessment(ctx, q, appID, ownerID, id)
+		round, err := s.acts.GetAssessmentForUpdate(ctx, q, appID, ownerID, id)
 		if err != nil {
 			return "", err
 		}
 		return domain.SubstatusForActivity(domain.ActivityAssessment, round.Progress, round.Result), nil
 	case domain.ActivityInterview:
-		round, err := s.acts.GetInterview(ctx, q, appID, ownerID, id)
+		round, err := s.acts.GetInterviewForUpdate(ctx, q, appID, ownerID, id)
 		if err != nil {
 			return "", err
 		}
@@ -251,38 +258,6 @@ func (s *Service) substatusOfRound(ctx context.Context, q database.Querier, owne
 func (s *Service) SyncActivityProgress(ctx context.Context, q database.Querier, ownerID, appID int64, kind string, activityID int64, progress, result string) error {
 	return s.repo.SyncFromActivity(ctx, q, ownerID, appID, kind, activityID,
 		domain.SubstatusForActivity(kind, progress, result))
-}
-
-// SetFocusActivity points the application at one round without changing the
-// stage (方案 §3.3: 列表主标签展示用户选定的关注阶段).
-func (s *Service) SetFocusActivity(ctx context.Context, ownerID, appID int64, kind string, activityID *int64, version int) (*apprepo.Row, error) {
-	if kind != "" && !domain.ValidActivityKind(kind) {
-		return nil, &domain.ValidationError{Code: "invalid_activity_kind", Message: "未知的活动类型"}
-	}
-	out := &apprepo.Row{}
-	err := s.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		row, err := s.repo.GetForUpdate(ctx, tx, ownerID, appID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if version != 0 && row.Version != version {
-			return ErrVersionConflict
-		}
-		if kind != "" && apprepo.StageForActivityKind(kind) != row.Status {
-			return &domain.ValidationError{Code: "activity_stage_mismatch", Message: "活动类型与当前阶段不匹配"}
-		}
-		if err := s.repo.SetFocus(ctx, tx, ownerID, appID, kind, activityID); err != nil {
-			return err
-		}
-		row.FocusActivityKind, row.FocusActivityID = kind, activityID
-		row.Version++
-		out = row
-		return nil
-	})
-	return out, err
 }
 
 // CorrectCurrentInput repairs a mis-recorded stage. It rewrites the LAST

@@ -10,6 +10,7 @@ import { ErrorText, Num, Spinner } from '../../components/ui'
 const KIND_LABEL: Record<string, string> = {
   overdue: '逾期待办',
   interview: '面试提醒',
+  assessment_due: 'OA 截止提醒',
   stale: '跟进提醒',
   weekly: '周报',
 }
@@ -20,6 +21,8 @@ function kindTone(kind: string): string {
       return 'var(--danger)'
     case 'interview':
       return 'var(--accent)'
+    case 'assessment_due':
+      return 'var(--warning)'
     case 'stale':
       return 'var(--warning)'
     default:

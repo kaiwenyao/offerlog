@@ -5,6 +5,7 @@ package integration
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,5 +212,57 @@ func TestCancelInterviewClearsReminder(t *testing.T) {
 	_ = db.Pool().QueryRow(ctx, `SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='interview'`, owner).Scan(&after)
 	if after != 0 {
 		t.Fatalf("interview reminders after cancel = %d, want 0", after)
+	}
+}
+
+// OA 截止提醒（PR #23 review P1 #4 + 方案 §8）：截止时间在明天的开放轮次提醒
+// 一次；已完成 / 已取消的轮次不再提醒它的截止时间。
+func TestAssessmentDueRemindsOnceAndStopsWhenCompleted(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	pr := prefs.New(db)
+	if err := pr.Upsert(ctx, &prefs.Preferences{
+		UserID: owner, Timezone: "Europe/Dublin", WeekStart: 1,
+		RemindOverdue: false, RemindInterview: true, RemindStaleDays: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := mustCreate(t, svc, owner, "OADueCo", "Role")
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO assessment_rounds(application_id, owner_id, kind, name, progress, due_at)
+		VALUES($1,$2,'online_test','笔试','preparing', now() + interval '1 day')`, app.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO assessment_rounds(application_id, owner_id, kind, name, progress, result, due_at, completed_at)
+		VALUES($1,$2,'take_home','作业','completed','unknown', now() + interval '1 day', now())`, app.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	gen := reminders.New(db)
+	// The generator scans EVERY user, so a full-suite run may pick up other
+	// tests' reminders too — assert on THIS owner's rows (below), not on the
+	// global count.
+	_, err := gen.Run(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n2, err := gen.Run(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second pass inserted %d, want 0 (idempotent)", n2)
+	}
+	nots := notifications.New(db)
+	open, _ := nots.List(ctx, owner, true, 50)
+	due := 0
+	for _, n := range open {
+		if n.Kind == "assessment_due" {
+			due++
+			if strings.Contains(n.Body, "作业") {
+				t.Fatalf("a completed round must not remind about its deadline: %q", n.Body)
+			}
+		}
+	}
+	if due != 1 {
+		t.Fatalf("assessment_due notifications = %d, want 1", due)
 	}
 }
