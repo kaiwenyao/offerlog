@@ -1,16 +1,20 @@
 import type { ReactNode } from 'react'
-import { statusMeta } from '../lib/status'
+import { comboLabel, statusMeta } from '../lib/status'
 import { Badge, Card, Dialog } from '../ds'
 
 /**
  * Status pill. Keeps the `.status-chip` hook the Playwright suites assert on
  * while rendering the design's dot + label badge.
+ *
+ * Status badge. With a substatus it shows the concrete progress（「准备 OA」
+ * 而不是笼统的「OA / 作业」），方案 §5。子状态为空时保持大阶段标签。
  */
-export function StatusChip({ status }: { status: string }) {
+export function StatusChip({ status, substatus }: { status: string; substatus?: string | null }) {
   const m = statusMeta(status)
+  const label = substatus ? comboLabel(status, substatus) : m.label
   return (
     <Badge className="status-chip" tone={m.tone} dot>
-      {m.label}
+      {label}
     </Badge>
   )
 }

@@ -12,6 +12,23 @@ import (
 	"offerlog/backend/internal/platform/database"
 )
 
+// Interview progress values. Progress is the ACTIVITY state (did the round
+// happen?), kept separate from Result (did it pass?). Time passing never sets
+// either one.
+const (
+	ProgressAwaitingSchedule = "awaiting_schedule"
+	ProgressPreparing        = "preparing"
+	ProgressCompleted        = "completed"
+	ProgressCancelled        = "cancelled"
+)
+
+// Interview results.
+const (
+	ResultUnknown = "unknown"
+	ResultPassed  = "passed"
+	ResultFailed  = "failed"
+)
+
 type Interview struct {
 	ID              int64
 	ApplicationID   int64
@@ -21,11 +38,237 @@ type Interview struct {
 	ScheduledAt     *time.Time
 	Timezone        string
 	DurationMinutes *int
-	Result          string
-	Feedback        string
-	Notes           string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// Progress: "" (legacy/unknown) | awaiting_schedule | preparing | completed | cancelled.
+	Progress    string
+	Result      string
+	InvitedAt   *time.Time
+	CompletedAt *time.Time
+	// CompletedUnknown records that the round IS finished but the exact time is
+	// unknown — never fabricate a precise timestamp.
+	CompletedUnknown bool
+	Feedback         string
+	Notes            string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+const interviewCols = `id, application_id, owner_id, round_name, format,
+	scheduled_at, timezone, duration_minutes, progress, result, invited_at, completed_at,
+	completed_unknown, feedback, notes, created_at, updated_at`
+
+func scanInterview(row pgx.Row) (*Interview, error) {
+	var it Interview
+	err := row.Scan(&it.ID, &it.ApplicationID, &it.OwnerID, &it.RoundName, &it.Format,
+		&it.ScheduledAt, &it.Timezone, &it.DurationMinutes, &it.Progress, &it.Result,
+		&it.InvitedAt, &it.CompletedAt, &it.CompletedUnknown, &it.Feedback, &it.Notes,
+		&it.CreatedAt, &it.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &it, nil
+}
+
+// AssessmentRound is an OA / take-home round attached to an application.
+// The four timestamps (invited / planned / due / completed) are stored
+// independently and never overwrite each other.
+type AssessmentRound struct {
+	ID            int64
+	ApplicationID int64
+	OwnerID       int64
+	Kind          string // online_test | take_home | other
+	Name          string
+	Progress      string // preparing | completed | cancelled
+	Result        string // unknown | passed | failed
+	InvitedAt     *time.Time
+	PlannedAt     *time.Time
+	DueAt         *time.Time
+	CompletedAt   *time.Time
+	// CompletedUnknown: finished, exact time unknown.
+	CompletedUnknown bool
+	Link             string
+	Notes            string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+const assessmentCols = `id, application_id, owner_id, kind, name, progress, result,
+	invited_at, planned_at, due_at, completed_at, completed_unknown, link, notes,
+	created_at, updated_at`
+
+func scanAssessment(row pgx.Row) (*AssessmentRound, error) {
+	var a AssessmentRound
+	err := row.Scan(&a.ID, &a.ApplicationID, &a.OwnerID, &a.Kind, &a.Name, &a.Progress, &a.Result,
+		&a.InvitedAt, &a.PlannedAt, &a.DueAt, &a.CompletedAt, &a.CompletedUnknown, &a.Link, &a.Notes,
+		&a.CreatedAt, &a.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// -- interviews --
+
+func (r *Repo) ListInterviews(ctx context.Context, appID, ownerID int64) ([]*Interview, error) {
+	rows, err := r.db.Pool().Query(ctx, `SELECT `+interviewCols+`
+		FROM interviews WHERE application_id=$1 AND owner_id=$2 ORDER BY scheduled_at NULLS LAST, id`, appID, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Interview
+	for rows.Next() {
+		it, err := scanInterview(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// GetInterview loads one round through the caller's Querier. Writers pass their
+// transaction so the read and the write see the same rows — a pool read next
+// to a transactional write is exactly the stale-snapshot bug CorrectCurrent
+// had (PR #23 review). Use GetInterviewForUpdate on write paths.
+func (r *Repo) GetInterview(ctx context.Context, q database.Querier, appID, ownerID, id int64) (*Interview, error) {
+	return scanInterview(q.QueryRow(ctx, `SELECT `+interviewCols+`
+		FROM interviews WHERE id=$1 AND application_id=$2 AND owner_id=$3`, id, appID, ownerID))
+}
+
+// GetInterviewForUpdate is GetInterview with a row lock, for the paths that
+// rewrite the round inside the caller's transaction (complete / reopen /
+// PATCH and the application service's round↔substatus sync). Without the
+// lock, two concurrent writers both read the old row and the second commit
+// silently overwrites the first.
+func (r *Repo) GetInterviewForUpdate(ctx context.Context, q database.Querier, appID, ownerID, id int64) (*Interview, error) {
+	return scanInterview(q.QueryRow(ctx, `SELECT `+interviewCols+`
+		FROM interviews WHERE id=$1 AND application_id=$2 AND owner_id=$3 FOR UPDATE`, id, appID, ownerID))
+}
+
+func (r *Repo) CreateInterview(ctx context.Context, q database.Querier, it *Interview) error {
+	if it.Progress == "" {
+		it.Progress = ProgressAwaitingSchedule
+	}
+	if it.Result == "" {
+		it.Result = ResultUnknown
+	}
+	return q.QueryRow(ctx, `INSERT INTO interviews(application_id, owner_id, round_name, format,
+		scheduled_at, timezone, duration_minutes, progress, result, invited_at, completed_at,
+		completed_unknown, feedback, notes)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, created_at`,
+		it.ApplicationID, it.OwnerID, it.RoundName, it.Format, it.ScheduledAt, it.Timezone,
+		it.DurationMinutes, it.Progress, it.Result, it.InvitedAt, it.CompletedAt,
+		it.CompletedUnknown, it.Feedback, it.Notes).Scan(&it.ID, &it.CreatedAt)
+}
+
+func (r *Repo) UpdateInterview(ctx context.Context, q database.Querier, it *Interview) error {
+	tag, err := q.Exec(ctx, `UPDATE interviews SET round_name=$1, format=$2, scheduled_at=$3,
+		timezone=$4, duration_minutes=$5, progress=$6, result=$7, invited_at=$8, completed_at=$9,
+		completed_unknown=$10, feedback=$11, notes=$12, updated_at=now()
+		WHERE id=$13 AND application_id=$14 AND owner_id=$15`,
+		it.RoundName, it.Format, it.ScheduledAt, it.Timezone, it.DurationMinutes, it.Progress,
+		it.Result, it.InvitedAt, it.CompletedAt, it.CompletedUnknown, it.Feedback, it.Notes,
+		it.ID, it.ApplicationID, it.OwnerID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// -- assessment rounds --
+
+func (r *Repo) ListAssessments(ctx context.Context, appID, ownerID int64) ([]*AssessmentRound, error) {
+	rows, err := r.db.Pool().Query(ctx, `SELECT `+assessmentCols+`
+		FROM assessment_rounds WHERE application_id=$1 AND owner_id=$2
+		ORDER BY COALESCE(planned_at, due_at, created_at) ASC, id`, appID, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*AssessmentRound
+	for rows.Next() {
+		a, err := scanAssessment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repo) GetAssessment(ctx context.Context, q database.Querier, appID, ownerID, id int64) (*AssessmentRound, error) {
+	return scanAssessment(q.QueryRow(ctx, `SELECT `+assessmentCols+`
+		FROM assessment_rounds WHERE id=$1 AND application_id=$2 AND owner_id=$3`, id, appID, ownerID))
+}
+
+// GetAssessmentForUpdate is GetAssessment with a row lock, for the write paths
+// that read-merge inside a transaction (PATCH / complete / reopen / the
+// substatus mirror). Same rationale as GetInterviewForUpdate: a concurrent
+// edit between the read and the write would otherwise be silently overwritten.
+func (r *Repo) GetAssessmentForUpdate(ctx context.Context, q database.Querier, appID, ownerID, id int64) (*AssessmentRound, error) {
+	return scanAssessment(q.QueryRow(ctx, `SELECT `+assessmentCols+`
+		FROM assessment_rounds WHERE id=$1 AND application_id=$2 AND owner_id=$3 FOR UPDATE`, id, appID, ownerID))
+}
+
+func (r *Repo) CreateAssessment(ctx context.Context, q database.Querier, a *AssessmentRound) error {
+	if a.Kind == "" {
+		a.Kind = "online_test"
+	}
+	if a.Progress == "" {
+		a.Progress = ProgressPreparing
+	}
+	if a.Result == "" {
+		a.Result = ResultUnknown
+	}
+	return q.QueryRow(ctx, `INSERT INTO assessment_rounds(application_id, owner_id, kind, name,
+		progress, result, invited_at, planned_at, due_at, completed_at, completed_unknown, link, notes)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id, created_at`,
+		a.ApplicationID, a.OwnerID, a.Kind, a.Name, a.Progress, a.Result, a.InvitedAt, a.PlannedAt,
+		a.DueAt, a.CompletedAt, a.CompletedUnknown, a.Link, a.Notes).Scan(&a.ID, &a.CreatedAt)
+}
+
+func (r *Repo) UpdateAssessment(ctx context.Context, q database.Querier, a *AssessmentRound) error {
+	tag, err := q.Exec(ctx, `UPDATE assessment_rounds SET kind=$1, name=$2, progress=$3, result=$4,
+		invited_at=$5, planned_at=$6, due_at=$7, completed_at=$8, completed_unknown=$9,
+		link=$10, notes=$11, updated_at=now()
+		WHERE id=$12 AND application_id=$13 AND owner_id=$14`,
+		a.Kind, a.Name, a.Progress, a.Result, a.InvitedAt, a.PlannedAt, a.DueAt, a.CompletedAt,
+		a.CompletedUnknown, a.Link, a.Notes, a.ID, a.ApplicationID, a.OwnerID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repo) DeleteAssessment(ctx context.Context, q database.Querier, appID, ownerID, id int64) error {
+	tag, err := q.Exec(ctx, `DELETE FROM assessment_rounds WHERE id=$1 AND application_id=$2 AND owner_id=$3`, id, appID, ownerID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	// A deleted round must not dangle as an application's focus: later
+	// transitions derive the substatus from the focused round and would fail.
+	_, err = q.Exec(ctx, `UPDATE applications SET focus_activity_kind=NULL, focus_activity_id=NULL,
+		version=version+1, updated_at=now()
+		WHERE owner_id=$1 AND focus_activity_kind=$2 AND focus_activity_id=$3`, ownerID, "assessment", id)
+	return err
+}
+
+// OpenAssessmentCount counts rounds that are still in progress, used for the
+// 「另有 N 项待完成」 hint next to the focused stage.
+func (r *Repo) OpenAssessmentCount(ctx context.Context, appID, ownerID int64) (int, error) {
+	var n int
+	err := r.db.Pool().QueryRow(ctx, `SELECT count(*) FROM assessment_rounds
+		WHERE application_id=$1 AND owner_id=$2 AND progress='preparing'`, appID, ownerID).Scan(&n)
+	return n, err
 }
 
 type Action struct {
@@ -63,60 +306,6 @@ func (r *Repo) Pool() *database.DB { return r.db }
 
 // -- interviews --
 
-func (r *Repo) ListInterviews(ctx context.Context, appID, ownerID int64) ([]*Interview, error) {
-	rows, err := r.db.Pool().Query(ctx, `SELECT id, application_id, owner_id, round_name, format,
-		scheduled_at, timezone, duration_minutes, result, feedback, notes, created_at, updated_at
-		FROM interviews WHERE application_id=$1 AND owner_id=$2 ORDER BY scheduled_at NULLS LAST, id`, appID, ownerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*Interview
-	for rows.Next() {
-		var it Interview
-		if err := rows.Scan(&it.ID, &it.ApplicationID, &it.OwnerID, &it.RoundName, &it.Format,
-			&it.ScheduledAt, &it.Timezone, &it.DurationMinutes, &it.Result, &it.Feedback, &it.Notes,
-			&it.CreatedAt, &it.UpdatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, &it)
-	}
-	return out, rows.Err()
-}
-
-func (r *Repo) GetInterview(ctx context.Context, appID, ownerID, id int64) (*Interview, error) {
-	var it Interview
-	err := r.db.Pool().QueryRow(ctx, `SELECT id, application_id, owner_id, round_name, format,
-		scheduled_at, timezone, duration_minutes, result, feedback, notes, created_at, updated_at
-		FROM interviews WHERE id=$1 AND application_id=$2 AND owner_id=$3`, id, appID, ownerID).
-		Scan(&it.ID, &it.ApplicationID, &it.OwnerID, &it.RoundName, &it.Format, &it.ScheduledAt,
-			&it.Timezone, &it.DurationMinutes, &it.Result, &it.Feedback, &it.Notes, &it.CreatedAt, &it.UpdatedAt)
-	return &it, err
-}
-
-func (r *Repo) CreateInterview(ctx context.Context, q database.Querier, it *Interview) error {
-	return q.QueryRow(ctx, `INSERT INTO interviews(application_id, owner_id, round_name, format,
-		scheduled_at, timezone, duration_minutes, result, feedback, notes)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, created_at`,
-		it.ApplicationID, it.OwnerID, it.RoundName, it.Format, it.ScheduledAt, it.Timezone,
-		it.DurationMinutes, it.Result, it.Feedback, it.Notes).Scan(&it.ID, &it.CreatedAt)
-}
-
-func (r *Repo) UpdateInterview(ctx context.Context, q database.Querier, it *Interview) error {
-	tag, err := q.Exec(ctx, `UPDATE interviews SET round_name=$1, format=$2, scheduled_at=$3,
-		timezone=$4, duration_minutes=$5, result=$6, feedback=$7, notes=$8, updated_at=now()
-		WHERE id=$9 AND application_id=$10 AND owner_id=$11`,
-		it.RoundName, it.Format, it.ScheduledAt, it.Timezone, it.DurationMinutes, it.Result,
-		it.Feedback, it.Notes, it.ID, it.ApplicationID, it.OwnerID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
-	}
-	return nil
-}
-
 func (r *Repo) DeleteInterview(ctx context.Context, q database.Querier, appID, ownerID, id int64) error {
 	tag, err := q.Exec(ctx, `DELETE FROM interviews WHERE id=$1 AND application_id=$2 AND owner_id=$3`, id, appID, ownerID)
 	if err != nil {
@@ -125,11 +314,14 @@ func (r *Repo) DeleteInterview(ctx context.Context, q database.Querier, appID, o
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
-	return nil
+	// Same dangling-focus cleanup as DeleteAssessment.
+	_, err = q.Exec(ctx, `UPDATE applications SET focus_activity_kind=NULL, focus_activity_id=NULL,
+		version=version+1, updated_at=now()
+		WHERE owner_id=$1 AND focus_activity_kind=$2 AND focus_activity_id=$3`, ownerID, "interview", id)
+	return err
 }
 
 // -- actions --
-
 // ListActions lists action items. When appID is nil it returns the owner's
 // actions across all applications joined with their company/position for the
 // today dashboard.

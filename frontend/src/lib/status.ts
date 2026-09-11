@@ -1,5 +1,11 @@
 // Status metadata shared across views (keys are the API contract, §2.2).
 // Labels, badge tones and dot colors follow the tech-utility palette.
+//
+// 方案 §6.5: the whitelist (stage keys, labels, legal substatuses, terminal
+// set, transition targets) is OWNED BY THE SERVER and hydrated at bootstrap
+// from GET /api/v1/meta/status-model via hydrateStatusModel. The static tables
+// below are the offline / first-paint fallback only — presentation attributes
+// (icon / tone / dot) are local by design and keyed by stage key.
 import type { Tone } from '../ds'
 
 export interface StatusMeta {
@@ -13,21 +19,169 @@ export interface StatusMeta {
   dot: string
 }
 
-export const STATUSES: StatusMeta[] = [
-  { key: 'saved', label: '待投递', icon: '🗂️', category: 'preparing', tone: 'neutral', dot: 'var(--neutral)' },
-  { key: 'preparing', label: '准备材料', icon: '📝', category: 'preparing', tone: 'neutral', dot: 'var(--text-muted)' },
-  { key: 'applied', label: '已投递', icon: '📤', category: 'in_progress', tone: 'info', dot: 'var(--info)' },
-  { key: 'screening', label: '初筛沟通', icon: '📞', category: 'in_progress', tone: 'info', dot: 'var(--info)' },
-  { key: 'assessment', label: '笔试作业', icon: '🧪', category: 'in_progress', tone: 'warning', dot: 'var(--warning)' },
-  { key: 'interviewing', label: '面试中', icon: '🎤', category: 'in_progress', tone: 'accent', dot: 'var(--accent)' },
-  { key: 'offer', label: '收到 Offer', icon: '🎉', category: 'decision', tone: 'positive', dot: 'var(--positive)' },
-  { key: 'accepted', label: '已接受', icon: '✅', category: 'ended', tone: 'positive', dot: 'var(--positive)' },
-  { key: 'rejected', label: '被拒绝', icon: '🚫', category: 'ended', tone: 'danger', dot: 'var(--danger)' },
-  { key: 'withdrawn', label: '已撤回', icon: '↩️', category: 'ended', tone: 'neutral', dot: 'var(--neutral)' },
-  { key: 'closed', label: '岗位关闭', icon: '🔒', category: 'ended', tone: 'neutral', dot: 'var(--neutral)' },
-]
+const PRESENTATION: Record<string, { icon: string; category: StatusMeta['category']; tone: Tone; dot: string }> = {
+  saved: { icon: '🗂️', category: 'preparing', tone: 'neutral', dot: 'var(--neutral)' },
+  preparing: { icon: '📝', category: 'preparing', tone: 'neutral', dot: 'var(--text-muted)' },
+  applied: { icon: '📤', category: 'in_progress', tone: 'info', dot: 'var(--info)' },
+  screening: { icon: '📞', category: 'in_progress', tone: 'info', dot: 'var(--info)' },
+  assessment: { icon: '🧪', category: 'in_progress', tone: 'warning', dot: 'var(--warning)' },
+  interviewing: { icon: '🎤', category: 'in_progress', tone: 'accent', dot: 'var(--accent)' },
+  offer: { icon: '🎉', category: 'decision', tone: 'positive', dot: 'var(--positive)' },
+  accepted: { icon: '✅', category: 'ended', tone: 'positive', dot: 'var(--positive)' },
+  rejected: { icon: '🚫', category: 'ended', tone: 'danger', dot: 'var(--danger)' },
+  withdrawn: { icon: '↩️', category: 'ended', tone: 'neutral', dot: 'var(--neutral)' },
+  closed: { icon: '🔒', category: 'ended', tone: 'neutral', dot: 'var(--neutral)' },
+}
 
-const byKey = new Map(STATUSES.map((s) => [s.key, s]))
+export const FALLBACK_LABELS: Record<string, string> = {
+  saved: '待投递',
+  preparing: '准备材料',
+  applied: '已投递',
+  screening: '初筛沟通',
+  assessment: 'OA / 作业',
+  interviewing: '面试',
+  offer: '收到 Offer',
+  accepted: '已接受',
+  rejected: '被拒绝',
+  withdrawn: '已撤回',
+  closed: '岗位关闭',
+}
+
+export let STATUSES: StatusMeta[] = Object.entries(FALLBACK_LABELS).map(([key, label]) => ({
+  key,
+  label,
+  ...PRESENTATION[key],
+}))
+
+let byKey = new Map(STATUSES.map((s) => [s.key, s]))
+
+// 子状态字典（方案 §3.1/§6.5）：hydrateStatusModel 用服务端
+// GET /api/v1/meta/status-model 的 payload 整体替换；这份静态表只是离线 /
+// 首屏兜底。同一个键在不同大阶段含义不同，所以按阶段分组，
+// 绝不用全局 map 查标签。
+export interface SubstatusMeta {
+  key: string
+  label: string
+}
+
+const FALLBACK_SUBSTATUSES: Record<string, SubstatusMeta[]> = {
+  preparing: [{ key: 'ready', label: '材料就绪 · 待投递' }],
+  screening: [
+    { key: 'awaiting_schedule', label: '待安排初筛' },
+    { key: 'preparing', label: '准备初筛' },
+    { key: 'completed', label: '已完成初筛 · 等反馈' },
+  ],
+  assessment: [
+    { key: 'preparing', label: '准备 OA' },
+    { key: 'completed', label: '已完成 OA · 等结果' },
+    { key: 'passed', label: 'OA 已通过 · 等下一步' },
+  ],
+  interviewing: [
+    { key: 'awaiting_schedule', label: '待安排面试' },
+    { key: 'preparing', label: '准备面试' },
+    { key: 'completed', label: '已完成面试 · 等反馈' },
+  ],
+  offer: [
+    { key: 'reviewing', label: '待评估 Offer' },
+    { key: 'negotiating', label: '协商 Offer' },
+    { key: 'ready_to_accept', label: '待确认接受' },
+  ],
+}
+
+export let SUBSTATUSES: Record<string, SubstatusMeta[]> = FALLBACK_SUBSTATUSES
+
+/** Server payload of GET /api/v1/meta/status-model (the single whitelist). */
+export interface ServerStatusModel {
+  stages: Array<{
+    key: string
+    label: string
+    category: string
+    terminal: boolean
+    substatus: SubstatusMeta[]
+  }>
+  targets: Record<string, Array<{ status: string }>>
+}
+
+/**
+ * Replace the local whitelist with the server's status model (方案 §6.5).
+ * Presentation attributes (icon / tone / dot) stay local, keyed by stage key.
+ * Must run before the app tree renders so no component caches stale tables.
+ */
+export function hydrateStatusModel(m: ServerStatusModel): void {
+  const CATEGORIES: Array<StatusMeta['category']> = ['preparing', 'in_progress', 'decision', 'ended']
+  STATUSES = m.stages.map((st) => {
+    const p = PRESENTATION[st.key] ?? { icon: '❓', category: 'preparing' as const, tone: 'neutral' as Tone, dot: 'var(--neutral)' }
+    return {
+      key: st.key,
+      label: st.label,
+      icon: p.icon,
+      category: CATEGORIES.includes(st.category as StatusMeta['category']) ? (st.category as StatusMeta['category']) : p.category,
+      tone: p.tone,
+      dot: p.dot,
+    }
+  })
+  byKey = new Map(STATUSES.map((s) => [s.key, s]))
+  SUBSTATUSES = Object.fromEntries(m.stages.map((st) => [st.key, st.substatus ?? []]))
+  ENDED = new Set(m.stages.filter((st) => st.terminal).map((st) => st.key))
+}
+
+/** Legal substatuses for a stage ([] when the stage has no subdivision). */
+export function substatusOptions(status: string): SubstatusMeta[] {
+  return SUBSTATUSES[status] ?? []
+}
+
+/** True when (status, substatus) is a legal pair; "" is always 未细分. */
+export function validSubstatus(status: string, substatus: string): boolean {
+  if (!substatus) return statusMeta(status).key === status
+  return substatusOptions(status).some((s) => s.key === substatus)
+}
+
+/**
+ * The exact label the list / detail shows, mirroring domain.ComboLabelForKind:
+ * the un-subdivided state is named too (「未细分」), so a legacy row is never
+ * silently displayed as if the user had chosen 准备 OA.
+ */
+export function comboLabel(status: string, substatus?: string | null, assessmentKind?: string | null): string {
+  const sub = substatus ?? ''
+  if (status === 'assessment') {
+    const kind = assessmentKind ?? ''
+    const noun = kind === 'take_home' ? '作业' : 'OA'
+    if (kind && kind !== 'online_test') {
+      if (sub === 'preparing') return `准备${noun}`
+      if (sub === 'completed') return `已提交${noun} · 等结果`
+      if (sub === 'passed') return `${noun}已通过 · 等下一步`
+    }
+    if (sub === 'preparing') return '准备 OA'
+    if (sub === 'completed') return '已完成 OA · 等结果'
+    if (sub === 'passed') return 'OA 已通过 · 等下一步'
+    return 'OA / 作业 · 进度未细分'
+  }
+  if (!sub) {
+    switch (status) {
+      case 'saved':
+        return '待投递'
+      case 'applied':
+        return '已投递 · 等回复'
+      case 'screening':
+        return '初筛沟通 · 未细分'
+      case 'interviewing':
+        return '面试中 · 未细分'
+      case 'offer':
+        return '收到 Offer · 未细分'
+      default:
+        return statusMeta(status).label
+    }
+  }
+  const opt = substatusOptions(status).find((s) => s.key === sub)
+  return opt?.label ?? statusMeta(status).label
+}
+
+/** 测评类型（方案 §3.2）：作业显示「准备作业 / 已提交作业」。 */
+export const ASSESSMENT_KINDS: Array<{ value: string; label: string }> = [
+  { value: 'online_test', label: '在线测试 (OA)' },
+  { value: 'take_home', label: 'Take-home 作业' },
+  { value: 'other', label: '其他测评' },
+]
 
 export function statusMeta(key: string): StatusMeta {
   return (
@@ -65,7 +219,7 @@ export const FLOW_ORDER = [
 /** The 7 pips rendered in the table's 阶段推进 column (design: r.d1…r.d7). */
 export const FLOW_PIPS = ['saved', 'preparing', 'applied', 'screening', 'assessment', 'interviewing', 'offer']
 
-export const ENDED = new Set(['accepted', 'rejected', 'withdrawn', 'closed'])
+export let ENDED = new Set(STATUSES.filter((s) => s.category === 'ended').map((s) => s.key))
 
 export const NEXT_STEP_SUGGESTION: Record<string, string> = {
   saved: '填写岗位细节并设定截止时间',

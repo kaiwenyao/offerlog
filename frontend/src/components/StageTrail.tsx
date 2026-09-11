@@ -36,7 +36,12 @@ interface CellSkin {
   label: string
 }
 
-function cellSkin(i: number, at: number, dead: boolean): CellSkin {
+/**
+ * 方案 §5：当前 / 曾经历 / 未经历 三态，不再按序号推断。跳过初筛直接做 OA
+ * 时初筛保持空心「未经历」，回退到后面的阶段时早先走过的节点仍保留「曾经历」
+ * 标记。没有 stage_history 时（旧数据、列表接口未带）才退回按序号填充。
+ */
+function cellSkin(i: number, at: number, dead: boolean, visited: boolean): CellSkin {
   if (i === at) {
     return {
       fill: dead ? 'var(--neutral-500)' : 'var(--accent)',
@@ -44,7 +49,7 @@ function cellSkin(i: number, at: number, dead: boolean): CellSkin {
       label: 'var(--text)',
     }
   }
-  if (i < at) {
+  if (visited) {
     return {
       fill: dead ? 'var(--neutral-300)' : 'var(--accent-300)',
       edge: 'transparent',
@@ -58,6 +63,26 @@ function cellSkin(i: number, at: number, dead: boolean): CellSkin {
 function walkedPath(dates?: Record<string, string> | null): string[] {
   if (!dates) return []
   return FLOW_ORDER.filter((s) => s !== 'accepted' && dates[s])
+}
+
+/**
+ * Stages the record really passed through: the explicit path plus every stage
+ * with an arrival date. `known` is false when neither source exists, in which
+ * case the caller must fall back to index-based filling.
+ */
+function visitedStages(path: string[], dates?: Record<string, string> | null) {
+  const set = new Set<string>(path)
+  if (dates) for (const s of Object.keys(dates)) if (dates[s]) set.add(s)
+  return { set, known: set.size > 0 }
+}
+
+/**
+ * Whether a node should read as 曾经历. Without stage history the only signal
+ * is the index, which is also how the old code filled the bar.
+ */
+function hasBeenTo(stage: string, i: number, at: number, reached: Set<string>, known: boolean): boolean {
+  if (i === at) return true
+  return known ? reached.has(stage) : i < at
 }
 
 /**
@@ -80,14 +105,16 @@ export function StageTrail({
   const at = railIndex(current, path.length ? path : walkedPath(dates))
   const dead = DEAD.has(current)
   const done = ENDED.has(current)
+  const { set: reached, known } = visitedStages(path.length ? path : walkedPath(dates), dates)
 
   return (
     <div className="stage-trail" aria-label={`工序线 ${statusMeta(current).label}`}>
       {FLOW_ORDER.map((stage, i) => {
-        const skin = cellSkin(i, at, dead)
+        const skin = cellSkin(i, at, dead, known ? reached.has(stage) : i < at)
         const full = dates?.[stage]
         const date = full ? shortDay(full) : undefined // compact inside the tight block
         const isTip = i === at
+        const hasBeen = hasBeenTo(stage, i, at, reached, known)
         const sub = isTip
           ? date
             ? `${date} · ${dead ? statusMeta(current).label : done ? '完成' : '当前'}`
@@ -96,7 +123,7 @@ export function StageTrail({
               : done
                 ? '完成'
                 : '当前'
-          : i < at && date
+          : hasBeen && date
             ? date
             : ''
         return (
@@ -145,16 +172,21 @@ export function StageRail({ status, pips, path = [], dates = null, thin = false 
   const at = railIndex(status, effPath)
   const dead = DEAD.has(status)
   const capped = at < 0 ? -1 : Math.min(at, pips.length - 1)
+  const { set: reached, known } = visitedStages(effPath, dates)
 
   return (
     <span className={'rail' + (thin ? ' thin' : '')} aria-label={`工序进度 ${statusMeta(status).label}`}>
       {pips.map((p, i) => {
-        const skin = cellSkin(i, capped, dead)
+        const skin = cellSkin(i, capped, dead, known ? reached.has(p) : i < capped)
         const date = dates?.[p]
         return (
           <span
             key={p}
-            title={statusMeta(p).label + (date ? ` · ${date}` : '')}
+            title={
+              statusMeta(p).label +
+              (date ? ` · ${date}` : '') +
+              (known && !reached.has(p) && i !== capped ? ' · 未经历' : '')
+            }
             style={{
               background: skin.fill,
               boxShadow: `inset 0 0 0 1px ${skin.edge}`,

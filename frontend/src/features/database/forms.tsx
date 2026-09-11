@@ -4,7 +4,7 @@ import { api, ApiError } from '../../lib/api'
 import { toInstantInUserZone } from '../../lib/tz'
 import type { AppRow } from '../../lib/types'
 import { NEXT_STEP_SUGGESTION } from '../../lib/status'
-import { Button, Input, Select, Textarea } from '../../ds'
+import { Button, Checkbox, Input, Select, Textarea } from '../../ds'
 import { ErrorText, Modal, Spinner } from '../../components/ui'
 
 /** Shared with the progress dialog's inline scheduler — keep one list. */
@@ -164,6 +164,132 @@ export function NoteForm({ appId, onClose, onDone }: { appId: number; onClose: (
         onChange={(e) => setContent(e.target.value)}
         placeholder="沟通要点、联系人、后续计划…"
       />
+    </Modal>
+  )
+}
+
+/** 测评类型（方案 §3.2）：作业显示「作业」，不强迫都叫 OA。 */
+export const ASSESSMENT_KIND_OPTIONS = [
+  { value: 'online_test', label: '在线测试 (OA)' },
+  { value: 'take_home', label: 'Take-home 作业' },
+  { value: 'other', label: '其他测评' },
+]
+
+export const ASSESSMENT_PROGRESS_OPTIONS = [
+  { value: 'preparing', label: '准备中' },
+  { value: 'completed', label: '已完成 · 等结果' },
+]
+
+/**
+ * 新增一轮 OA / 作业（方案 §3.2）。收到、计划、截止、完成四种时间各自保存，
+ * 互不覆盖；完成时间不详时只标「已完成」，不伪造精确时间。
+ */
+export function AssessmentForm({
+  appId,
+  suggestedName,
+  onClose,
+  onDone,
+}: {
+  appId: number
+  /** 已有轮次数决定默认名称：第一轮 OA，之后 OA 2、OA 3… */
+  suggestedName?: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [kind, setKind] = useState('online_test')
+  const [name, setName] = useState(suggestedName || 'OA')
+  const [progress, setProgress] = useState('preparing')
+  const [invited, setInvited] = useState('')
+  const [planned, setPlanned] = useState('')
+  const [due, setDue] = useState('')
+  const [completed, setCompleted] = useState('')
+  const [completedUnknown, setCompletedUnknown] = useState(false)
+  const [link, setLink] = useState('')
+  const [notes, setNotes] = useState('')
+  const [err, setErr] = useState('')
+
+  const mut = useMutation({
+    mutationFn: () => {
+      const at = (v: string) => {
+        if (!v) return null
+        const { iso } = toInstantInUserZone(v)
+        if (iso == null) throw new ApiError('bad_time', '时间格式不正确', 400)
+        return iso
+      }
+      return api.post(`/api/v1/applications/${appId}/assessments`, {
+        kind,
+        name,
+        progress,
+        result: 'unknown',
+        invited_at: at(invited),
+        planned_at: at(planned),
+        due_at: at(due),
+        completed_at: progress === 'completed' ? at(completed) : null,
+        completed_unknown: progress === 'completed' ? completedUnknown || !completed : false,
+        link,
+        notes,
+      })
+    },
+    onSuccess: onDone,
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+  })
+
+  return (
+    <Modal
+      title="新增一轮测评"
+      onClose={onClose}
+      footer={
+        <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+          {mut.isPending ? <Spinner size={14} /> : '保存'}
+        </Button>
+      }
+    >
+      {err && <ErrorText>{err}</ErrorText>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <Select
+          label="类型"
+          options={ASSESSMENT_KIND_OPTIONS}
+          value={kind}
+          onChange={(e) => {
+            setKind(e.target.value)
+            setName((n) => (n === 'OA' || n.startsWith('OA ') ? (e.target.value === 'take_home' ? '作业' : 'OA') : n))
+          }}
+        />
+        <Input label="名称" value={name} onChange={(e) => setName(e.target.value)} />
+        <Select
+          label="当前进度"
+          options={ASSESSMENT_PROGRESS_OPTIONS}
+          value={progress}
+          onChange={(e) => setProgress(e.target.value)}
+        />
+        <Input label="收到邀请" type="datetime-local" value={invited} onChange={(e) => setInvited(e.target.value)} />
+        <Input label="计划开做" type="datetime-local" value={planned} onChange={(e) => setPlanned(e.target.value)} />
+        <Input
+          label="截止时间"
+          type="datetime-local"
+          value={due}
+          onChange={(e) => setDue(e.target.value)}
+          hint="完成后不再提醒这个截止时间"
+        />
+        {progress === 'completed' && (
+          <>
+            <Input
+              label="完成时间"
+              type="datetime-local"
+              value={completed}
+              onChange={(e) => setCompleted(e.target.value)}
+              hint="留空则标为「完成时间不详」"
+            />
+            <Checkbox
+              label="完成时间不详（只标「已完成」，不伪造精确时间）"
+              checked={completedUnknown}
+              onChange={setCompletedUnknown}
+            />
+          </>
+        )}
+        <Input label="测试链接" value={link} onChange={(e) => setLink(e.target.value)} />
+        <Textarea label="备注" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+      </div>
     </Modal>
   )
 }

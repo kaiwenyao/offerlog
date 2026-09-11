@@ -11,6 +11,9 @@ export interface FilterGroup {
   conditions: (FilterCond | FilterGroup)[]
 }
 
+/** A filter tree node: either a leaf condition or a nested group. */
+export type FilterNode = FilterCond | FilterGroup
+
 export type Layout = 'table' | 'board' | 'list'
 
 /** Status sets backing the built-in views (ids are negative by convention). */
@@ -58,9 +61,9 @@ export function statusesForView(viewId: number): string[] {
 export function buildFilters(
   view: SavedView | undefined,
   search: string,
-  extra: FilterCond[],
-): (FilterCond | FilterGroup)[] {
-  const conds: (FilterCond | FilterGroup)[] = []
+  extra: FilterNode[],
+): FilterNode[] {
+  const conds: FilterNode[] = []
   if (view?.filter_ast) {
     const ast = view.filter_ast as FilterGroup
     if (view.id >= 0 && Array.isArray(ast.conditions)) conds.push(...ast.conditions)

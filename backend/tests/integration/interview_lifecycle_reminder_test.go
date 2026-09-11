@@ -111,3 +111,49 @@ func TestDeleteInterviewClearsReminder(t *testing.T) {
 	}
 	_ = notifications.New(db)
 }
+
+// 方案 §3.3：把一轮面试标为「已完成」后，就不该再收到「明天有面试」。完成事实独立
+// 于排期 —— 时间还挂在明天，但面试其实已经发生了（提前面完 / 改期补录）。
+func TestCompletedInterviewStopsDayReminder(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	_ = prefs.New(db).Upsert(ctx, &prefs.Preferences{
+		UserID: owner, Timezone: "Europe/Dublin", WeekStart: 1,
+		RemindOverdue: false, RemindInterview: true, RemindStaleDays: 0,
+	})
+	app := mustCreate(t, svc, owner, "DoneCo", "Role")
+	tomorrow := time.Now().Add(24 * time.Hour)
+
+	count := func() int {
+		var n int
+		_ = db.Pool().QueryRow(ctx,
+			`SELECT count(*) FROM notifications WHERE owner_id=$1 AND kind='interview'`, owner).Scan(&n)
+		return n
+	}
+
+	var pendingID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO interviews(application_id, owner_id, round_name, format, scheduled_at, timezone, progress)
+		VALUES($1,$2,'一面','video',$3,'Europe/Dublin','preparing') RETURNING id`, app.ID, owner, tomorrow).Scan(&pendingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reminders.New(db).Run(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if count() == 0 {
+		t.Fatal("expected a reminder for a still-pending round")
+	}
+
+	// 把它标成已完成，并清掉已生成的提醒（模拟用户在轮次卡片上的操作）。
+	if _, err := db.Pool().Exec(ctx, `UPDATE interviews SET progress='completed' WHERE id=$1`, pendingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool().Exec(ctx, `DELETE FROM notifications WHERE owner_id=$1 AND kind='interview'`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reminders.New(db).Run(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if count() != 0 {
+		t.Fatalf("a completed round must not remind again (%d rows)", count())
+	}
+}

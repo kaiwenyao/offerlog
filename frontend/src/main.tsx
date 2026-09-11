@@ -14,9 +14,11 @@ import '@fontsource/noto-sans-sc/400.css'
 import '@fontsource/noto-sans-sc/500.css'
 import '@fontsource/noto-sans-sc/700.css'
 import './styles/app.css'
-import { fetchMe, setCsrf } from './lib/api'
+import { fetchMe, setCsrf, api } from './lib/api'
 import { setUserZone } from './lib/tz'
 import type { Me } from './lib/types'
+import { hydrateStatusModel, type ServerStatusModel } from './lib/status'
+import { hydrateTransitions } from './lib/transitions'
 import { AppLayout } from './app/layout'
 import { PageSpinner } from './components/ui'
 import { TodayPage } from './features/today/TodayPage'
@@ -38,13 +40,32 @@ const queryClient = new QueryClient({
 
 type SessionState = 'loading' | 'anon' | 'authed'
 
+// 方案 §6.5: pull the server-owned status model BEFORE the app tree renders,
+// so no component ever caches the offline fallback tables. A failure (network
+// hiccup, older backend) silently keeps the bundled mirror — the server still
+// re-validates every mutation.
+async function fetchStatusModel(): Promise<ServerStatusModel | null> {
+  try {
+    return await api.get<ServerStatusModel>('/api/v1/meta/status-model')
+  } catch {
+    return null
+  }
+}
+
+function applyStatusModel(m: ServerStatusModel | null): void {
+  if (!m) return
+  hydrateStatusModel(m)
+  hydrateTransitions(m.targets)
+}
+
 export default function App() {
   const [state, setState] = useState<SessionState>('loading')
   const [me, setMe] = useState<Me | null>(null)
 
   useEffect(() => {
-    fetchMe()
-      .then((m) => {
+    Promise.all([fetchMe(), fetchStatusModel()])
+      .then(([m, model]) => {
+        applyStatusModel(model)
         if (m) {
           setUserZone(m.timezone)
           setMe(m)
@@ -90,6 +111,9 @@ export default function App() {
     return (
       <LoginPage
         onLoggedIn={(m) => {
+          // Same hydration guarantee as the initial session: the model may
+          // have failed to load before login (anon bootstrap races it).
+          void fetchStatusModel().then(applyStatusModel)
           setUserZone(m.timezone)
           setMe(m)
           setState('authed')

@@ -4,13 +4,20 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDay, localDateTimeToInstant, toDayString } from '../../lib/api'
 import { effectiveZone } from '../../lib/tz'
 import type { AppRow, SavedView } from '../../lib/types'
-import { FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
+import { comboLabel, FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
 import { Button, Card, Input, Select, Tabs, Tag } from '../../ds'
 import { CompanyMark } from '../../components/Icon'
 import { StageRail } from '../../components/StageTrail'
 import { Dot, EmptyHint, ErrorText, Modal, Num, PageSpinner, Spinner, StatusChip } from '../../components/ui'
 import { Drawer } from './drawer'
-import { BUILTIN, boardBuckets, buildFilters, type BoardBucket, type FilterCond, type Layout } from './views'
+import {
+  BUILTIN,
+  boardBuckets,
+  buildFilters,
+  type BoardBucket,
+  type FilterNode,
+  type Layout,
+} from './views'
 
 const PAGE_SIZE = 60
 
@@ -18,9 +25,41 @@ const PAGE_SIZE = 60
  * Ad-hoc chips layered on top of the active view. Kept distinct from the
  * built-in view names so the same filter never appears twice in the bar.
  */
-const QUICK_FILTERS: Array<{ label: string; cond: FilterCond }> = [
+const QUICK_FILTERS: Array<{ label: string; cond: FilterNode }> = [
   { label: '高优先级', cond: { field: 'priority', op: 'eq', value: 'high' } },
   { label: '面试中', cond: { field: 'status', op: 'eq', value: 'interviewing' } },
+  // 方案 §5：可按子状态筛选。子状态键跨阶段重名（preparing 既是「准备 OA」也是
+  // 「准备面试」），所以必须跟大阶段一起约束，不能只查 substatus。
+  {
+    label: '准备 OA',
+    cond: {
+      op: 'and',
+      conditions: [
+        { field: 'status', op: 'eq', value: 'assessment' },
+        { field: 'substatus', op: 'eq', value: 'preparing' },
+      ],
+    },
+  },
+  {
+    label: 'OA 后等结果',
+    cond: {
+      op: 'and',
+      conditions: [
+        { field: 'status', op: 'eq', value: 'assessment' },
+        { field: 'substatus', op: 'eq', value: 'completed' },
+      ],
+    },
+  },
+  {
+    label: '面试后等反馈',
+    cond: {
+      op: 'and',
+      conditions: [
+        { field: 'status', op: 'eq', value: 'interviewing' },
+        { field: 'substatus', op: 'eq', value: 'completed' },
+      ],
+    },
+  },
 ]
 
 const LAYOUT_TABS = [
@@ -52,7 +91,7 @@ export function DatabasePage() {
   const [page, setPage] = useState(1)
   const [selApp, setSelApp] = useState<number | null>(routeApp ? Number(routeApp) : null)
   const [showCreate, setShowCreate] = useState(false)
-  const [extraFilters, setExtraFilters] = useState<FilterCond[]>([])
+  const [extraFilters, setExtraFilters] = useState<FilterNode[]>([])
   const [trashMode, setTrashMode] = useState(false)
   const [selRows, setSelRows] = useState<Set<number>>(new Set())
   const [bulkTag, setBulkTag] = useState('')
@@ -137,7 +176,7 @@ export function DatabasePage() {
     setSelRows(next)
   }
 
-  const toggleQuickFilter = (cond: FilterCond) => {
+  const toggleQuickFilter = (cond: FilterNode) => {
     const key = JSON.stringify(cond)
     setExtraFilters((prev) =>
       prev.some((f) => JSON.stringify(f) === key) ? prev.filter((f) => JSON.stringify(f) !== key) : [...prev, cond],
@@ -145,7 +184,7 @@ export function DatabasePage() {
     setPage(1)
   }
 
-  const isFilterOn = (cond: FilterCond) => extraFilters.some((f) => JSON.stringify(f) === JSON.stringify(cond))
+  const isFilterOn = (cond: FilterNode) => extraFilters.some((f) => JSON.stringify(f) === JSON.stringify(cond))
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -396,7 +435,14 @@ function TableView({
                   <StageRail status={a.status} pips={FLOW_PIPS} dates={a.stage_history} />
                 </td>
                 <td>
-                  <StatusChip status={a.status} />
+                  {/* 方案 §5：列表直接显示具体进度（「准备 OA」），而不是笼统的大阶段；
+                      旁边补上「最近一次进入当前进度的日期」。 */}
+                  <StatusChip status={a.status} substatus={a.substatus} />
+                  {a.progress_since && (
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                      {fmtDay(a.progress_since)} 进入
+                    </span>
+                  )}
                 </td>
                 <td className="ellipsis" style={{ fontSize: 13 }}>
                   {a.next_action || <span style={{ color: 'var(--text-muted)' }}>—</span>}
@@ -463,6 +509,10 @@ function BoardView({
               <div className="ellipsis" style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
                 {a.position}
               </div>
+              {/* 方案 §5：看板保留大阶段列，但卡片标签要能区分「准备 OA」与「初筛」。 */}
+              <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)' }}>
+                {comboLabel(a.status, a.substatus)}
+              </div>
               <div style={{ marginTop: 9 }}>
                 <StageRail status={a.status} pips={FLOW_PIPS} dates={a.stage_history} thin />
               </div>
@@ -509,6 +559,9 @@ function ListView({ rows, onOpen }: { rows: AppRow[]; onOpen: (id: number) => vo
                   {a.position}
                   {a.location ? ` · ${a.location}` : ''}
                 </span>
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: '0 0 auto' }}>
+                {comboLabel(a.status, a.substatus)}
               </span>
               <span className="ellipsis" style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 220 }}>
                 {a.next_action}

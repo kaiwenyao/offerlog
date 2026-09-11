@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDay, toDayString } from '../../lib/api'
 import { effectiveZone } from '../../lib/tz'
-import type { AppEvent, AppRow, FileItem, Interview, Note } from '../../lib/types'
+import type { AppEvent, AppRow, AssessmentRound, FileItem, Interview, Note } from '../../lib/types'
 import { ENDED } from '../../lib/status'
 import { Button, Card, Eyebrow, IconButton, Tabs } from '../../ds'
 import { CompanyMark, Icon } from '../../components/Icon'
@@ -44,6 +44,10 @@ export function AppDetailContent({
     queryKey: ['interviews', appId],
     queryFn: () => api.get<{ items: Interview[] }>(`/api/v1/applications/${appId}/interviews`),
   })
+  const assessmentsQ = useQuery({
+    queryKey: ['assessments', appId],
+    queryFn: () => api.get<{ items: AssessmentRound[] }>(`/api/v1/applications/${appId}/assessments`),
+  })
   const notesQ = useQuery({
     queryKey: ['notes', appId],
     queryFn: () => api.get<{ items: Note[] }>(`/api/v1/applications/${appId}/notes`),
@@ -53,15 +57,23 @@ export function AppDetailContent({
   const events = eventsQ.data?.items ?? []
   const files = filesQ.data?.items ?? []
   const interviews = interviewsQ.data?.items ?? []
+  const assessments = assessmentsQ.data?.items ?? []
   const notes = notesQ.data?.items ?? []
 
-  const path = useMemo(
-    () =>
-      events
-        .filter((e) => (e.event_type === 'created' || e.event_type === 'status_change') && e.to_status)
-        .map((e) => e.to_status as string),
-    [events],
-  )
+  // Stage path with the SAME correction overlay as stageDates below: a stage
+  // later corrected away must not light up on the stage trail (PR #23 review
+  // P1 #6 — the list page reads the server's stage_history, so the drawer must
+  // replay corrections with the same semantics to stay consistent).
+  const path = useMemo(() => {
+    const corrected = new Map<number, string>()
+    for (const e of events) {
+      if (e.event_type === 'correction' && e.corrects_event_id != null && e.to_status) corrected.set(e.corrects_event_id, e.to_status)
+    }
+    return events
+      .filter((e) => (e.event_type === 'created' || e.event_type === 'status_change') && e.to_status)
+      .map((e) => corrected.get(e.id) ?? (e.to_status as string))
+      .filter((s): s is string => s !== '')
+  }, [events])
 
   // Earliest user-zone calendar day per reached status, replaying the same
   // correction semantics as the server's include=stage_history (the drawer has
@@ -138,7 +150,8 @@ export function AppDetailContent({
         </span>
       </span>
       <span style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-        <StatusChip status={app.status} />
+        {/* 顶部显示具体进度（方案 §5），子状态为空时退回大阶段标签。 */}
+        <StatusChip status={app.status} substatus={app.substatus} />
         {!embedded && (
           <>
             <Link to={`/apps/${app.id}`} aria-label="完整详情" title="完整详情" style={{ display: 'inline-flex' }}>
@@ -193,17 +206,21 @@ export function AppDetailContent({
         <OverviewTab
           app={app}
           interviews={interviews}
+          assessments={assessments}
           notes={notes}
           filesCount={files.length}
           refetchAll={() => {
             qc.invalidateQueries({ queryKey: ['app', appId] })
             qc.invalidateQueries({ queryKey: ['events', appId] })
             qc.invalidateQueries({ queryKey: ['interviews', appId] })
+            qc.invalidateQueries({ queryKey: ['assessments', appId] })
           }}
         />
       )}
       {tab === 'files' && <FilesTab appId={app.id} files={files} interviews={interviews} />}
-      {tab === 'timeline' && <TimelineTab appId={app.id} events={events} status={app.status} />}
+      {tab === 'timeline' && (
+        <TimelineTab appId={app.id} events={events} status={app.status} substatus={app.substatus} version={app.version} />
+      )}
     </>
   )
 
@@ -229,9 +246,11 @@ export function AppDetailContent({
     <TransitionModal
       appId={app.id}
       currentStatus={app.status}
+      currentSubstatus={app.substatus}
       version={app.version}
       submittedAt={app.submitted_at ?? null}
       interviews={interviews}
+      assessments={assessments}
       onClose={() => setShowTransition(false)}
     />
   )

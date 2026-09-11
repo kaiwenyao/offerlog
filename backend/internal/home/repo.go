@@ -65,6 +65,20 @@ type UpcomingInterview struct {
 	Result        string    `json:"result"`
 }
 
+// UpcomingAssessment is one OA round in the cross-application upcoming list
+// (planned time; the deadline reminder itself lives in the reminders scan).
+type UpcomingAssessment struct {
+	ID            int64      `json:"id"`
+	ApplicationID int64      `json:"application_id"`
+	CompanyName   string     `json:"company_name"`
+	Position      string     `json:"position"`
+	Name          string     `json:"name"`
+	Kind          string     `json:"kind"`
+	PlannedAt     time.Time  `json:"planned_at"`
+	DueAt         *time.Time `json:"due_at"`
+	Progress      string     `json:"progress"`
+}
+
 // RecentApplication is a light row for the "最近动态" feed.
 type RecentApplication struct {
 	ID          int64     `json:"id"`
@@ -120,27 +134,28 @@ type WeekItem struct {
 
 // Summary is the full dashboard payload.
 type Summary struct {
-	Total              int64               `json:"total"`       // active (non-deleted) applications, incl archived
-	Active             int64               `json:"active"`      // non-deleted + non-archived (working set)
-	ToApply            int64               `json:"to_apply"`    // saved/preparing (active)
-	InProgress         int64               `json:"in_progress"` // applied…interviewing (active)
-	WithResult         int64               `json:"with_result"` // offer+accepted+rejected+withdrawn+closed (active)
-	Archived           int64               `json:"archived"`
-	SubmittedWeek      int64               `json:"submitted_week"`       // 本周投递 (active)
-	RepliedWeek        int64               `json:"replied_week"`         // 本周首次有效回复 (active)
-	AwaitingReply      int64               `json:"awaiting_reply"`       // 已投递且尚无首次回复 (active, in-progress)
-	InterviewsWeek     int64               `json:"interviews_week"`      // 本周安排的非取消面试轮次 (active)
-	InterviewsDoneWeek int64               `json:"interviews_done_week"` // 本周已完成轮次 (独立标签)
-	Todos              TodoCounts          `json:"todos"`
-	TodoItems          []TodoItem          `json:"todo_items"` // the unified open list (badge == list)
-	Week               Week                `json:"week"`
-	WeekStart          int                 `json:"week_start"` // 0=周日..6=周六 (strip day 0 = this weekday)
-	WeekItems          []WeekItem          `json:"week_items"` // chips relative to week_start (day 0 = the week-start day)
-	Upcoming           []UpcomingInterview `json:"upcoming"`   // cross-app, actual-time sorted, next N
-	Recent             []RecentApplication `json:"recent"`
-	AsOf               time.Time           `json:"as_of"`
-	Timezone           string              `json:"timezone"`
-	ScopeNote          string              `json:"scope_note"`
+	Total               int64                `json:"total"`       // active (non-deleted) applications, incl archived
+	Active              int64                `json:"active"`      // non-deleted + non-archived (working set)
+	ToApply             int64                `json:"to_apply"`    // saved/preparing with no submission fact (active)
+	InProgress          int64                `json:"in_progress"` // applied…interviewing (active)
+	WithResult          int64                `json:"with_result"` // offer+accepted+rejected+withdrawn+closed (active)
+	Archived            int64                `json:"archived"`
+	SubmittedWeek       int64                `json:"submitted_week"`       // 本周投递 (active)
+	RepliedWeek         int64                `json:"replied_week"`         // 本周首次有效回复 (active)
+	AwaitingReply       int64                `json:"awaiting_reply"`       // 已投递且尚无首次回复 (active, in-progress)
+	InterviewsWeek      int64                `json:"interviews_week"`      // 本周安排的非取消面试轮次 (active)
+	InterviewsDoneWeek  int64                `json:"interviews_done_week"` // 本周已完成轮次 (独立标签)
+	Todos               TodoCounts           `json:"todos"`
+	TodoItems           []TodoItem           `json:"todo_items"` // the unified open list (badge == list)
+	Week                Week                 `json:"week"`
+	WeekStart           int                  `json:"week_start"`           // 0=周日..6=周六 (strip day 0 = this weekday)
+	WeekItems           []WeekItem           `json:"week_items"`           // chips relative to week_start (day 0 = the week-start day)
+	Upcoming            []UpcomingInterview  `json:"upcoming"`             // cross-app, actual-time sorted, next N
+	UpcomingAssessments []UpcomingAssessment `json:"upcoming_assessments"` // OA rounds with a planned time, same ordering
+	Recent              []RecentApplication  `json:"recent"`
+	AsOf                time.Time            `json:"as_of"`
+	Timezone            string               `json:"timezone"`
+	ScopeNote           string               `json:"scope_note"`
 }
 
 // Get computes the dashboard summary. Active set = deleted_at IS NULL AND
@@ -169,7 +184,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		WeekStart: int(weekStartDay),
 		// Non-nil slices so the JSON contract is [] rather than null — the
 		// frontend never has to defend against a missing collection.
-		WeekItems: []WeekItem{}, Upcoming: []UpcomingInterview{}, Recent: []RecentApplication{},
+		WeekItems: []WeekItem{}, Upcoming: []UpcomingInterview{}, UpcomingAssessments: []UpcomingAssessment{}, Recent: []RecentApplication{},
 		TodoItems: []TodoItem{},
 	}
 	s.ScopeNote = fmt.Sprintf("工作清单与周统计排除已归档；归档记录计入总数与归档数。周 = %s开始的半开区间（用户时区，按每周起始日偏好）。本周面试 = 本周安排的非取消轮次；已完成轮次单独标注。", weekdayCN(weekStartDay))
@@ -178,7 +193,10 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 
 	// Lifecycle buckets over the working set (exclude archived + deleted).
 	if err := q.QueryRow(ctx, `SELECT
-		count(*) FILTER (WHERE status IN ('saved','preparing')),
+		-- 待投递必须同时「没有有效投递事实」：回退到准备材料的记录可能已经
+		-- 投过（HR 要求补材料），不能重新算回待投递（方案 §4.2）。
+		count(*) FILTER (WHERE status IN ('saved','preparing')
+			AND submitted_at IS NULL AND first_response_at IS NULL),
 		count(*) FILTER (WHERE status IN ('applied','screening','assessment','interviewing')),
 		count(*) FILTER (WHERE status IN ('offer','accepted','rejected','withdrawn','closed')),
 		count(*)
@@ -207,11 +225,14 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 	}
 
 	// 本周面试: non-cancelled interview rounds scheduled in [weekStart, weekEnd),
-	// over applications that are active (not archived / not deleted). Completed
-	// rounds (result passed/failed) counted separately.
+	// over applications that are active (not archived / not deleted). A round is
+	// cancelled when either the schedule link or its own progress says so (方案
+	// §3.3 面试进度与排期取消保持一致). 已完成轮次 independent from its result:
+	// 面完了但还没反馈也是「已完成」。
 	if err := q.QueryRow(ctx, `SELECT
-		count(*) FILTER (WHERE COALESCE(sl.cancelled, FALSE) = FALSE),
-		count(*) FILTER (WHERE COALESCE(sl.cancelled, FALSE) = FALSE AND i.result IN ('passed','failed'))
+		count(*) FILTER (WHERE COALESCE(sl.cancelled, FALSE) = FALSE AND COALESCE(i.progress,'') <> 'cancelled'),
+		count(*) FILTER (WHERE COALESCE(sl.cancelled, FALSE) = FALSE AND COALESCE(i.progress,'') <> 'cancelled'
+		                 AND (i.progress = 'completed' OR i.result IN ('passed','failed')))
 		FROM interviews i
 		JOIN applications a ON a.id = i.application_id AND a.owner_id = i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id = i.id AND sl.owner_id = i.owner_id
@@ -243,7 +264,22 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		FROM interviews i JOIN applications a ON a.id=i.application_id AND a.owner_id=i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id=i.id AND sl.owner_id=i.owner_id
 		WHERE i.owner_id=$1 AND i.scheduled_at >= $3 AND i.scheduled_at < $4
-		  AND COALESCE(sl.cancelled,FALSE)=FALSE AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		  AND COALESCE(sl.cancelled,FALSE)=FALSE AND COALESCE(i.progress,'') <> 'cancelled'
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		UNION ALL
+		-- OA 轮次的计划 / 截止时间同样进周条：计划中的轮次（含已完成，灰显由前端 tone 决定）
+		-- 与仍开放的截止时间。who 带轮次名，与面试 chip 同构。
+		SELECT ((EXTRACT(ISODOW FROM r.planned_at AT TIME ZONE $2)::int - $6 + 7) % 7), 'OA', a.company_name || ' · ' || r.name, 'warn'
+		FROM assessment_rounds r JOIN applications a ON a.id=r.application_id AND a.owner_id=r.owner_id
+		WHERE r.owner_id=$1 AND r.planned_at >= $3 AND r.planned_at < $4
+		  AND COALESCE(r.progress,'') <> 'cancelled'
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		UNION ALL
+		SELECT ((EXTRACT(ISODOW FROM r.due_at AT TIME ZONE $2)::int - $6 + 7) % 7), 'OA截止', a.company_name || ' · ' || r.name, 'bad'
+		FROM assessment_rounds r JOIN applications a ON a.id=r.application_id AND a.owner_id=r.owner_id
+		WHERE r.owner_id=$1 AND r.due_at >= $3 AND r.due_at < $4
+		  AND COALESCE(r.progress,'') NOT IN ('completed','cancelled')
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		UNION ALL
 		-- 待办：due_ts is an instant; date-only due_date is the user's calendar day
 		-- and must be read as the *user's local midnight* (due_date::timestamp AT
@@ -292,6 +328,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		JOIN applications a ON a.id = i.application_id AND a.owner_id = i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id = i.id AND sl.owner_id = i.owner_id
 		WHERE i.owner_id=$1 AND i.scheduled_at IS NOT NULL AND COALESCE(sl.cancelled, FALSE) = FALSE
+		  AND COALESCE(i.progress,'') <> 'cancelled'
 		  AND a.deleted_at IS NULL
 		  AND i.scheduled_at >= $2
 		ORDER BY i.scheduled_at ASC
@@ -310,6 +347,34 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		s.Upcoming = append(s.Upcoming, u)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	// Upcoming OA rounds with a planned time: same cross-application ordering
+	// as interviews; cancelled rounds never surface here.
+	aRows, err := q.Query(ctx, `SELECT r.id, a.id, a.company_name, a.position, r.name, r.kind,
+		r.planned_at, r.due_at, COALESCE(r.progress,'')
+		FROM assessment_rounds r
+		JOIN applications a ON a.id = r.application_id AND a.owner_id = r.owner_id
+		WHERE r.owner_id=$1 AND r.planned_at IS NOT NULL
+		  AND COALESCE(r.progress,'') <> 'cancelled'
+		  AND a.deleted_at IS NULL
+		ORDER BY r.planned_at ASC
+		LIMIT $2`, ownerID, upcomingLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer aRows.Close()
+	for aRows.Next() {
+		var u UpcomingAssessment
+		if err := aRows.Scan(&u.ID, &u.ApplicationID, &u.CompanyName, &u.Position, &u.Name,
+			&u.Kind, &u.PlannedAt, &u.DueAt, &u.Progress); err != nil {
+			return nil, err
+		}
+		s.UpcomingAssessments = append(s.UpcomingAssessments, u)
+	}
+	if err := aRows.Err(); err != nil {
 		return nil, err
 	}
 

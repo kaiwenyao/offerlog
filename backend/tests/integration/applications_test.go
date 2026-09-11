@@ -124,11 +124,12 @@ func TestFullPipelineToAccepted(t *testing.T) {
 	_ = db
 }
 
-// Reopening an ended record back into the pre-submission phase must ERASE
-// submitted_at / first_response_at in the database, not just in the returned
-// row: SetStatus used to COALESCE both columns, so the response said null while
-// the row stayed "submitted" for analytics and stale-response reminders.
-func TestReopenToPreSubmissionClearsTimestamps(t *testing.T) {
+// A rollback that walks a record back to the pre-submission phase must KEEP
+// the submission and first-response facts (方案 §4.2: 回退不删除真实历史).
+// 「已投递 → 准备材料」really happens (HR asks for extra documents); the
+// timeline says so, and the 待投递 statistic is computed from the absence of a
+// submission fact rather than from the status alone.
+func TestRollbackToPreSubmissionKeepsTimestamps(t *testing.T) {
 	_, svc, _, owner := setup(t)
 	ctx := context.Background()
 	app := mustCreate(t, svc, owner, "Reopen", "前端工程师")
@@ -145,14 +146,21 @@ func TestReopenToPreSubmissionClearsTimestamps(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("withdrawn: %v", err)
 	}
+	// Reopen into a non-terminal stage, then roll back to 待投递 — an ordinary
+	// rollback, not a correction.
 	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
-		ToStatus: domain.StatusSaved, Version: 3, Reason: "重新考虑",
+		ToStatus: domain.StatusPreparing, Version: 3, Reason: "重新考虑", ChangeType: domain.ChangeReopen,
 	}); err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
+	if _, err := svc.Transition(ctx, owner, app.ID, &appservice.TransitionInput{
+		ToStatus: domain.StatusSaved, Version: 4, ChangeType: domain.ChangeRollback,
+	}); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
 
 	// Re-read from the database — the transition response is built from the
-	// in-memory row and would pass even while the UPDATE kept the old values.
+	// in-memory row and would pass even while the UPDATE dropped the values.
 	got, err := svc.Get(ctx, owner, app.ID, false)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -160,11 +168,30 @@ func TestReopenToPreSubmissionClearsTimestamps(t *testing.T) {
 	if got.Status != domain.StatusSaved {
 		t.Fatalf("status = %s, want saved", got.Status)
 	}
-	if got.SubmittedAt != nil {
-		t.Errorf("submitted_at should be cleared on reopen to 待投递, got %v", got.SubmittedAt)
+	if got.SubmittedAt == nil || !got.SubmittedAt.Equal(submitted) {
+		t.Errorf("submitted_at must survive a rollback, got %v", got.SubmittedAt)
 	}
-	if got.FirstResponseAt != nil {
-		t.Errorf("first_response_at should be cleared on reopen to 待投递, got %v", got.FirstResponseAt)
+	if got.FirstResponseAt == nil || !got.FirstResponseAt.Equal(responded) {
+		t.Errorf("first_response_at must survive a rollback, got %v", got.FirstResponseAt)
+	}
+
+	// The audit trail records it as a rollback, not as an ordinary advance.
+	evs, err := svc.Events(ctx, owner, app.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	last := evs[len(evs)-1]
+	if last.ChangeType != domain.ChangeRollback {
+		t.Errorf("change_type = %q, want rollback", last.ChangeType)
+	}
+	var rollbacks int
+	for _, ev := range evs {
+		if ev.ChangeType == domain.ChangeRollback {
+			rollbacks++
+		}
+	}
+	if rollbacks != 1 {
+		t.Errorf("rollback events = %d, want exactly 1", rollbacks)
 	}
 }
 

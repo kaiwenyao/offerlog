@@ -1,5 +1,11 @@
 // Full E2E acceptance: 新增岗位 → 准备材料 → 上传简历 → 投递 → 沟通 → 面试 →
 // Offer → 接受/撤回 (§2.3 主流程验收) with reload persistence and consistency.
+//
+// ⚠️ Always click the 更新进度 BUTTON (button:has-text), never
+// `text=更新进度`: Playwright's text= engine matches substrings, so any
+// helper copy that merely mentions the label (e.g. the OA 空态 hint 「收到 OA
+// 后点「更新进度 → 准备 OA」…」) sits earlier in the drawer DOM and steals the
+// click, leaving the dialog closed.
 const { chromium } = require('playwright');
 // The target-status field is a custom blueprint listbox (ds/Listbox), not a
 // native <select>: open the trigger, then click the option by its data-value.
@@ -60,8 +66,8 @@ async function pickTarget(page, value) {
 
   // 2. open detail + update progress to applied (提供投递时间)
   await page.locator(`tbody tr:has-text("${company}")`).first().click();
-  await page.waitForSelector('.drawer >> text=更新进度');
-  await page.click('.drawer >> text=更新进度');
+  await page.waitForSelector('.drawer button:has-text("更新进度")');
+  await page.click('.drawer button:has-text("更新进度")');
   await page.waitForSelector('text=目标状态');
   await pickTarget(page, 'applied');
   await page.fill('.modal input[type=datetime-local] >> nth=1', '2026-09-01T10:00'); // submitted_at (2nd dt field)
@@ -90,7 +96,7 @@ async function pickTarget(page, value) {
 
   // 5. transition → interviewing → offer → accepted through UI
   async function transition(to, extra) {
-    await page.click('.drawer >> text=更新进度');
+    await page.click('.drawer button:has-text("更新进度")');
     await page.waitForSelector('.modal >> text=目标状态');
     await pickTarget(page, to);
     if (extra?.reason) await page.fill('.modal textarea[placeholder="必填"]', extra.reason);
@@ -138,8 +144,8 @@ async function pickTarget(page, value) {
   await page.click('button:has-text("创建")');
   await page.waitForSelector(`text=${skipCo}`, { timeout: 7000 });
   await page.locator(`tbody tr:has-text("${skipCo}")`).first().click();
-  await page.waitForSelector('.drawer >> text=更新进度');
-  await page.click('.drawer >> text=更新进度');
+  await page.waitForSelector('.drawer button:has-text("更新进度")');
+  await page.click('.drawer button:has-text("更新进度")');
   await page.waitForSelector('.modal >> text=目标状态');
   await pickTarget(page, 'interviewing');           // only reachable after the skip-ahead change
   await page.fill('.modal input[type=datetime-local] >> nth=1', '2026-09-02T09:00'); // submitted_at
@@ -171,6 +177,39 @@ async function pickTarget(page, value) {
   await page.waitForTimeout(600);
   const reopenVisible = await page.locator('.drawer button:has-text("重开 / 更正")').count();
   console.log('9 ended record offers reopen:', reopenVisible > 0);
+
+  // 10. 回退 + OA 轮次（方案 §3.2/§4.1 验收：面试中 → 笔试作业 是真实回退；
+  //     在同一表单里选「准备 OA」并顺手记一轮，四种时间各自保存）。
+  //     The drawer is still showing the ended record — close it first.
+  await page.click('.drawer button[aria-label="关闭"]');
+  await page.waitForTimeout(400);
+  await page.locator(`tbody tr:has-text("${skipCo}")`).first().click();
+  await page.waitForTimeout(600);
+  await page.click('.drawer button:has-text("更新进度")');
+  await page.waitForSelector('.modal >> text=目标状态');
+  await pickTarget(page, 'assessment');           // rollback: interviewing → assessment
+  // substatus chips (role=button spans) — text= would also match the hint copy.
+  await page.click('.modal [role=button]:has-text("准备 OA")');
+  await page.fill('.modal input[type=datetime-local] >> nth=3', '2026-09-20T23:59'); // 截止时间
+  await page.click('.modal button:has-text("确认更新")');
+  await page.waitForTimeout(1500);
+  const oaChip = (await page.locator('.drawer .status-chip').textContent()).replace(/\s+/g, ' ');
+  console.log('10a rollback to OA chip:', oaChip, '(准备 OA)');
+  // 变更类型（方案 §4.2）：选了目标之后，同一表单要能区分「流程实际退回」与
+  // 「之前选错了」。重新打开弹窗并选当前阶段即可看到，随后取消不落库。
+  await page.click('.drawer button:has-text("更新进度")');
+  await page.waitForSelector('.modal >> text=目标状态');
+  await pickTarget(page, 'assessment');           // same stage — the mode card shows
+  await page.waitForSelector('.modal >> text=这次变更属于');
+  const modalTxt = (await page.locator('.modal').innerText()) || '';
+  console.log('10b change-mode offers 流程实际退回:', modalTxt.includes('流程实际退回'));
+  console.log('10b change-mode offers 之前选错了:', modalTxt.includes('之前选错了'));
+  await page.click('.modal button:has-text("取消")');
+  // The inline round (OA) with its due time is on the 概览 tab.
+  await page.click('.drawer >> text=概览');
+  await page.waitForTimeout(600);
+  const oaOverview = (await page.locator('.drawer').textContent()) || '';
+  console.log('10c OA round listed with due:', /OA\s*\/\s*作业\s*\(1\)/.test(oaOverview) && oaOverview.includes('截止'));
 
   console.log('E2E JS errors:', errors.length ? errors : 'none');
   await browser.close();

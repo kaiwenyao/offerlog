@@ -77,7 +77,7 @@ func (r *Repo) whereClause(req *SnapshotRequest, extra ...string) (string, []any
 
 type Metrics struct {
 	TotalAll       int64            `json:"total_all"`       // not deleted (any status)
-	ToApply        int64            `json:"to_apply"`        // saved/preparing
+	ToApply        int64            `json:"to_apply"`        // saved/preparing with NO submission fact
 	SubmittedCount int64            `json:"submitted_count"` // distinct submitted_at set (incl ended)
 	InProgress     int64            `json:"in_progress"`     // applied/screening/assessment/interviewing
 	WithResult     int64            `json:"with_result"`     // offer+accepted+rejected+withdrawn+closed
@@ -97,6 +97,10 @@ type Metrics struct {
 	RepliedSample    int64    `json:"replied_sample"`
 	Denominator      int64    `json:"denominator"` // cohort size
 	SmallSample      bool     `json:"small_sample"`
+	// 具体进度统计（方案 §5）：大阶段继续按 status 统计，另外单独列出 OA 的准备
+	// 与等结果数量。未细分的旧数据不算进这两个数，避免把「未细分」当成准备中。
+	PreparingAssessment int64 `json:"preparing_assessment"`
+	AwaitingOAResult    int64 `json:"awaiting_oa_result"`
 }
 
 type ChannelRow struct {
@@ -108,6 +112,14 @@ type ChannelRow struct {
 	OfferRate     *float64 `json:"offer_rate"`
 }
 
+// effectiveToStatusSQL resolves the status an event REALLY produced: if a later
+// correction points at it, that correction's target wins. 方案 §4.3/§5: 真实回退
+// 保留曾到达记录，而误操作更正必须从统计里排除 —— counting raw to_status kept a
+// 「误点拿到 Offer」 in the conversion funnel forever.
+const effectiveToStatusSQL = `COALESCE((SELECT c.to_status FROM application_events c
+	WHERE c.corrects_event_id = e.id AND c.to_status IS NOT NULL
+	ORDER BY c.sequence DESC LIMIT 1), e.to_status)`
+
 // Counts returns key metrics for the scope (default by saved date cohort).
 func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, error) {
 	where, args := r.whereClause(req)
@@ -116,7 +128,10 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 	m := &Metrics{ByStatus: map[string]int64{}}
 	var nAll, nPreparing, nInProgress, nResult int64
 	err := q.QueryRow(ctx, `SELECT
-		count(*) FILTER (WHERE status IN ('saved','preparing')),
+		-- 待投递 = 还没投出去。一条被退回「准备材料」的记录可能其实已经投过
+		-- （HR 要求补材料），只要存在投递/回复事实就不算待投递（方案 §4.2）。
+		count(*) FILTER (WHERE status IN ('saved','preparing')
+			AND submitted_at IS NULL AND first_response_at IS NULL),
 		count(*) FILTER (WHERE status IN ('applied','screening','assessment','interviewing')),
 		count(*) FILTER (WHERE status IN ('offer','accepted','rejected','withdrawn','closed')),
 		count(*)
@@ -128,6 +143,12 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 	m.InProgress = nInProgress
 	m.WithResult = nResult
 	m.TotalAll = nAll
+	if err := q.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE status='assessment' AND substatus='preparing'),
+		count(*) FILTER (WHERE status='assessment' AND substatus IN ('completed','passed'))
+		FROM applications WHERE `+where, args...).Scan(&m.PreparingAssessment, &m.AwaitingOAResult); err != nil {
+		return nil, err
+	}
 
 	// by status
 	rows, err := q.Query(ctx, `SELECT status, count(*) FROM applications WHERE `+where+` GROUP BY status`, args...)
@@ -159,8 +180,12 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 		var resp, interv, offer int64
 		if err := q.QueryRow(ctx, `SELECT
 			count(*) FILTER (WHERE first_response_at IS NOT NULL),
-			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e WHERE e.application_id = applications.id AND e.to_status='interviewing')),
-			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e WHERE e.application_id = applications.id AND e.to_status='offer'))
+			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e
+				WHERE e.application_id = applications.id AND e.event_type <> 'correction'
+				  AND `+effectiveToStatusSQL+` = 'interviewing')),
+			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e
+				WHERE e.application_id = applications.id AND e.event_type <> 'correction'
+				  AND `+effectiveToStatusSQL+` = 'offer'))
 			FROM applications WHERE `+cohortWhere, cohortArgs...).Scan(&resp, &interv, &offer); err != nil {
 			return nil, err
 		}
@@ -228,8 +253,12 @@ func (r *Repo) ByChannel(ctx context.Context, req *SnapshotRequest) ([]ChannelRo
 	where, args := r.submittedCohortWhere(req)
 	where += " AND channel <> ''"
 	rows, err := r.db.Pool().Query(ctx, `SELECT channel, count(*) FILTER (WHERE first_response_at IS NOT NULL),
-		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e WHERE e.application_id = applications.id AND e.to_status='interviewing')),
-		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e WHERE e.application_id = applications.id AND e.to_status='offer')),
+		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e
+			WHERE e.application_id = applications.id AND e.event_type <> 'correction'
+			  AND `+effectiveToStatusSQL+` = 'interviewing')),
+		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e
+			WHERE e.application_id = applications.id AND e.event_type <> 'correction'
+			  AND `+effectiveToStatusSQL+` = 'offer')),
 		count(*)
 		FROM applications WHERE `+where+` GROUP BY channel ORDER BY count(*) DESC`, args...)
 	if err != nil {
