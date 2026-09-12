@@ -184,6 +184,64 @@ func TestSankeyAUnsubmittedMatchesToApplyMetric(t *testing.T) {
 	}
 }
 
+// The metrics panel must read the same cohort as the sankey middle layer:
+// 已投递 / 样本 count pipeline entries (NOT 未投递), so the 内推 OA row and
+// the rolled-back preparing row stay in every rate denominator instead of
+// vanishing behind a missing submitted_at.
+func TestCountsSubmittedCohortMatchesPipeline(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
+	owner := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner)
+
+	now := time.Now()
+	fixture := []struct {
+		status string
+		sub    bool
+	}{
+		{domain.StatusApplied, true},
+		{domain.StatusAssessment, false}, // 内推免正式投递：无 submitted_at
+		{domain.StatusPreparing, true},   // 投递后退回准备材料：仍带 submitted_at
+		{domain.StatusSaved, false},
+	}
+	for i, f := range fixture {
+		var sub *time.Time
+		if f.sub {
+			s := now.AddDate(0, 0, -(i + 1))
+			sub = &s
+		}
+		if err := seedApp(ctx, db, owner, f.status, sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repo := New(db)
+	m, err := repo.Counts(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ToApply != 1 {
+		t.Fatalf("to_apply = %d, want 1", m.ToApply)
+	}
+	if m.SubmittedCount != 3 || m.Denominator != 3 {
+		t.Fatalf("submitted_count = %d / denominator = %d, want 3/3", m.SubmittedCount, m.Denominator)
+	}
+	if m.Responded != 0 || m.PendingResponse != 3 {
+		t.Fatalf("responded = %d / pending = %d, want 0/3", m.Responded, m.PendingResponse)
+	}
+	if m.ResponseRate == nil || *m.ResponseRate != 0 {
+		t.Fatalf("response_rate = %v, want 0 (denominator > 0, numerator 0)", m.ResponseRate)
+	}
+	ch, err := repo.ByChannel(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// every seeded row has channel='' → excluded from the channel panel
+	if len(ch) != 0 {
+		t.Fatalf("by_channel rows = %d, want 0", len(ch))
+	}
+}
+
 func createBenchUser(t *testing.T, db *database.DB) int64 {
 	t.Helper()
 	var id int64

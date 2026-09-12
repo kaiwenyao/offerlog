@@ -46,16 +46,16 @@ const DefinitionVersion = 2
 //	全部机会 → 已投递 / 未投递 → 已投递按当前状态细分
 //
 // Every application appears once per layer. The middle layer reuses the
-// 待投递 metric definition verbatim (repo.Counts): 未投递 = still
-// saved/preparing with neither a submission nor a response fact. Records
-// past the preparing phase ride the submitted branch even when
+// 待投递 metric definition verbatim (toApplyFactSQL in repo.go): 未投递 =
+// still saved/preparing with neither a submission nor a response fact.
+// Records past the preparing phase ride the submitted branch even when
 // submitted_at is NULL (内推 / 猎头直接约面 rows legitimately carry no
 // submitted_at). 未投递 is a leaf — only the submitted branch is
 // subdivided by its current status.
 func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, error) {
 	where, args := r.whereClause(req)
 	rows, err := r.db.Pool().Query(ctx, `SELECT id, status,
-		(status IN ('saved','preparing') AND submitted_at IS NULL AND first_response_at IS NULL)
+		`+toApplyFactSQL+`
 		FROM applications WHERE `+where, args...)
 	if err != nil {
 		return nil, err

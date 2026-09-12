@@ -106,7 +106,7 @@ function MetricGrid({ metrics }: { metrics: Metrics }) {
     // 方案 §5：大阶段统计之外，单列 OA 的准备与等结果数量。
     { label: '准备 OA', value: metrics.preparing_assessment, def: 'OA / 作业阶段 · 准备中' },
     { label: 'OA 等结果', value: metrics.awaiting_oa_result, def: '已完成 / 已通过 · 等反馈' },
-    { label: '已投递', value: metrics.submitted_count, def: '去重申请数' },
+    { label: '已投递', value: metrics.submitted_count, def: '已进入流程 · 含免正式投递' },
     { label: '有效回复率', value: rateOrDash(metrics.response_rate, metrics.denominator), def: `已回复 ${metrics.responded} / 样本 ${metrics.denominator}` },
     {
       label: '面试到达率',

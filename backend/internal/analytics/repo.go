@@ -1,8 +1,10 @@
 // Package analytics computes dashboard metrics and both sankey projections.
 //
-// Terminology (plan §5):
+// Terminology (plan §5, ADR-005 口径 v2):
 //   - current distribution cohort: applications sampled by saved date
-//   - submitted cohort: applications with submitted_at in range
+//   - submitted cohort: applications past 未投递 — NOT (saved/preparing with
+//     neither a submission nor a response fact) — so 内推 / 猎头 rows without
+//     submitted_at stay counted once they enter the pipeline
 //   - denominator-zero → "—"; small samples flagged (n<10)
 package analytics
 
@@ -19,6 +21,15 @@ import (
 type Repo struct{ db *database.DB }
 
 func New(db *database.DB) *Repo { return &Repo{db: db} }
+
+// toApplyFactSQL is the single source of truth for 「还没投出去」: still in
+// the preparing phase with neither a submission nor a response fact. The
+// 待投递 card, the 已投递 card and every rate denominator (Counts), the
+// channel panel (ByChannel) and the sankey middle layer (SankeyA) all read
+// this one predicate so same-page numbers can never disagree (ADR-005 v2).
+// 内推 / 猎头 rows legitimately carry no submitted_at but leave 未投递 as
+// soon as they hold a response fact or sit in a later stage.
+const toApplyFactSQL = `(status IN ('saved','preparing') AND submitted_at IS NULL AND first_response_at IS NULL)`
 
 // SnapshotRequest selects the analytics window + scope.
 type SnapshotRequest struct {
@@ -78,7 +89,7 @@ func (r *Repo) whereClause(req *SnapshotRequest, extra ...string) (string, []any
 type Metrics struct {
 	TotalAll       int64            `json:"total_all"`       // not deleted (any status)
 	ToApply        int64            `json:"to_apply"`        // saved/preparing with NO submission fact
-	SubmittedCount int64            `json:"submitted_count"` // distinct submitted_at set (incl ended)
+	SubmittedCount int64            `json:"submitted_count"` // past 未投递 (NOT toApplyFact) — incl 免正式投递 rows
 	InProgress     int64            `json:"in_progress"`     // applied/screening/assessment/interviewing
 	WithResult     int64            `json:"with_result"`     // offer+accepted+rejected+withdrawn+closed
 	ByStatus       map[string]int64 `json:"by_status"`
@@ -95,7 +106,7 @@ type Metrics struct {
 	ResponseMedianH  float64  `json:"response_median_hours"` // hours from submit to first response (median, responded only)
 	PendingResponse  int64    `json:"pending_response"`      // submitted, no response yet
 	RepliedSample    int64    `json:"replied_sample"`
-	Denominator      int64    `json:"denominator"` // cohort size
+	Denominator      int64    `json:"denominator"` // cohort size = 已投递（pipeline cohort）
 	SmallSample      bool     `json:"small_sample"`
 	// 具体进度统计（方案 §5）：大阶段继续按 status 统计，另外单独列出 OA 的准备
 	// 与等结果数量。未细分的旧数据不算进这两个数，避免把「未细分」当成准备中。
@@ -135,8 +146,7 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 	err := q.QueryRow(ctx, `SELECT
 		-- 待投递 = 还没投出去。一条被退回「准备材料」的记录可能其实已经投过
 		-- （HR 要求补材料），只要存在投递/回复事实就不算待投递（方案 §4.2）。
-		count(*) FILTER (WHERE status IN ('saved','preparing')
-			AND submitted_at IS NULL AND first_response_at IS NULL),
+		count(*) FILTER (WHERE `+toApplyFactSQL+`),
 		count(*) FILTER (WHERE status IN ('applied','screening','assessment','interviewing')),
 		count(*) FILTER (WHERE status IN ('offer','accepted','rejected','withdrawn','closed')),
 		count(*)
@@ -173,11 +183,13 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 		return nil, err
 	}
 
-	// submitted cohort metrics use submitted_at window; if the request carried
-	// a submission window, restrict there, else all submitted.
-	cohortWhere, cohortArgs := r.submittedCohortWhere(req)
+	// Submitted-cohort metrics (已投递 card + rates) use the pipeline cohort:
+	// same definition as the sankey middle layer, so 内推 / 猎头 rows without
+	// submitted_at stay counted once they enter the pipeline. The submitted_at
+	// window filters still apply on top when a caller provides them.
+	cohortWhere, cohortArgs := r.pipelineCohortWhere(req)
 	var denominator int64
-	if err := q.QueryRow(ctx, `SELECT count(DISTINCT id) FROM applications WHERE `+cohortWhere, cohortArgs...).Scan(&denominator); err != nil {
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM applications WHERE `+cohortWhere, cohortArgs...).Scan(&denominator); err != nil {
 		return nil, err
 	}
 	m.Denominator = denominator
@@ -224,9 +236,15 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 	return m, nil
 }
 
-func (r *Repo) submittedCohortWhere(req *SnapshotRequest) (string, []any) {
-	clauses := []string{"owner_id = $1", "deleted_at IS NULL", "submitted_at IS NOT NULL"}
-	args := []any{req.OwnerID}
+// pipelineCohortWhere scopes the 已投递 / rate cohort (ADR-005 v2): the shared
+// scope plus NOT 未投递 — the exact complement of the 待投递 card, and the same
+// set the sankey middle layer labels 已投递. Replaces the old
+// submitted_at-anchored cohort, which hid 内推 / 猎头 rows (no submitted_at)
+// from every rate while the same rows sat in 进行中 on the same page. The
+// submitted_at window filters still apply on top when a caller provides them.
+func (r *Repo) pipelineCohortWhere(req *SnapshotRequest) (string, []any) {
+	where, args := r.whereClause(req)
+	clauses := []string{"(" + where + ")", "NOT " + toApplyFactSQL}
 	add := func(cond string, val any) {
 		args = append(args, val)
 		clauses = append(clauses, fmt.Sprintf(cond, len(args)))
@@ -237,21 +255,12 @@ func (r *Repo) submittedCohortWhere(req *SnapshotRequest) (string, []any) {
 	if req.SubmittedTo != nil {
 		add("submitted_at <= $%d", *req.SubmittedTo)
 	}
-	if req.Channel != "" {
-		add("channel = $%d", req.Channel)
-	}
-	if len(req.Tags) > 0 {
-		add("tags && $%d", req.Tags)
-	}
-	if req.Company != "" {
-		add("company_name = $%d", req.Company)
-	}
 	return strings.Join(clauses, " AND "), args
 }
 
 // ByChannel lists per-channel funnel numbers over the submitted cohort.
 func (r *Repo) ByChannel(ctx context.Context, req *SnapshotRequest) ([]ChannelRow, error) {
-	where, args := r.submittedCohortWhere(req)
+	where, args := r.pipelineCohortWhere(req)
 	where += " AND channel <> ''"
 	rows, err := r.db.Pool().Query(ctx, `SELECT channel, count(*) FILTER (WHERE first_response_at IS NOT NULL),
 		count(*) FILTER (WHERE `+reachedSQL+`'interviewing')),
