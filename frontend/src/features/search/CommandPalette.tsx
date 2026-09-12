@@ -146,7 +146,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     // 输入法组字中：Enter 在提交候选词，不是“执行高亮行”。
     if (e.nativeEvent.isComposing) return
-    const next = moveHighlight(highlight, rows.length, e.key)
+    // Emacs/readline 风格：Ctrl+P 上一个、Ctrl+N 下一个（与 ↑↓ 等价）。
+    // preventDefault 顺带拦下部分平台的 Ctrl+P 打印对话框。
+    let navKey = e.key
+    if (e.ctrlKey) {
+      const lower = e.key.toLowerCase()
+      if (lower === 'p') navKey = 'ArrowUp'
+      else if (lower === 'n') navKey = 'ArrowDown'
+    }
+    const next = moveHighlight(highlight, rows.length, navKey)
     if (next !== null) {
       e.preventDefault()
       setHighlight(next)
@@ -192,7 +200,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         </span>
       </div>
       <span id="cmd-kbd-nav" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
-        ↑↓ 移动高亮，回车执行高亮行，Esc 关闭
+        ↑↓ 或 Ctrl+P / Ctrl+N 移动高亮，回车执行高亮行，Esc 关闭
       </span>
 
       <div ref={listRef} role="listbox" aria-label="搜索结果与命令" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 380, overflowY: 'auto' }}>

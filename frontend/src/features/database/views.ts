@@ -62,6 +62,12 @@ export function statusesForView(viewId: number): string[] {
 const SEARCH_FIELDS = ['company_name', 'position', 'notes'] as const
 
 /**
+ * 空白分词后最多这么多组条件：后端 /views/query 有 MaxConditions=30 的硬限
+ * 制（每组 3 个叶子），5 个词封顶也到不了 30，且人类搜索词几乎不会更多。
+ */
+const SEARCH_TERM_LIMIT = 5
+
+/**
  * Build the `/views/query` filter list for the active view, search term and
  * ad-hoc chips. Pure so the query shape stays testable.
  */
@@ -76,17 +82,15 @@ export function buildFilters(
     if (view.id >= 0 && Array.isArray(ast.conditions)) conds.push(...ast.conditions)
     else if (view.id < 0) conds.push(ast)
   }
-  // Search is a match on ANY of the searched fields, not just the position:
-  // typing a company name must find its rows. Kept as one `or` group so it
-  // stays a single term at the top level (AND-ed with the view's own filter).
-  if (search) {
-    const term = search.trim()
-    if (term) {
-      conds.push({
-        op: 'or',
-        conditions: SEARCH_FIELDS.map((field) => ({ field, op: 'contains', value: term })),
-      })
-    }
+  // Search matches on ANY of the searched fields (OR inside a term), and a
+  // multi-word query like「字节 后端」requires EVERY word to match (AND across
+  // terms) — same semantics as the ⌘K endpoint. Typing a company name must
+  // find its rows; a two-word query must not silently return nothing.
+  for (const term of search.trim().split(/\s+/).filter(Boolean).slice(0, SEARCH_TERM_LIMIT)) {
+    conds.push({
+      op: 'or',
+      conditions: SEARCH_FIELDS.map((field) => ({ field, op: 'contains', value: term })),
+    })
   }
   return [...conds, ...extra]
 }

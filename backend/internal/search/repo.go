@@ -7,6 +7,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"offerlog/backend/internal/platform/database"
@@ -37,10 +38,11 @@ func (r *Repo) Pool() *database.DB { return r.db }
 
 // Search returns up to limit mixed results. An empty kw returns the most
 // recently touched rows (recently updated applications + newest files); a
-// non-empty kw substring-matches companies.name, applications.position /
-// applications.company_name / applications.notes, and files.original_name
-// (owner-scoped). Applications are ranked first, then companies, then files —
-// the same mix the command palette renders.
+// non-empty kw is split on whitespace into terms: EVERY term must match
+// (AND across terms), and each term substring-matches companies.name,
+// applications.position / applications.company_name / applications.notes,
+// and files.original_name (owner-scoped). Applications are ranked first,
+// then companies, then files — the same mix the command palette renders.
 func (r *Repo) Search(ctx context.Context, ownerID int64, kw string, limit int) ([]*Item, error) {
 	if limit < 1 {
 		limit = 20
@@ -48,20 +50,23 @@ func (r *Repo) Search(ctx context.Context, ownerID int64, kw string, limit int) 
 	if limit > 50 {
 		limit = 50
 	}
-	if strings.TrimSpace(kw) == "" {
+	terms := splitTerms(kw)
+	if len(terms) == 0 {
 		return r.recent(ctx, ownerID, limit)
 	}
-	pattern := "%" + escapeLike(strings.TrimSpace(kw)) + "%"
 
 	var out []*Item
 
 	// applications: position / company / notes matches.
+	appWhere, appArgs := likeConjunction([]string{"a.position", "a.company_name", "a.notes"}, terms, 2)
+	appArgs = append([]any{ownerID}, appArgs...)
+	appArgs = append(appArgs, limit)
 	appRows, err := r.db.Pool().Query(ctx, `SELECT a.id, a.company_name, a.position, a.status, a.location
 		FROM applications a
 		WHERE a.owner_id=$1 AND a.deleted_at IS NULL
-		  AND (a.position ILIKE $2 OR a.company_name ILIKE $2 OR a.notes ILIKE $2)
+		  AND (`+appWhere+`)
 		ORDER BY COALESCE(a.updated_at, a.created_at) DESC, a.id DESC
-		LIMIT $3`, ownerID, pattern, limit)
+		LIMIT $`+strconv.Itoa(len(appArgs)), appArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -93,12 +98,15 @@ func (r *Repo) Search(ctx context.Context, ownerID int64, kw string, limit int) 
 	room := limit - len(out)
 
 	// companies: name matches, hint shows the number of live applications.
+	coWhere, coArgs := likeConjunction([]string{"c.name"}, terms, 2)
+	coArgs = append([]any{ownerID}, coArgs...)
+	coArgs = append(coArgs, room)
 	coRows, err := r.db.Pool().Query(ctx, `SELECT c.id, c.name,
 			(SELECT count(*) FROM applications a WHERE a.company_id = c.id AND a.owner_id = c.owner_id AND a.deleted_at IS NULL)
 		FROM companies c
-		WHERE c.owner_id=$1 AND c.name ILIKE $2
+		WHERE c.owner_id=$1 AND (`+coWhere+`)
 		ORDER BY c.updated_at DESC, c.id
-		LIMIT $3`, ownerID, pattern, room)
+		LIMIT $`+strconv.Itoa(len(coArgs)), coArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +129,14 @@ func (r *Repo) Search(ctx context.Context, ownerID int64, kw string, limit int) 
 	room = limit - len(out)
 
 	// files: name matches (ready files only — only they can be opened).
+	fWhere, fArgs := likeConjunction([]string{"f.original_name"}, terms, 2)
+	fArgs = append([]any{ownerID}, fArgs...)
+	fArgs = append(fArgs, room)
 	fRows, err := r.db.Pool().Query(ctx, `SELECT f.id, f.original_name, f.size_bytes
 		FROM files f
-		WHERE f.owner_id=$1 AND f.status='ready' AND f.original_name ILIKE $2
+		WHERE f.owner_id=$1 AND f.status='ready' AND (`+fWhere+`)
 		ORDER BY f.created_at DESC
-		LIMIT $3`, ownerID, pattern, room)
+		LIMIT $`+strconv.Itoa(len(fArgs)), fArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -199,6 +210,44 @@ func (r *Repo) recent(ctx context.Context, ownerID int64, limit int) ([]*Item, e
 	}
 	return out, fRows.Err()
 }
+
+// splitTerms splits a raw keyword into whitespace-separated search terms
+// (ASCII spaces, tabs and CJK full-width spaces alike) and caps the count so a
+// pathological query can't balloon the SQL. Empty result = no keyword → the
+// recent list.
+func splitTerms(kw string) []string {
+	terms := strings.Fields(strings.TrimSpace(kw))
+	if len(terms) > maxSearchTerms {
+		terms = terms[:maxSearchTerms]
+	}
+	return terms
+}
+
+// likeConjunction builds one ILIKE conjunction for the query terms: terms are
+// ANDed (every term must match); a term matches if ANY of the columns ILIKEs
+// it (OR inside). Placeholders start at startArg ($1 is reserved for owner_id
+// by the caller), one arg per term. Returns the SQL snippet and its args.
+func likeConjunction(columns []string, terms []string, startArg int) (string, []any) {
+	perTerm := make([]string, 0, len(terms))
+	args := make([]any, 0, len(terms))
+	for _, t := range terms {
+		ph := fmt.Sprintf("$%d", startArg+len(args))
+		likes := make([]string, 0, len(columns))
+		for _, col := range columns {
+			likes = append(likes, fmt.Sprintf("%s ILIKE %s", col, ph))
+		}
+		expr := strings.Join(likes, " OR ")
+		if len(columns) > 1 {
+			expr = "(" + expr + ")"
+		}
+		perTerm = append(perTerm, expr)
+		args = append(args, "%"+escapeLike(t)+"%")
+	}
+	return strings.Join(perTerm, " AND "), args
+}
+
+// maxSearchTerms bounds how many whitespace terms one query may AND together.
+const maxSearchTerms = 8
 
 // escapeLike neutralizes LIKE wildcards in user input.
 func escapeLike(s string) string {

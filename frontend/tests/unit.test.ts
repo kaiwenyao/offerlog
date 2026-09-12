@@ -288,6 +288,36 @@ describe('database search filter (topbar 搜索 → /views/query)', () => {
     expect(filters[0]).toEqual(view.filter_ast)
     expect(filters[1]).toMatchObject({ op: 'or' })
   })
+  it('multi-word queries AND one or-group per word (same semantics as the ⌘K endpoint)', () => {
+    // 「字节 后端」：两个词都要命中，而不是拿整句做子串匹配搜出 0 条。
+    const filters = buildFilters(undefined, '字节 后端', [])
+    expect(filters).toHaveLength(2)
+    expect(filters[0]).toEqual({
+      op: 'or',
+      conditions: [
+        { field: 'company_name', op: 'contains', value: '字节' },
+        { field: 'position', op: 'contains', value: '字节' },
+        { field: 'notes', op: 'contains', value: '字节' },
+      ],
+    })
+    expect(filters[1]).toEqual({
+      op: 'or',
+      conditions: [
+        { field: 'company_name', op: 'contains', value: '后端' },
+        { field: 'position', op: 'contains', value: '后端' },
+        { field: 'notes', op: 'contains', value: '后端' },
+      ],
+    })
+    // 全角空格也是分隔符
+    expect(buildFilters(undefined, '字节　后端', [])).toHaveLength(2)
+  })
+  it('caps pathological queries at SEARCH_TERM_LIMIT or-groups', () => {
+    const filters = buildFilters(undefined, 'a b c d e f g', [])
+    expect(filters).toHaveLength(5)
+    expect(filters.map((f) => (f as { conditions: Array<{ value: string }> }).conditions[0].value)).toEqual([
+      'a', 'b', 'c', 'd', 'e',
+    ])
+  })
   it('appends ad-hoc quick-filter chips after the search group', () => {
     const chip = { field: 'priority', op: 'eq', value: 'high' } as const
     expect(buildFilters(noView, '字节', [chip])).toEqual([
