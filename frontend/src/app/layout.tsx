@@ -97,6 +97,13 @@ export function AppLayout({ me }: { me: Me | null }) {
   // Close the mobile sheet whenever the route changes.
   useEffect(() => setMenuOpen(false), [loc.pathname])
 
+  // Keep the topbar input in sync with the URL: the database page's「清除筛选」
+  // and the search chip's × navigate to /database without ?q= — the input must
+  // empty itself too, or the stale text looks like the search is still applied.
+  useEffect(() => {
+    setSearch(new URLSearchParams(loc.search).get('q') ?? '')
+  }, [loc.search])
+
   // ⌘K / Ctrl+K opens the command palette (跨实体搜索 + 跳转命令).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

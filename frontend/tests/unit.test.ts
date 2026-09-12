@@ -29,6 +29,8 @@ import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
 import { mergeTimeline } from '../src/features/database/timeline'
 import {
+  BUILTIN,
+  buildFilters,
   DB_SORT_FIELDS,
   DEFAULT_DB_SORT,
   loadDbSort,
@@ -246,6 +248,51 @@ describe('filter tree helpers (used by saved views)', () => {
     }
     expect(statusForBuiltin(-2)).toEqual(['saved', 'preparing'])
     expect(statusForBuiltin(-4)).toEqual(['offer', 'accepted'])
+  })
+})
+
+describe('database search filter (topbar 搜索 → /views/query)', () => {
+  const noView = undefined
+  it('matches company / position / notes — one term in a single or-group', () => {
+    // 搜索“字节”必须能命中公司名，而不是只匹配岗位名（否则搜公司永远 0 条）。
+    // 三个字段同一个 or 组，顶层仍然是一个条件，与视图自身的筛选 AND 组合。
+    expect(buildFilters(noView, '字节', [])).toEqual([
+      {
+        op: 'or',
+        conditions: [
+          { field: 'company_name', op: 'contains', value: '字节' },
+          { field: 'position', op: 'contains', value: '字节' },
+          { field: 'notes', op: 'contains', value: '字节' },
+        ],
+      },
+    ])
+  })
+  it('trims whitespace and drops blank searches entirely', () => {
+    expect(buildFilters(noView, '   ', [])).toEqual([])
+    expect(buildFilters(noView, '  字节  ', [])).toEqual([
+      {
+        op: 'or',
+        conditions: [
+          { field: 'company_name', op: 'contains', value: '字节' },
+          { field: 'position', op: 'contains', value: '字节' },
+          { field: 'notes', op: 'contains', value: '字节' },
+        ],
+      },
+    ])
+  })
+  it('keeps the builtin view filter and appends the search group after it', () => {
+    const view = BUILTIN.find((v) => v.id === -3)!
+    const filters = buildFilters(view, '字节', [])
+    expect(filters).toHaveLength(2)
+    expect(filters[0]).toEqual(view.filter_ast)
+    expect(filters[1]).toMatchObject({ op: 'or' })
+  })
+  it('appends ad-hoc quick-filter chips after the search group', () => {
+    const chip = { field: 'priority', op: 'eq', value: 'high' } as const
+    expect(buildFilters(noView, '字节', [chip])).toEqual([
+      { op: 'or', conditions: [{ field: 'company_name', op: 'contains', value: '字节' }, { field: 'position', op: 'contains', value: '字节' }, { field: 'notes', op: 'contains', value: '字节' }] },
+      chip,
+    ])
   })
 })
 

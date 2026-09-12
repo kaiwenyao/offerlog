@@ -110,8 +110,11 @@ export function DatabasePage() {
   // Header search / saved views / the header's ＋ 记一个岗位 button all
   // navigate here with query params.
   useEffect(() => {
+    // `q === null`（URL 里没有 ?q=，比如「清除筛选」或移除搜索 chip 后回到
+    // /database）也要把搜索词清空——否则组件里还留着旧词，列表依旧被过滤，
+    // 看起来就像清除按钮没生效。
     const q = params.get('q')
-    if (q !== null) setSearch(q)
+    setSearch(q ?? '')
     const v = params.get('view')
     if (v !== null) setViewId(Number(v))
     const l = params.get('layout') as Layout | null
