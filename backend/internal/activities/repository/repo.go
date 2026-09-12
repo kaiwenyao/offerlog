@@ -440,6 +440,17 @@ func (r *Repo) CreateNote(ctx context.Context, q database.Querier, n *Note) erro
 		n.ApplicationID, n.OwnerID, n.ContentMD).Scan(&n.ID, &n.CreatedAt, &n.UpdatedAt)
 }
 
+func (r *Repo) GetNote(ctx context.Context, ownerID, id int64) (*Note, error) {
+	var n Note
+	err := r.db.Pool().QueryRow(ctx, `SELECT id, application_id, owner_id, content_md, created_at, updated_at
+		FROM notes WHERE id=$1 AND owner_id=$2`, id, ownerID).
+		Scan(&n.ID, &n.ApplicationID, &n.OwnerID, &n.ContentMD, &n.CreatedAt, &n.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
 func (r *Repo) UpdateNote(ctx context.Context, q database.Querier, n *Note) error {
 	tag, err := q.Exec(ctx, `UPDATE notes SET content_md=$1, updated_at=now() WHERE id=$2 AND owner_id=$3`,
 		n.ContentMD, n.ID, n.OwnerID)
