@@ -80,6 +80,17 @@ func IsTerminal(s string) bool { return TerminalStatuses[s] }
 // IsPreparing reports whether s belongs to the pre-submission phase.
 func IsPreparing(s string) bool { return PreparingStatuses[s] }
 
+// SubmissionTimeFor drops a 投递时间 that contradicts the stage: 待投递 / 准备材料
+// are by definition 「还没投」. Every path that stores applications.submitted_at
+// goes through it, because a stored time the timeline cannot justify is the same
+// as no time at all — the next replay clears it (see repository.InitialEvents).
+func SubmissionTimeFor(status string, at *time.Time) *time.Time {
+	if IsPreparing(status) {
+		return nil
+	}
+	return at
+}
+
 func ValidStatus(s string) bool {
 	_, ok := StatusCategories[s]
 	return ok

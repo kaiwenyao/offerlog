@@ -116,9 +116,8 @@ func normalizeCreate(in *CreateInput) error {
 	// pre-submission statuses carry no submitted_at, while statuses at or
 	// beyond 已投递 need submission evidence — default it to the saved time so
 	// the created event's business time is never a silent server clock.
-	if in.Status == domain.StatusSaved || in.Status == domain.StatusPreparing {
-		in.SubmittedAt = nil
-	} else if in.SubmittedAt == nil {
+	in.SubmittedAt = domain.SubmissionTimeFor(in.Status, in.SubmittedAt)
+	if !domain.IsPreparing(in.Status) && in.SubmittedAt == nil {
 		t := *in.SavedAt
 		in.SubmittedAt = &t
 	}
@@ -143,9 +142,6 @@ func (s *Service) insertAppliedEvent(ctx context.Context, tx pgx.Tx, appID, owne
 
 // Create creates an application together with its initial event.
 func (s *Service) Create(ctx context.Context, ownerID int64, in *CreateInput) (*repository.Row, error) {
-	// Captured BEFORE normalizeCreate defaults it to saved_at: only a time the
-	// user actually typed earns its own 投递 event.
-	userSubmitted := in.SubmittedAt
 	if err := normalizeCreate(in); err != nil {
 		return nil, err
 	}
@@ -183,35 +179,14 @@ func (s *Service) Create(ctx context.Context, ownerID int64, in *CreateInput) (*
 		row.ID = id
 		out = row
 
-		// Created straight into 已投递 with a real 投递时间: that submission is a
-		// separate business fact and gets its own row. Restricted to exactly
-		// applied so the event replay (which walks to_status by sequence) still
-		// lands on the status the record was created with.
-		emitApplied := userSubmitted != nil && row.Status == domain.StatusApplied
 		// 建档 means "I started tracking this", so its business time is the
-		// creation instant. It used to borrow submitted_at, which made the row
-		// claim the user created the record on the day they had applied.
-		//
-		// When the submission gets its own row, 建档 must describe the state
-		// BEFORE it: the replay takes submitted_at from the first event whose
-		// effective status is applied, so a 建档 row also claiming applied would
-		// hand it the creation clock and silently overwrite the backfilled 投递
-		// 时间 that feeds analytics and reminders.
-		createdTo := row.Status
-		if emitApplied {
-			createdTo = domain.StatusSaved
-		}
-		ev := &repository.Event{
-			ApplicationID: id, OwnerID: ownerID, EventType: "created",
-			FromStatus: nil, ToStatus: &createdTo, OccurredAt: *in.SavedAt,
-		}
-		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
-			return err
-		}
-		if emitApplied {
-			return s.insertAppliedEvent(ctx, tx, id, ownerID, domain.StatusSaved, *userSubmitted)
-		}
-		return nil
+		// creation instant — and a 投递时间 the user actually typed becomes its
+		// own timeline row (repository.InitialEvents owns that shape, shared
+		// with the CSV importer). Both rules exist for the same reason: the
+		// replay reads submitted_at off the first 已投递 落点, so a record whose
+		// submission has no 落点 loses the user's date on the next replay.
+		return s.repo.InsertInitialEvents(ctx, tx,
+			repository.InitialEvents(id, ownerID, row.Status, *in.SavedAt, row.SubmittedAt, ""))
 	})
 	return out, err
 }
