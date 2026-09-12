@@ -5,6 +5,7 @@ package analytics
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,20 +60,32 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 	if sk.CohortCount != 10 {
 		t.Fatalf("cohort = %d, want 10", sk.CohortCount)
 	}
-	// conservation: 全部机会 → (尚未投递 3 | 已投递 7)
-	var notSub, sub int64
+	// conservation: 全部机会 → (未投递 3 | 已投递 7)
+	var allToNS, allToSub, subSplit int64
 	for _, l := range sk.Links {
-		if l.Source == "not_submitted" {
-			notSub += l.Value
+		if l.Source == "all" && l.Target == "not_submitted" {
+			allToNS = l.Value
+		}
+		if l.Source == "all" && l.Target == "submitted" {
+			allToSub = l.Value
 		}
 		if l.Source == "submitted" {
-			sub += l.Value
+			subSplit += l.Value
 		}
 	}
-	if notSub != 3 || sub != 7 {
-		t.Fatalf("layer2 = %d not-submitted / %d submitted, want 3/7", notSub, sub)
+	if allToNS != 3 || allToSub != 7 {
+		t.Fatalf("layer1 = %d not-submitted / %d submitted, want 3/7", allToNS, allToSub)
 	}
-	// every final node sums to 10
+	// 未投递 is a leaf: the submitted branch must carry all layer-3 detail.
+	if subSplit != 7 {
+		t.Fatalf("submitted subdivision total = %d, want 7", subSplit)
+	}
+	for _, n := range sk.Nodes {
+		if strings.HasPrefix(n.Name, "ns_") {
+			t.Fatalf("not-submitted branch should not be subdivided, found node %q", n.Name)
+		}
+	}
+	// every leaf sums to the cohort: 未投递 3 + submitted statuses 7 = 10
 	var finals int64
 	for _, n := range sk.Nodes {
 		if n.Name == "all" || n.Name == "not_submitted" || n.Name == "submitted" {
@@ -84,8 +97,11 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 			}
 		}
 	}
-	if finals != 10 {
-		t.Fatalf("final nodes total %d, want 10", finals)
+	if finals != 7 {
+		t.Fatalf("final nodes total %d, want 7", finals)
+	}
+	if allToNS+finals != 10 {
+		t.Fatalf("leaves %d + 未投递 %d, want cohort 10", finals, allToNS)
 	}
 }
 
