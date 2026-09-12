@@ -3,6 +3,8 @@
 全栈求职管理应用：给每个岗位自由添加时间线事件（投递 / 初筛 / OA / 面试 / Offer / 任意自定义），时间线按发生时间自动排序、岗位状态随之推导——不是每个岗位都有 OA 或初筛，流程由你决定。另有类 Notion 数据库视图、跨岗位日历与站内提醒、桑基分析、私有附件存储。
 后端 Go + Gin + pgx/PostgreSQL，前端 React + TypeScript + Vite + ECharts。
 
+![今日待办首页](docs/images/today.png)
+
 ## 主要能力
 
 - **今日待办**：服务端全量统计（非分页推算）、本周投递/回复/面试（半开周窗口、用户时区）、统一行动清单（完成 / 撤销 / 延期）。
@@ -10,6 +12,15 @@
 - **提醒**：服务端每日生成站内通知（逾期待办 / 面试前一天 / 投递满 N 天未回复），偏好持久化、幂等不重复；顶部铃铛与通知页支持已读 / 忽略 / 跳转。
 - **统计分析**：0% 与“暂无样本”语义分离，被拒 / 主动撤回 / 岗位关闭分开展示，分子分母可核对。
 - 迭代计划与完成状态见 [docs/OfferLog-后续迭代与完善计划.md](./docs/OfferLog-后续迭代与完善计划.md)。
+
+## 📸 Screenshots
+
+|  |  |
+| --- | --- |
+| **登录 / 注册** —— 自建实例、数据自持<br><br>![登录页](docs/images/login.png) | **求职数据库 · 表格** —— 全量岗位一览，列宽可拖拽<br><br>![数据库表格视图](docs/images/database-table.png) |
+| **求职数据库 · 看板** —— 按阶段分列的看板视图<br><br>![数据库看板视图](docs/images/database-board.png) | **岗位详情 · 时间线** —— 事件驱动，状态由最后一个事件自动推导<br><br>![岗位详情时间线](docs/images/detail-timeline.png) |
+| **面试日历** —— 跨岗位周视图，汇总面试 / 待办 / 截止<br><br>![面试日历周视图](docs/images/calendar-week.png) | **统计分析** —— 概览卡 + 桑基图，分子分母可核对<br><br>![统计分析与桑基图](docs/images/analytics.png) |
+| **通知中心** —— 服务端每日生成的站内提醒<br><br>![通知中心](docs/images/notifications.png) | **文件库** —— 简历 / JD / Offer 等私有附件存储<br><br>![文件库](docs/images/files.png) |
 
 ## 快速开始
 
