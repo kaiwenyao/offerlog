@@ -319,7 +319,7 @@ func (s *Service) CorrectCurrent(ctx context.Context, ownerID, appID int64, in *
 		if err := s.repo.InsertEvent(ctx, tx, ev); err != nil {
 			return err
 		}
-		if err := s.repo.ResyncStatusFromEvents(ctx, tx, appID, ownerID); err != nil {
+		if err := s.repo.RecomputeStatus(ctx, tx, appID, ownerID); err != nil {
 			return err
 		}
 		// Read the recomputed snapshot through the SAME transaction. Going

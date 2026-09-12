@@ -6,8 +6,9 @@
 # 与 deploy/compose.yaml（生产式：Caddy HTTPS + 端口 80/443）的差异：
 #   - 不起 Caddy：api 直接在 http://localhost:8080 服务 SPA + /api/v1
 #   - postgres 暴露在 127.0.0.1:55432，方便本机 psql/DBeaker 连接排查
-#   - 默认开放注册（REGISTRATION_OPEN=true）：首次使用直接在登录页注册账号，
-#     「没有默认初始用户」；要闭门用就设 REGISTRATION_OPEN=false 并用
+#   - 默认开放注册（REGISTRATION_OPEN=true）：登录页可自助开号；make up 另外会
+#     建一个本地测试账号并把账号密码打印在最后（见 .env.example 的 SEED_USER_*，
+#     SEED_USER=0 关闭）；要闭门用就设 REGISTRATION_OPEN=false 并用
 #     api-admin create-user 建号（见 docs/runbook.md）。
 # 数据落在命名卷 pgdata_local / objects_local；`make down` 停止时连卷一起清掉。
 

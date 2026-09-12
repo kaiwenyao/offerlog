@@ -1,16 +1,13 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { api, ApiError, fmtDate, fmtDay, toDayString } from '../../lib/api'
-import { effectiveZone } from '../../lib/tz'
-import type { AppEvent, AppRow, AssessmentRound, FileItem, Interview, Note } from '../../lib/types'
-import { ENDED } from '../../lib/status'
-import { Button, Card, Eyebrow, IconButton, Tabs } from '../../ds'
+import { api, ApiError, fmtDate, fmtDay } from '../../lib/api'
+import type { AppEvent, AppRow, AssessmentRound, FileItem, Interview, Milestone, Note } from '../../lib/types'
+import { Button, Card, IconButton, Tabs } from '../../ds'
 import { CompanyMark, Icon } from '../../components/Icon'
-import { StageTrail } from '../../components/StageTrail'
 import { ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
-import { FilesTab, OverviewTab, TimelineTab } from './tabs'
-import { TransitionModal } from './transition'
+import { FilesTab, OverviewTab } from './tabs'
+import { TimelineTab } from './timeline'
 
 type DetailTab = 'overview' | 'files' | 'timeline'
 
@@ -28,13 +25,17 @@ export function AppDetailContent({
   embedded?: boolean
 }) {
   const qc = useQueryClient()
-  const [tab, setTab] = useState<DetailTab>('overview')
-  const [showTransition, setShowTransition] = useState(false)
+  // 时间线是记录进度的主面板（迁移 00006），所以抽屉默认落在这一页。
+  const [tab, setTab] = useState<DetailTab>('timeline')
 
   const appQ = useQuery({ queryKey: ['app', appId], queryFn: () => api.get<AppRow>(`/api/v1/applications/${appId}`) })
   const eventsQ = useQuery({
     queryKey: ['events', appId],
     queryFn: () => api.get<{ items: AppEvent[] }>(`/api/v1/applications/${appId}/events`),
+  })
+  const milestonesQ = useQuery({
+    queryKey: ['milestones', appId],
+    queryFn: () => api.get<{ items: Milestone[] }>(`/api/v1/applications/${appId}/milestones`),
   })
   const filesQ = useQuery({
     queryKey: ['files', appId],
@@ -55,43 +56,11 @@ export function AppDetailContent({
 
   const app = appQ.data
   const events = eventsQ.data?.items ?? []
+  const milestones = milestonesQ.data?.items ?? []
   const files = filesQ.data?.items ?? []
   const interviews = interviewsQ.data?.items ?? []
   const assessments = assessmentsQ.data?.items ?? []
   const notes = notesQ.data?.items ?? []
-
-  // Stage path with the SAME correction overlay as stageDates below: a stage
-  // later corrected away must not light up on the stage trail (PR #23 review
-  // P1 #6 — the list page reads the server's stage_history, so the drawer must
-  // replay corrections with the same semantics to stay consistent).
-  const path = useMemo(() => {
-    const corrected = new Map<number, string>()
-    for (const e of events) {
-      if (e.event_type === 'correction' && e.corrects_event_id != null && e.to_status) corrected.set(e.corrects_event_id, e.to_status)
-    }
-    return events
-      .filter((e) => (e.event_type === 'created' || e.event_type === 'status_change') && e.to_status)
-      .map((e) => corrected.get(e.id) ?? (e.to_status as string))
-      .filter((s): s is string => s !== '')
-  }, [events])
-
-  // Earliest user-zone calendar day per reached status, replaying the same
-  // correction semantics as the server's include=stage_history (the drawer has
-  // the full event list already, so no extra round-trip).
-  const stageDates = useMemo(() => {
-    const corrected = new Map<number, string>()
-    for (const e of events) {
-      if (e.event_type === 'correction' && e.corrects_event_id != null && e.to_status) corrected.set(e.corrects_event_id, e.to_status)
-    }
-    const first: Record<string, string> = {}
-    for (const e of events) {
-      if (e.event_type === 'correction' || !e.to_status) continue
-      const eff = corrected.get(e.id) ?? e.to_status
-      const day = toDayString(e.occurred_at, effectiveZone() ?? undefined) ?? ''
-      if (!first[eff] || day < first[eff]) first[eff] = day
-    }
-    return first
-  }, [events])
 
   if (!app) {
     if (appQ.isError) {
@@ -109,14 +78,6 @@ export function AppDetailContent({
       )
     }
     return <PageSpinner />
-  }
-
-  // 用户填写的投递时间是「已投递」节点的权威到达时间：回填场景下事件本身可能
-  // 带的是录入当天的日期（旧数据）。与后端 include=stage_history 的覆盖规则一致。
-  const trailDates: Record<string, string> = { ...stageDates }
-  if (app.submitted_at) {
-    const day = toDayString(app.submitted_at, effectiveZone() ?? undefined)
-    if (day) trailDates.applied = day
   }
 
   const tabItems = [
@@ -176,11 +137,6 @@ export function AppDetailContent({
 
   const body = (
     <>
-      <div>
-        <Eyebrow style={{ marginBottom: 10 }}>阶段轨迹</Eyebrow>
-        <StageTrail current={app.status} path={path} dates={trailDates} />
-      </div>
-
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <Tabs items={tabItems} value={tab} onChange={(v) => setTab(v as DetailTab)} size="sm" ariaLabel="详情视图" />
         {app.job_url && (
@@ -212,6 +168,7 @@ export function AppDetailContent({
           refetchAll={() => {
             qc.invalidateQueries({ queryKey: ['app', appId] })
             qc.invalidateQueries({ queryKey: ['events', appId] })
+            qc.invalidateQueries({ queryKey: ['milestones', appId] })
             qc.invalidateQueries({ queryKey: ['interviews', appId] })
             qc.invalidateQueries({ queryKey: ['assessments', appId] })
           }}
@@ -219,41 +176,28 @@ export function AppDetailContent({
       )}
       {tab === 'files' && <FilesTab appId={app.id} files={files} interviews={interviews} />}
       {tab === 'timeline' && (
-        <TimelineTab appId={app.id} events={events} status={app.status} substatus={app.substatus} version={app.version} />
+        <TimelineTab
+          appId={app.id}
+          events={events}
+          milestones={milestones}
+          status={app.status}
+          substatus={app.substatus}
+        />
       )}
     </>
   )
 
-  // Ended records are NOT frozen: the backend allows 终态重开 (and 毁约) as long
-  // as a reason is given, so the button stays live and just changes its name.
-  const ended = ENDED.has(app.status)
   const foot = (
     <>
-      <Button
-        variant={ended ? 'secondary' : 'primary'}
-        size="sm"
-        onClick={() => setShowTransition(true)}
-      >
-        {ended ? '重开 / 更正' : '更新进度'}
-      </Button>
+      <span style={{ font: 'var(--type-caption)', color: 'var(--text-muted)' }}>
+        进度记在「时间线」里：添加事件即可，状态会自动跟上。
+      </span>
       <span style={{ marginLeft: 'auto' }}>
         <Num color="var(--text-muted)">版本 {app.version}</Num>
       </span>
     </>
   )
 
-  const transition = showTransition && (
-    <TransitionModal
-      appId={app.id}
-      currentStatus={app.status}
-      currentSubstatus={app.substatus}
-      version={app.version}
-      submittedAt={app.submitted_at ?? null}
-      interviews={interviews}
-      assessments={assessments}
-      onClose={() => setShowTransition(false)}
-    />
-  )
 
   if (embedded) {
     return (
@@ -267,7 +211,6 @@ export function AppDetailContent({
         <div className="drawer-foot" style={{ paddingLeft: 0, paddingRight: 0 }}>
           {foot}
         </div>
-        {transition}
       </div>
     )
   }
@@ -279,7 +222,6 @@ export function AppDetailContent({
         <div className="drawer-head">{head}</div>
         <div className="drawer-body">{body}</div>
         <div className="drawer-foot">{foot}</div>
-        {transition}
       </aside>
     </>
   )

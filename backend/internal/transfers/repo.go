@@ -16,12 +16,18 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"offerlog/backend/internal/applications/domain"
+	apprepo "offerlog/backend/internal/applications/repository"
 	"offerlog/backend/internal/platform/database"
 )
 
-type Repo struct{ db *database.DB }
+// Repo owns the CSV paths. apps is the applications repository: an import is a
+// 建档 like any other, so it writes the same starting timeline instead of its own.
+type Repo struct {
+	db   *database.DB
+	apps *apprepo.Repo
+}
 
-func New(db *database.DB) *Repo { return &Repo{db: db} }
+func New(db *database.DB) *Repo { return &Repo{db: db, apps: apprepo.New(db)} }
 
 // FieldMap maps CSV column index → target field key.
 type FieldMap map[string]string
@@ -286,6 +292,9 @@ func (r *Repo) insertApp(ctx context.Context, ownerID int64, row map[string]stri
 	if s := row["submitted_at"]; s != "" {
 		sub = parseDate(s)
 	}
+	// 「待投递 + 有投递时间」是自相矛盾的一行：以用户选的阶段为准，否则列里会留下
+	// 一个时间线永远解释不了的投递时间，下一次回放就把它清掉（同 normalizeCreate）。
+	sub = domain.SubmissionTimeFor(status, sub)
 	var deadline *time.Time
 	if d := row["deadline"]; d != "" {
 		deadline = parseDate(d)
@@ -311,9 +320,11 @@ func (r *Repo) insertApp(ctx context.Context, ownerID int64, row map[string]stri
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO application_events(application_id, owner_id, sequence, event_type, from_status, to_status, note, occurred_at)
-		VALUES($1,$2,1,'created',NULL,$3,'导入创建',now())`, appID, ownerID, status)
-	if err != nil {
+	// 导入必须留下和手工建档同一套落点（repository.InitialEvents）：CSV 里的投递
+	// 时间只写进列、时间线上没有对应的「已投递」，用户一编辑时间线，回放就把真实
+	// 投递时间换成导入时刻（后段阶段的记录则直接清空）。
+	if err := r.apps.InsertInitialEvents(ctx, tx,
+		apprepo.InitialEvents(appID, ownerID, status, now, sub, "导入创建")); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

@@ -642,37 +642,8 @@ button.panel-row:hover {
 }
 
 /* ---- stage rail & timeline ----
-   The pipeline reads as a run of process blocks: filled up to the current
-   stage, hairline-outlined beyond it. ---- */
-
-.stage-trail {
-  display: flex;
-  gap: 2px;
-  align-items: stretch;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
-
-.stage-node {
-  flex: 1;
-  min-width: 46px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.stage-node > .bar {
-  display: block;
-  height: 6px;
-}
-
-.stage-node > .label {
-  font-family: var(--font-display);
-  font-weight: var(--weight-semibold);
-  font-size: 12px;
-  letter-spacing: .04em;
-  white-space: nowrap;
-}
+   工序进度条读作一串工序块：走到当前阶段为止填实，之后是发丝描边。
+   （抽屉里那条带标签的完整工序线已由 .flow-guide 参考流程图取代。） ---- */
 
 /* Compact rail used inside table rows and board cards. */
 .rail {
@@ -967,4 +938,58 @@ button.panel-row:hover {
 .cmd-row:focus-visible {
   background: var(--accent-soft, color-mix(in srgb, var(--accent) 12%, transparent));
   outline: none;
+}
+
+/* 参考流程图（FlowGuide）：抽屉里「阶段轨迹」工序线的继任者。
+   横向流动、窄屏自动换行——它是一条建议路线，不是一条必须对齐的流水线。 */
+.flow-guide {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 10px 12px;
+}
+
+.flow-guide-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--text);
+}
+
+.flow-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.flow-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border-width: 1px;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.08s ease;
+}
+
+.flow-node:hover {
+  transform: translateY(-1px);
+}
+
+.flow-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

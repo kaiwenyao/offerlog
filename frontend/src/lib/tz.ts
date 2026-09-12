@@ -75,3 +75,19 @@ export function toLocalDateTimeInput(iso?: string | null, now: Date = new Date()
   const hour = get('hour') === '24' ? '00' : get('hour')
   return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}`
 }
+
+/**
+ * 「实际投递时间」留空时的兜底：现在。
+ *
+ * But never later than the change's own 发生时间. A submission necessarily
+ * happened BEFORE the stage change being recorded, and the timeline is rendered
+ * in `occurred_at` order (application_events is read with `ORDER BY occurred_at
+ * ASC, sequence ASC`) — so a blank field plus a backdated 发生时间 would
+ * otherwise draw 「昨天 OA → 今天 已投递」 and silently inflate 等待天数.
+ */
+export function defaultSubmittedIso(occurredIso: string | null, now: Date = new Date()): string {
+  if (!occurredIso) return now.toISOString()
+  const occ = new Date(occurredIso)
+  if (isNaN(occ.getTime())) return now.toISOString()
+  return new Date(Math.min(occ.getTime(), now.getTime())).toISOString()
+}

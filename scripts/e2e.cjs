@@ -1,19 +1,34 @@
-// Full E2E acceptance: 新增岗位 → 准备材料 → 上传简历 → 投递 → 沟通 → 面试 →
-// Offer → 接受/撤回 (§2.3 主流程验收) with reload persistence and consistency.
+// Full E2E acceptance for the event-driven timeline (迁移 00006):
+// 新增岗位 → 上传简历 → 添加事件（投递 / 面试 / Offer / 接受）→ 重排 → 移除,
+// with reload persistence, analytics consistency and the reference flow chart.
 //
-// ⚠️ Always click the 更新进度 BUTTON (button:has-text), never
-// `text=更新进度`: Playwright's text= engine matches substrings, so any
-// helper copy that merely mentions the label (e.g. the OA 空态 hint 「收到 OA
-// 后点「更新进度 → 准备 OA」…」) sits earlier in the drawer DOM and steals the
-// click, leaving the dialog closed.
+// 用户不再在一条固定流水线上「更新进度」：他们往时间线上添加事件，岗位状态由
+// 「时间线上最后一个事件」推导。所以每个断言的形状都是：加/改/删一个事件 →
+// 看抽屉顶部的状态芯片有没有跟上。
+//
+// ⚠️ Always click the 添加事件 BUTTON (button:has-text), never `text=添加事件`:
+// Playwright's text= engine matches substrings, and the drawer footer hint
+// (「进度记在「时间线」里：添加事件即可，状态会自动跟上。」) sits in the same
+// DOM — a bare text= selector steals the click and leaves the dialog closed.
 const { chromium } = require('playwright');
-// The target-status field is a custom blueprint listbox (ds/Listbox), not a
-// native <select>: open the trigger, then click the option by its data-value.
-// The panel is portaled to document.body (so the dialog's overflow can't clip
-// it), hence the option selector is NOT scoped to `.modal`.
-async function pickTarget(page, value) {
-  await page.click('.modal button.status-target-trigger');
-  await page.click(`[role=option][data-value="${value}"]`);
+
+/**
+ * Add one timeline event through the drawer. The event-type field is a native
+ * <select> (grouped by optgroup), so selectOption works directly — unlike the
+ * portaled listbox the old 更新进度 dialog used.
+ */
+async function addEvent(page, kind, opts = {}) {
+  await page.click('.drawer button:has-text("＋ 添加事件")');
+  await page.waitForSelector('.modal >> text=事件类型');
+  await page.selectOption('.modal select', kind);
+  // ds/Input renders a bare <input> with no explicit type, so select by
+  // position: 名称 is the first input, 发生时间 the datetime-local one.
+  if (opts.label) await page.fill('.modal input >> nth=0', opts.label);
+  if (opts.at) await page.fill('.modal input[type=datetime-local]', opts.at);
+  if (opts.note) await page.fill('.modal textarea', opts.note);
+  await page.click('.modal button:has-text("保存")');
+  await page.waitForTimeout(1300);
+  return (await page.locator('.drawer .status-chip').textContent()).replace(/\s+/g, ' ');
 }
 
 (async () => {
@@ -64,20 +79,16 @@ async function pickTarget(page, value) {
   await page.waitForSelector(`text=${company}`, { timeout: 7000 });
   console.log('1 create OK');
 
-  // 2. open detail + update progress to applied (提供投递时间)
+  // 2. 抽屉默认落在时间线；参考流程图可见，「投递」事件把状态带到已投递。
   await page.locator(`tbody tr:has-text("${company}")`).first().click();
-  await page.waitForSelector('.drawer button:has-text("更新进度")');
-  await page.click('.drawer button:has-text("更新进度")');
-  await page.waitForSelector('text=目标状态');
-  await pickTarget(page, 'applied');
-  await page.fill('.modal input[type=datetime-local] >> nth=1', '2026-09-01T10:00'); // submitted_at (2nd dt field)
-  await page.click('.modal button:has-text("确认更新")');
-  await page.waitForTimeout(1200);
-  let chip = await page.locator('.drawer .status-chip').textContent();
-  console.log('2 applied chip:', chip.replace(/\s+/g,' '));
+  await page.waitForSelector('.drawer button:has-text("＋ 添加事件")');
+  const guideTxt = (await page.locator('.drawer').textContent()) || '';
+  console.log('2a reference flow chart is visible:', guideTxt.includes('参考流程'));
+  console.log('2a flow chart says steps are skippable:', guideTxt.includes('每一步都可跳过'));
+  let chip = await addEvent(page, 'apply', { at: '2026-09-01T10:00' });
+  console.log('2b applied chip:', chip);
 
   // 3. upload resume through drawer Files tab
-  await page.click('.drawer >> text=时间线').catch(()=>{});
   await page.click('.drawer >> text=附件 (0)');
   await page.waitForTimeout(400);
   const setFile = await page.locator('.drawer input[type=file]');
@@ -86,31 +97,23 @@ async function pickTarget(page, value) {
   await page.waitForSelector('.drawer >> text=resume-e2e.txt', { timeout: 6000 });
   console.log('3 upload OK');
 
-  // 4. interview round via overview
+  // 4. interview round via overview (排期 / 提醒 / 日历仍由轮次面板承载)
   await page.click('.drawer >> text=概览');
   await page.click('.drawer >> text=＋ 安排');
   await page.selectOption('.modal select >> nth=0', '一面');
   await page.click('.modal button:has-text("保存")');
   await page.waitForTimeout(1200);
-  console.log('4 interview OK');
+  console.log('4 interview round OK');
 
-  // 5. transition → interviewing → offer → accepted through UI
-  async function transition(to, extra) {
-    await page.click('.drawer button:has-text("更新进度")');
-    await page.waitForSelector('.modal >> text=目标状态');
-    await pickTarget(page, to);
-    if (extra?.reason) await page.fill('.modal textarea[placeholder="必填"]', extra.reason);
-    if (extra?.dt) await page.fill('.modal input[type=datetime-local] >> nth=0', extra.dt);
-    await page.click('.modal button:has-text("确认更新")');
-    await page.waitForTimeout(1400);
-    return (await page.locator('.drawer .status-chip').textContent()).replace(/\s+/g,' ');
-  }
-  let st = await transition('interviewing');
-  console.log('5a interviewing chip:', st);
-  st = await transition('offer');
-  console.log('5b offer chip:', st);
-  st = await transition('accepted');
-  console.log('5c accepted chip:', st);
+  // 5. 面试 → Offer → 接受，全部靠添加事件推导出来
+  await page.click('.drawer >> text=时间线');
+  await page.waitForTimeout(400);
+  chip = await addEvent(page, 'interview', { at: '2026-09-10T14:00' });
+  console.log('5a interviewing chip:', chip);
+  chip = await addEvent(page, 'offer', { at: '2026-09-18T09:00' });
+  console.log('5b offer chip:', chip);
+  chip = await addEvent(page, 'accept', { at: '2026-09-20T09:00' });
+  console.log('5c accepted chip:', chip);
 
   // 6. reload persistence + cross-view consistency
   await page.reload({ waitUntil: 'networkidle' });
@@ -120,7 +123,7 @@ async function pickTarget(page, value) {
   const rowTxt = (await page.locator(`tbody tr:has-text("${company}")`).textContent()) || '';
   console.log('6 reload: row contains 已接受:', rowTxt.includes('已接受'));
 
-  // 7. analytics consistency
+  // 7. analytics consistency: 事件驱动的阶段也要进桑基图（视图 application_stage_points）
   await page.locator('.sidebar a:has-text("统计分析")').click();
   await page.waitForSelector('text=桑基图', { timeout: 8000 });
   await page.waitForTimeout(1800);
@@ -133,8 +136,7 @@ async function pickTarget(page, value) {
   const acceptedLink = sk.links.find(l => l.target === 's_accepted');
   console.log('7 sankey accepted edge value >=1:', acceptedLink ? acceptedLink.value >= 1 : false);
 
-  // 8. skip-ahead: a brand-new record goes 待投递 -> 面试中 in one step, with
-  //    the interview round scheduled inline from the same dialog.
+  // 8. 跳过中间步骤：一个全新的岗位直接记一个「面试」，没有 OA、没有初筛。
   const skipCo = 'E2E-Skip-' + Date.now();
   await page.locator('a:has-text("求职数据库")').first().click();
   await page.waitForSelector('text=求职数据库');
@@ -144,72 +146,82 @@ async function pickTarget(page, value) {
   await page.click('button:has-text("创建")');
   await page.waitForSelector(`text=${skipCo}`, { timeout: 7000 });
   await page.locator(`tbody tr:has-text("${skipCo}")`).first().click();
-  await page.waitForSelector('.drawer button:has-text("更新进度")');
-  await page.click('.drawer button:has-text("更新进度")');
-  await page.waitForSelector('.modal >> text=目标状态');
-  await pickTarget(page, 'interviewing');           // only reachable after the skip-ahead change
-  await page.fill('.modal input[type=datetime-local] >> nth=1', '2026-09-02T09:00'); // submitted_at
-  await page.fill('.modal input[type=datetime-local] >> nth=2', '2026-09-20T14:00'); // inline round
-  await page.click('.modal button:has-text("确认更新")');
-  await page.waitForTimeout(1600);
-  const skipChip = (await page.locator('.drawer .status-chip').textContent()).replace(/\s+/g,' ');
-  console.log('8a skip-ahead chip:', skipChip);
-  await page.click('.drawer >> text=概览');
-  await page.waitForTimeout(600);
-  const overviewTxt = (await page.locator('.drawer').textContent()) || '';
-  console.log('8b inline round created (一面):', overviewTxt.includes('一面'));
+  await page.waitForSelector('.drawer button:has-text("＋ 添加事件")');
+  const skipChip = await addEvent(page, 'interview', { label: '一面', at: '2026-09-20T14:00' });
+  console.log('8a skip-ahead chip (no OA, no 初筛):', skipChip);
 
-  // 8c. The timeline must show the BUSINESS times the user typed, not the DB
-  //     write clock: 投递 was entered as 2026-09-02, so a 已投递 row has to carry
-  //     that day even though the record was created and advanced just now.
-  await page.click('.drawer >> text=时间线');
-  await page.waitForTimeout(600);
+  // 8b. 时间线显示用户填的业务时间，不是写库时刻。
   const tlTxt = (await page.locator('.drawer').textContent()) || '';
-  console.log('8c timeline has 建档 row:', tlTxt.includes('建档'));
-  console.log('8c timeline shows the entered 投递 day (09/02):',
-    /待投递\s*→\s*已投递/.test(tlTxt) && tlTxt.includes('09/02'));
+  console.log('8b timeline has 建档 row:', tlTxt.includes('建档'));
+  console.log('8b timeline shows the entered day (09/20):', tlTxt.includes('09/20'));
+  console.log('8b node says what it did to the status:', /→\s*面试/.test(tlTxt));
 
-  // 9. ended records stay editable: the button becomes 重开 / 更正.
-  //    Close the open drawer first — its backdrop swallows row clicks.
+  // 8c. 补录一个更早的「初筛」：时间线重排，但当前状态**不变**（它排在面试之前）。
+  const backfillChip = await addEvent(page, 'screen', { at: '2026-09-05T10:00' });
+  console.log('8c backfilling an earlier event keeps the status at 面试:', backfillChip);
+  const orderTxt = (await page.locator('.drawer').textContent()) || '';
+  console.log('8c timeline re-sorted (09/05 before 09/20):',
+    orderTxt.indexOf('09/05') < orderTxt.indexOf('09/20'));
+
+  // 9. 移除最后一个事件 → 状态退回上一格（不会停在一个已不存在的阶段里）。
+  await page.locator('.drawer button:has-text("移除")').last().click();
+  await page.waitForTimeout(1500);
+  const afterRemove = (await page.locator('.drawer .status-chip').textContent()).replace(/\s+/g, ' ');
+  console.log('9 removing the last event rolls the status back:', afterRemove);
+
+  // 10. 终态岗位不被冻结：还能继续加事件（重开就是再加一个更晚的非终态事件）。
   await page.click('.drawer button[aria-label="关闭"]');
   await page.waitForTimeout(400);
   await page.locator(`tbody tr:has-text("${company}")`).first().click();
   await page.waitForTimeout(600);
-  const reopenVisible = await page.locator('.drawer button:has-text("重开 / 更正")').count();
-  console.log('9 ended record offers reopen:', reopenVisible > 0);
+  const endedCanAdd = await page.locator('.drawer button:has-text("＋ 添加事件")').count();
+  console.log('10a ended record still accepts events:', endedCanAdd > 0);
+  const reopenChip = await addEvent(page, 'interview', { label: '加轮面试', at: '2026-09-25T10:00' });
+  console.log('10b reopening an ended record by adding a later event:', reopenChip);
 
-  // 10. 回退 + OA 轮次（方案 §3.2/§4.1 验收：面试中 → 笔试作业 是真实回退；
-  //     在同一表单里选「准备 OA」并顺手记一轮，四种时间各自保存）。
-  //     The drawer is still showing the ended record — close it first.
+  // 11. 参考流程图的节点是最快的记录入口：点它就预填好事件类型。
   await page.click('.drawer button[aria-label="关闭"]');
   await page.waitForTimeout(400);
   await page.locator(`tbody tr:has-text("${skipCo}")`).first().click();
   await page.waitForTimeout(600);
-  await page.click('.drawer button:has-text("更新进度")');
-  await page.waitForSelector('.modal >> text=目标状态');
-  await pickTarget(page, 'assessment');           // rollback: interviewing → assessment
-  // substatus chips (role=button spans) — text= would also match the hint copy.
-  await page.click('.modal [role=button]:has-text("准备 OA")');
-  await page.fill('.modal input[type=datetime-local] >> nth=3', '2026-09-20T23:59'); // 截止时间
-  await page.click('.modal button:has-text("确认更新")');
-  await page.waitForTimeout(1500);
-  const oaChip = (await page.locator('.drawer .status-chip').textContent()).replace(/\s+/g, ' ');
-  console.log('10a rollback to OA chip:', oaChip, '(准备 OA)');
-  // 变更类型（方案 §4.2）：选了目标之后，同一表单要能区分「流程实际退回」与
-  // 「之前选错了」。重新打开弹窗并选当前阶段即可看到，随后取消不落库。
-  await page.click('.drawer button:has-text("更新进度")');
-  await page.waitForSelector('.modal >> text=目标状态');
-  await pickTarget(page, 'assessment');           // same stage — the mode card shows
-  await page.waitForSelector('.modal >> text=这次变更属于');
+  await page.click('.drawer .flow-node[data-kind="oa"]');
+  await page.waitForSelector('.modal >> text=事件类型');
+  const prefilled = await page.locator('.modal select').inputValue();
+  console.log('11a clicking a flow-chart node pre-fills its kind:', prefilled === 'oa');
   const modalTxt = (await page.locator('.modal').innerText()) || '';
-  console.log('10b change-mode offers 流程实际退回:', modalTxt.includes('流程实际退回'));
-  console.log('10b change-mode offers 之前选错了:', modalTxt.includes('之前选错了'));
-  await page.click('.modal button:has-text("取消")');
-  // The inline round (OA) with its due time is on the 概览 tab.
+  console.log('11a form explains the stage effect:', modalTxt.includes('岗位状态会更新为'));
+  // 11b 旧的固定流程界面已经彻底不在了。
+  console.log('11b no 目标状态 picker anywhere:', !modalTxt.includes('目标状态'));
+  console.log('11b no 子状态 picker anywhere:', !modalTxt.includes('具体进度'));
+  await page.fill('.modal input[type=datetime-local]', '2026-09-08T09:00');
+  await page.click('.modal button:has-text("保存")');
+  await page.waitForTimeout(1400);
+
+  // 12. OA / 作业轮次面板仍在（承载截止提醒与日历），与事件并存。
   await page.click('.drawer >> text=概览');
   await page.waitForTimeout(600);
   const oaOverview = (await page.locator('.drawer').textContent()) || '';
-  console.log('10c OA round listed with due:', /OA\s*\/\s*作业\s*\(1\)/.test(oaOverview) && oaOverview.includes('截止'));
+  console.log('12a OA panel is still the round entry point:',
+    /OA\s*\/\s*作业\s*\(0\)/.test(oaOverview) && oaOverview.includes('新增一轮'));
+  await page.click('.drawer button:has-text("新增一轮")');
+  await page.waitForSelector('.modal >> text=新增一轮测评');
+  await page.fill('.modal input[type=datetime-local] >> nth=2', '2026-09-20T23:59'); // 截止时间
+  await page.click('.modal button:has-text("保存")');
+  await page.waitForTimeout(1200);
+  const oaAfter = (await page.locator('.drawer').textContent()) || '';
+  console.log('12b OA round listed with due:',
+    /OA\s*\/\s*作业\s*\(1\)/.test(oaAfter) && oaAfter.includes('截止'));
+
+  // 13. 「投递」事件的时间就是投递时间（漏斗与等待天数读这个快照字段）。
+  await page.click('.drawer button[aria-label="关闭"]');
+  await page.waitForTimeout(300);
+  await page.locator(`tbody tr:has-text("${company}")`).first().click();
+  await page.waitForTimeout(600);
+  await page.click('.drawer >> text=概览');
+  await page.waitForTimeout(500);
+  const submittedTxt = (await page.locator('.drawer').textContent()) || '';
+  console.log('13 投递时间 shows the 投递 event day (2026/09/01):',
+    /投递时间\s*2026\/09\/01/.test(submittedTxt));
 
   console.log('E2E JS errors:', errors.length ? errors : 'none');
   await browser.close();

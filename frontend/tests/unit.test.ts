@@ -4,16 +4,15 @@
 import { describe, expect, it } from 'vitest'
 import { comboLabel, statusMeta, STATUSES, substatusOptions, validSubstatus } from '../src/lib/status'
 import {
-  allowedTargets,
-  canTransition,
-  changeTypeFor,
-  needsReason,
-  RECRUITING_KEYS,
-  SKIP_SUBMISSION_TARGETS,
-  suggestedTargets,
-  targetGroups,
-  TRANSITIONS,
-} from '../src/lib/transitions'
+  FALLBACK_MILESTONE_KINDS,
+  isDefaultLabel,
+  MILESTONE_KIND_GROUPS,
+  milestoneDefaultLabel,
+  milestoneDotColor,
+  milestoneIcon,
+  milestoneKindsByGroup,
+  statusEffectForKind,
+} from '../src/lib/milestones'
 import {
   fmtBytes,
   fmtDate,
@@ -25,9 +24,11 @@ import {
   toDayString,
   fmtDay,
 } from '../src/lib/api'
+import { defaultSubmittedIso } from '../src/lib/tz'
 import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
-import type { CalendarEvent } from '../src/lib/types'
+import { mergeTimeline } from '../src/features/database/timeline'
+import type { AppEvent, CalendarEvent, Milestone } from '../src/lib/types'
 
 describe('status dictionary', () => {
   it('covers all 11 standard statuses with Chinese labels + icons', () => {
@@ -79,98 +80,77 @@ const BACKEND_EDGES: ReadonlyArray<readonly [string, string]> = ALL_STATUS_KEYS.
   ),
 )
 
-describe('transition rules (mirror of backend allowedTarget, 方案 §4.1)', () => {
-  it('offers no edge the backend would reject', () => {
-    const backend = new Set(BACKEND_EDGES.map(([f, t]) => `${f}->${t}`))
-    const extra: string[] = []
-    for (const [from, tos] of Object.entries(TRANSITIONS)) {
-      for (const to of tos) if (!backend.has(`${from}->${to}`)) extra.push(`${from}->${to}`)
+describe('事件类型表（mirror of backend domain/milestone.go，迁移 00006）', () => {
+  // 这张表是整个改版的支点：用户只选事件类型，岗位阶段由 status_effect 推导。
+  // 前后端各存一份（前端的是离线兜底），所以必须逐项对齐。
+  const EXPECTED: Array<[string, string, string]> = [
+    ['save', '收藏岗位', 'saved'],
+    ['prepare', '准备材料', 'preparing'],
+    ['apply', '投递', 'applied'],
+    ['screen', '初筛', 'screening'],
+    ['oa', 'OA / 笔试', 'assessment'],
+    ['interview', '面试', 'interviewing'],
+    ['offer', '收到 Offer', 'offer'],
+    ['accept', '接受 Offer', 'accepted'],
+    ['reject', '被拒绝', 'rejected'],
+    ['withdraw', '撤回申请', 'withdrawn'],
+    ['close', '岗位关闭', 'closed'],
+    ['phone', '电话沟通', ''],
+    ['custom', '自定义事件', ''],
+  ]
+
+  it('maps every suggested kind to its label and stage effect', () => {
+    expect(FALLBACK_MILESTONE_KINDS.map((k) => k.key)).toEqual(EXPECTED.map(([k]) => k))
+    for (const [key, label, effect] of EXPECTED) {
+      expect(milestoneDefaultLabel(key)).toBe(label)
+      expect(statusEffectForKind(key)).toBe(effect)
     }
-    expect(extra).toEqual([])
   })
 
-  it('exposes every backend edge, so no legal move is unreachable in the UI', () => {
-    const missing = BACKEND_EDGES.filter(([f, t]) => !(TRANSITIONS[f] ?? []).includes(t)).map(
-      ([f, t]) => `${f}->${t}`,
-    )
-    expect(missing).toEqual([])
+  it('covers every stage the pipeline can reach, so no status is unrecordable', () => {
+    // 每个非派生的阶段都得有一个事件能把岗位带过去，否则用户会遇到一个
+    // 「看得见却记不出来」的状态。
+    const reachable = new Set(FALLBACK_MILESTONE_KINDS.map((k) => k.status_effect).filter(Boolean))
+    for (const s of STATUSES) {
+      expect(reachable.has(s.key)).toBe(true)
+    }
   })
 
-  it('allows the rollbacks the old whitelist forbade', () => {
-    // 方案 §4.1: 准备材料 → 待投递、已投递 → 准备材料、Offer → 面试 都必须能选。
-    expect(TRANSITIONS.preparing).toContain('saved')
-    expect(TRANSITIONS.applied).toContain('preparing')
-    expect(TRANSITIONS.offer).toContain('interviewing')
-    expect(canTransition('withdrawn', 'applied')).toBe(true)
+  it('leaves the stage alone for note-only kinds and unknown slugs', () => {
+    expect(statusEffectForKind('phone')).toBe('')
+    expect(statusEffectForKind('custom')).toBe('')
+    // 开放集合：用户自创的类型照存不误，但绝不能悄悄改变阶段。
+    expect(statusEffectForKind('coffee-chat')).toBe('')
+    expect(milestoneDefaultLabel('coffee-chat')).toBe('自定义节点')
   })
 
-  it('never invents an acceptance and never moves terminal→terminal', () => {
-    expect(canTransition('screening', 'accepted')).toBe(false)
-    expect(canTransition('rejected', 'closed')).toBe(false)
-    // 毁约 is the single legal terminal → terminal move.
-    expect(canTransition('accepted', 'withdrawn')).toBe(true)
+  it('groups the picker into flow / end / other with nothing left out', () => {
+    const grouped = MILESTONE_KIND_GROUPS.flatMap((g) => milestoneKindsByGroup(g))
+    expect(grouped).toHaveLength(FALLBACK_MILESTONE_KINDS.length)
+    expect(milestoneKindsByGroup('flow').map((k) => k.key)).toEqual([
+      'save',
+      'prepare',
+      'apply',
+      'screen',
+      'oa',
+      'interview',
+      'offer',
+    ])
+    expect(milestoneKindsByGroup('end').map((k) => k.key)).toEqual(['accept', 'reject', 'withdraw', 'close'])
   })
 
-  it('lets 待投递 jump straight to 面试中 (skip-ahead)', () => {
-    expect(TRANSITIONS.saved).toContain('interviewing')
-    expect(allowedTargets('saved').map((s) => s.key)).toContain('interviewing')
+  it('borrows the stage colour and icon so one event reads the same everywhere', () => {
+    expect(milestoneDotColor('oa')).toBe(statusMeta('assessment').dot)
+    expect(milestoneIcon('interview')).toBe(statusMeta('interviewing').icon)
+    // 不改阶段的事件保持中性，不冒充任何一个阶段的颜色。
+    expect(milestoneDotColor('custom')).toBe('var(--neutral)')
+    expect(milestoneIcon('phone')).toBe('☎️')
   })
 
-  it('groups targets into 推进 / 回退·更正 / 结束', () => {
-    const groups = targetGroups('applied')
-    expect(groups.map((g) => g.label)).toEqual(['推进', '回退 / 更正', '结束'])
-    const forward = groups.find((g) => g.label === '推进')!.options.map((o) => o.value)
-    const backward = groups.find((g) => g.label === '回退 / 更正')!.options.map((o) => o.value)
-    expect(forward).toContain('interviewing')
-    expect(backward).toContain('preparing') // 方案 §4.1 新增的回退边
-    expect(forward).not.toContain('rejected')
-  })
-
-  it('relabels the reopen bucket for an ended record', () => {
-    const groups = targetGroups('rejected')
-    expect(groups.map((g) => g.label)).toEqual(['重新开启'])
-    expect(groups[0].options.map((o) => o.value)).toContain('saved')
-    // 已接受 can only reopen or 毁约 — never into another terminal outcome.
-    const accepted = targetGroups('accepted')
-    expect(accepted.map((g) => g.label)).toEqual(['重新开启', '毁约 / 更正'])
-    expect(accepted[1].options.map((o) => o.value)).toEqual(['withdrawn'])
-  })
-
-  it('requires a reason exactly where the backend does', () => {
-    // domain.go ReasonRequired: to == rejected|withdrawn|closed, or fromTerminal && !toTerminal
-    expect(needsReason('applied', 'rejected')).toBe(true)
-    expect(needsReason('offer', 'withdrawn')).toBe(true)
-    expect(needsReason('applied', 'closed')).toBe(true)
-    expect(needsReason('rejected', 'interviewing')).toBe(true) // 终态重开
-    expect(needsReason('accepted', 'offer')).toBe(true)
-    expect(needsReason('accepted', 'withdrawn')).toBe(true) // 毁约要填原因
-    // 已接受 needs no justification — gating it blocks a legal transition.
-    expect(needsReason('offer', 'accepted')).toBe(false)
-    expect(needsReason('applied', 'interviewing')).toBe(false)
-    expect(needsReason('applied', 'preparing')).toBe(false) // 普通回退不需要原因
-    expect(needsReason('saved', '')).toBe(false)
-  })
-
-  it('classifies each move as advance / rollback / reopen for the timeline', () => {
-    expect(changeTypeFor('applied', 'interviewing')).toBe('advance')
-    expect(changeTypeFor('applied', 'preparing')).toBe('rollback')
-    expect(changeTypeFor('offer', 'interviewing')).toBe('rollback')
-    expect(changeTypeFor('rejected', 'screening')).toBe('reopen')
-  })
-
-  it('never offers 未经正式投递 for 已投递 itself', () => {
-    // 已投递 IS the claim that a submission happened; a row in that status with
-    // a null submitted_at reads as submitted but counts as unsubmitted in every
-    // `submitted_at IS NOT NULL` query. Mirrors domain.go SkipSubmissionStatuses.
-    expect(SKIP_SUBMISSION_TARGETS).not.toContain('applied')
-    expect(RECRUITING_KEYS).toContain('applied') // still asks for the time
-    for (const k of SKIP_SUBMISSION_TARGETS) expect(RECRUITING_KEYS).toContain(k)
-  })
-
-  it('suggests the next flow step plus 被拒绝 as one-tap chips', () => {
-    expect(suggestedTargets('applied').map((s) => s.key)).toEqual(['screening', 'assessment', 'rejected'])
-    // An ended record gets reopen targets only — no 被拒绝 chip.
-    expect(suggestedTargets('rejected').map((s) => s.key)).not.toContain('rejected')
+  it('recognises a default label so renaming an event is never undone', () => {
+    // 名称没改过时跟随类型自动填；改过（比如「一面」）就必须原样保留。
+    expect(isDefaultLabel('面试')).toBe(true)
+    expect(isDefaultLabel('一面')).toBe(false)
   })
 })
 
@@ -494,5 +474,92 @@ describe('fmtDate/fmtDateTime render in the given zone (§P1 round 5)', () => {
     const la = fmtDate('2026-09-09T23:00:00Z', 'America/Los_Angeles')
     expect(sh).toContain('2026/09/10')
     expect(la).toContain('2026/09/09')
+  })
+})
+
+describe('实际投递时间 留空兜底 (§P1: 不再必填)', () => {
+  const now = new Date('2026-09-11T10:00:00.000Z')
+  it('no 发生时间 at all → now', () => {
+    expect(defaultSubmittedIso(null, now)).toBe('2026-09-11T10:00:00.000Z')
+  })
+  it('backdated 发生时间 → that instant (a submission cannot follow the change it precedes)', () => {
+    // repo reads application_events ORDER BY occurred_at, so stamping "now"
+    // here would draw 「昨天 OA → 今天 已投递」 and inflate 等待天数.
+    expect(defaultSubmittedIso('2026-09-08T23:30:00.000Z', now)).toBe('2026-09-08T23:30:00.000Z')
+  })
+  it('发生时间 in the future → now, never a future 投递时间', () => {
+    expect(defaultSubmittedIso('2026-09-11T10:04:00.000Z', now)).toBe('2026-09-11T10:00:00.000Z')
+  })
+  it('malformed 发生时间 falls back to now instead of throwing', () => {
+    expect(defaultSubmittedIso('not-a-date', now)).toBe('2026-09-11T10:00:00.000Z')
+  })
+})
+
+describe('时间线合并排序（用户添加的事件，迁移 00005 / 00006）', () => {
+  const ev = (id: number, type: string, occurred: string, seq = 0): AppEvent => ({
+    id,
+    sequence: seq,
+    event_type: type,
+    from_status: null,
+    to_status: type === 'status_change' ? 'applied' : null,
+    from_substatus: null,
+    to_substatus: null,
+    activity_kind: '',
+    activity_id: null,
+    change_type: 'advance',
+    note: '',
+    reason: '',
+    occurred_at: occurred,
+    recorded_at: occurred,
+    corrects_event_id: null,
+  })
+  const ms = (id: number, kind: string, occurred: string | null, label = ''): Milestone => ({
+    id,
+    application_id: 1,
+    kind,
+    label,
+    status_effect: statusEffectForKind(kind),
+    occurred_at: occurred,
+    note: '',
+    created_at: '2026-09-01T00:00:00Z',
+    updated_at: '2026-09-01T00:00:00Z',
+  })
+
+  it('按业务时间把用户节点插入状态事件之间，自动排序', () => {
+    const out = mergeTimeline([
+      { type: 'event', e: ev(1, 'created', '2026-09-01T09:00:00Z'), pinned: true },
+      { type: 'event', e: ev(2, 'status_change', '2026-09-05T09:00:00Z', 2), pinned: false },
+      { type: 'milestone', m: ms(3, 'oa', '2026-09-08T12:00:00Z', 'OA') },
+      { type: 'milestone', m: ms(4, 'screen', '2026-09-03T10:00:00Z', '初筛') },
+    ])
+    expect(out.map((x) => (x.type === 'event' ? `e${x.e.id}` : `m${x.m.id}`))).toEqual(['e1', 'm4', 'e2', 'm3'])
+  })
+
+  it('建档始终钉在最前，即使节点的时间更早', () => {
+    const out = mergeTimeline([
+      { type: 'event', e: ev(1, 'created', '2026-09-05T09:00:00Z'), pinned: true },
+      { type: 'milestone', m: ms(2, 'phone', '2026-09-01T09:00:00Z', '电话沟通') },
+    ])
+    expect(out[0].type === 'event' && out[0].e.event_type).toBe('created')
+  })
+
+  it('时间未定的节点排在所有有时间的节点之后（不伪造时间）', () => {
+    const out = mergeTimeline([
+      { type: 'milestone', m: ms(9, 'interview', null, '面试') },
+      { type: 'event', e: ev(1, 'status_change', '2026-09-05T09:00:00Z'), pinned: false },
+      { type: 'milestone', m: ms(2, 'oa', '2026-09-02T09:00:00Z', 'OA') },
+    ])
+    const last = out[out.length - 1]
+    expect(last.type === 'milestone' && last.m.occurred_at === null).toBe(true)
+  })
+
+  it('同一时刻状态事件排在前，多个未定节点按创建顺序排', () => {
+    const out = mergeTimeline([
+      { type: 'milestone', m: ms(5, 'interview', null, '面试') },
+      { type: 'milestone', m: ms(4, 'offer', null, 'Offer') },
+      { type: 'event', e: ev(1, 'status_change', '2026-09-05T09:00:00Z'), pinned: false },
+      { type: 'milestone', m: ms(2, 'oa', '2026-09-05T09:00:00Z', 'OA') },
+    ])
+    expect(out.map((x) => (x.type === 'event' ? `e${x.e.id}` : `m${x.m.id}`))).toEqual(['e1', 'm2', 'm4', 'm5'])
   })
 })

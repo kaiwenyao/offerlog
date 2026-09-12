@@ -7,6 +7,7 @@
 // below are the offline / first-paint fallback only — presentation attributes
 // (icon / tone / dot) are local by design and keyed by stage key.
 import type { Tone } from '../ds'
+import type { MilestoneKind } from './milestones'
 
 export interface StatusMeta {
   key: string
@@ -100,6 +101,11 @@ export interface ServerStatusModel {
     substatus: SubstatusMeta[]
   }>
   targets: Record<string, Array<{ status: string }>>
+  /**
+   * 「添加事件」选择器与参考流程图用的事件类型清单（迁移 00006）。旧后端不返回
+   * 这个字段，此时前端沿用 lib/milestones.ts 里的兜底表。
+   */
+  milestone_kinds?: MilestoneKind[]
 }
 
 /**
@@ -204,20 +210,25 @@ export const REMOTE_OPTIONS = ['远程', '混合', '到岗', '']
 export const EMPLOYMENT_OPTIONS = ['全职', '实习', '合同', '兼职']
 export const SALARY_CURRENCIES = ['EUR', 'USD', 'GBP', 'CNY', '其他']
 
-// 主流程推进顺序（用于“下一步建议”与阶段推进条）
+// 大阶段的推荐顺序（方案 §4.1：「阶段顺序只作建议」），用于“下一步建议”、
+// 阶段推进条与 推进/回退 的判定。
+//
+// 初筛沟通 排在 OA / 作业 **之后**：投递后自动收到 OA 是最常见的路子，
+// HR 的电话沟通通常发生在笔试通过、安排面试之前。把它排在 已投递 和 OA 之间
+// 会让最普通的「投递 → OA」在这条工序线上留出一个永远填不上的空洞。
 export const FLOW_ORDER = [
   'saved',
   'preparing',
   'applied',
-  'screening',
   'assessment',
+  'screening',
   'interviewing',
   'offer',
   'accepted',
 ]
 
 /** The 7 pips rendered in the table's 阶段推进 column (design: r.d1…r.d7). */
-export const FLOW_PIPS = ['saved', 'preparing', 'applied', 'screening', 'assessment', 'interviewing', 'offer']
+export const FLOW_PIPS = ['saved', 'preparing', 'applied', 'assessment', 'screening', 'interviewing', 'offer']
 
 export let ENDED = new Set(STATUSES.filter((s) => s.category === 'ended').map((s) => s.key))
 

@@ -7,7 +7,7 @@ import type { AppRow, SavedView } from '../../lib/types'
 import { comboLabel, FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
 import { Button, Card, Input, Select, Tabs, Tag } from '../../ds'
 import { CompanyMark } from '../../components/Icon'
-import { StageRail } from '../../components/StageTrail'
+import { StageRail } from '../../components/StageRail'
 import { Dot, EmptyHint, ErrorText, Modal, Num, PageSpinner, Spinner, StatusChip } from '../../components/ui'
 import { Drawer } from './drawer'
 import {
@@ -634,7 +634,7 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
 
   const submitCreate = () => {
     // datetime-local 是无时区挂墙时间：按用户配置时区换算成 UTC 瞬间（与
-    // 更新进度弹窗同一规则），避免都柏林浏览器把「昨天 14:00」存成别的日子。
+    // 添加事件表单同一规则），避免都柏林浏览器把「昨天 14:00」存成别的日子。
     const zone = effectiveZone() ?? Intl.DateTimeFormat().resolvedOptions().timeZone
     const toInstant = (v: string) => {
       const ms = localDateTimeToInstant(v, zone)
@@ -743,7 +743,7 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
         )}
       </div>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 'var(--space-4)' }}>
-        保存后仍可继续编辑完整信息、上传附件并更新进度。
+        保存后仍可继续编辑完整信息、上传附件，并在「时间线」里添加事件记录进度。
       </p>
     </Modal>
   )

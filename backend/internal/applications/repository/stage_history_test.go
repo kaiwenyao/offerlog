@@ -5,28 +5,33 @@ import (
 	"time"
 )
 
-// testEvent builds an event row for the pure stage-history builder.
-func testEvent(appID int64, typ string, from, to *string, occurred time.Time, corrects *int64) *Event {
-	return &Event{ApplicationID: appID, EventType: typ, FromStatus: from, ToStatus: to,
-		OccurredAt: occurred, CorrectsEventID: corrects}
+// testPoint builds a stage point for the pure builders. Corrections are already
+// resolved by the application_stage_points view, so these builders never see a
+// correction row — that resolution is covered by the integration suite
+// (tests/integration/stage_points_view_test.go).
+func testPoint(appID int64, status string, occurred *time.Time, source string) *StagePoint {
+	return &StagePoint{ApplicationID: appID, Status: status, OccurredAt: occurred, Source: source}
 }
 
-func ptr(s string) *string { return &s }
+func at(y int, m time.Month, d, hh, mm int, loc *time.Location) *time.Time {
+	t := time.Date(y, m, d, hh, mm, 0, 0, loc)
+	return &t
+}
 
 func TestBuildStageHistoryRecordsFirstArrivalPerStatus(t *testing.T) {
+	// Arrange: saved (09-01) → applied (09-05) → interviewing (09-09) → rejected (09-11).
 	loc := time.UTC
-	dublin := time.FixedZone("DUB", 60*60)
-	_ = dublin
-
-	// created → saved (2026-09-01), applied (09-05), interviewing (09-09),
-	// rejected (09-11).
-	evs := []*Event{
-		testEvent(1, "created", nil, ptr("saved"), time.Date(2026, 9, 1, 12, 0, 0, 0, loc), nil),
-		testEvent(1, "status_change", ptr("saved"), ptr("applied"), time.Date(2026, 9, 5, 10, 0, 0, 0, loc), nil),
-		testEvent(1, "status_change", ptr("applied"), ptr("interviewing"), time.Date(2026, 9, 9, 9, 30, 0, 0, loc), nil),
-		testEvent(1, "status_change", ptr("interviewing"), ptr("rejected"), time.Date(2026, 9, 11, 15, 0, 0, 0, loc), nil),
+	points := []*StagePoint{
+		testPoint(1, "saved", at(2026, 9, 1, 12, 0, loc), "event"),
+		testPoint(1, "applied", at(2026, 9, 5, 10, 0, loc), "event"),
+		testPoint(1, "interviewing", at(2026, 9, 9, 9, 30, loc), "milestone"),
+		testPoint(1, "rejected", at(2026, 9, 11, 15, 0, loc), "milestone"),
 	}
-	got := buildStageHistory(evs, loc, nil)[1]
+
+	// Act
+	got := buildStageHistoryFromPoints(points, loc, nil)[1]
+
+	// Assert
 	want := map[string]string{
 		"saved": "2026-09-01", "applied": "2026-09-05",
 		"interviewing": "2026-09-09", "rejected": "2026-09-11",
@@ -38,61 +43,71 @@ func TestBuildStageHistoryRecordsFirstArrivalPerStatus(t *testing.T) {
 	}
 }
 
-func TestBuildStageHistoryCorrectionReplacesStatus(t *testing.T) {
+func TestBuildStageHistoryKeepsTheEarliestArrivalWhenAStageRepeats(t *testing.T) {
+	// 回退再前进（面试 → OA → 面试）不能把「第一次到达面试」改写成第二次的日期。
 	loc := time.UTC
-	// Events: applied on 09-05 then a correction rewrites that event to
-	// screening; applied arrives again on 09-08.
-	first := testEvent(1, "status_change", ptr("saved"), ptr("applied"), time.Date(2026, 9, 5, 10, 0, 0, 0, loc), nil)
-	corr := testEvent(1, "correction", ptr("applied"), ptr("screening"), time.Date(2026, 9, 6, 0, 0, 0, 0, loc), &first.ID)
-	_ = corr
-	first.ID = 11
-	// A status-only fix: the correction carries the SAME occurred_at as the
-	// event it corrects (what the 纠正 dialog sends when only the status is
-	// changed), so the arrival day must not move.
-	corr2 := testEvent(1, "correction", ptr("applied"), ptr("screening"), time.Date(2026, 9, 5, 10, 0, 0, 0, loc), &first.ID)
-	appliedAgain := testEvent(1, "status_change", ptr("screening"), ptr("applied"), time.Date(2026, 9, 8, 12, 0, 0, 0, loc), nil)
-	got := buildStageHistory([]*Event{first, corr2, appliedAgain}, loc, nil)[1]
-	if got["applied"] != "2026-09-08" {
-		t.Errorf("corrected first applied should be dropped; applied = %q, want 2026-09-08", got["applied"])
+	points := []*StagePoint{
+		testPoint(1, "interviewing", at(2026, 9, 9, 9, 0, loc), "milestone"),
+		testPoint(1, "assessment", at(2026, 9, 10, 9, 0, loc), "milestone"),
+		testPoint(1, "interviewing", at(2026, 9, 14, 9, 0, loc), "milestone"),
 	}
-	if got["screening"] != "2026-09-05" {
-		t.Errorf("screening should keep the corrected event's day; got %q, want 2026-09-05", got["screening"])
+
+	got := buildStageHistoryFromPoints(points, loc, nil)[1]
+
+	if got["interviewing"] != "2026-09-09" {
+		t.Errorf("interviewing = %q, want the first arrival 2026-09-09", got["interviewing"])
 	}
 }
 
 func TestBuildStageHistoryUserTimezoneBucket(t *testing.T) {
 	// A late-evening UTC instant is the NEXT calendar day in UTC+8.
 	loc := time.FixedZone("CST", 8*60*60)
-	evs := []*Event{
-		testEvent(1, "status_change", ptr("saved"), ptr("applied"), time.Date(2026, 9, 5, 17, 30, 0, 0, time.UTC), nil),
-	}
-	got := buildStageHistory(evs, loc, nil)[1]
+	points := []*StagePoint{testPoint(1, "applied", at(2026, 9, 5, 17, 30, time.UTC), "event")}
+
+	got := buildStageHistoryFromPoints(points, loc, nil)[1]
+
 	if got["applied"] != "2026-09-06" {
 		t.Errorf("applied day in UTC+8 = %q, want 2026-09-06", got["applied"])
 	}
 }
 
-func TestBuildStageHistoryNoEventsYieldsEmpty(t *testing.T) {
-	got := buildStageHistory(nil, time.UTC, nil)
-	if len(got) != 0 {
+func TestBuildStageHistoryNoPointsYieldsEmpty(t *testing.T) {
+	if got := buildStageHistoryFromPoints(nil, time.UTC, nil); len(got) != 0 {
 		t.Errorf("empty input produced %d apps", len(got))
 	}
 }
 
+// 时间未定的节点（用户还没决定时间）没有日期可报告，绝不能伪造一个。
+func TestBuildStageHistorySkipsPointsWithNoBusinessTime(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "applied", at(2026, 9, 5, 10, 0, loc), "event"),
+		testPoint(1, "interviewing", nil, "milestone"),
+	}
+
+	got := buildStageHistoryFromPoints(points, loc, nil)[1]
+
+	if _, ok := got["interviewing"]; ok {
+		t.Errorf("a timeless node must contribute no arrival day; got %q", got["interviewing"])
+	}
+	if got["applied"] != "2026-09-05" {
+		t.Errorf("applied = %q, want 2026-09-05", got["applied"])
+	}
+}
+
 // The user-entered 投递时间 wins for the applied stage: a legacy row whose
-// applied event still carries the DB "now" day must render the backfilled
+// applied point still carries the DB "now" day must render the backfilled
 // submission day instead.
 func TestBuildStageHistorySubmittedAtOverridesApplied(t *testing.T) {
 	loc := time.UTC
-	// Record created today (2026-09-08), applied event recorded today as well
-	// (occurred_at defaulted to the write clock), but the user backfilled
-	// submitted_at = 2026-09-06.
-	evs := []*Event{
-		testEvent(1, "created", nil, ptr("saved"), time.Date(2026, 9, 8, 9, 0, 0, 0, loc), nil),
-		testEvent(1, "status_change", ptr("saved"), ptr("applied"), time.Date(2026, 9, 8, 9, 5, 0, 0, loc), nil),
+	points := []*StagePoint{
+		testPoint(1, "saved", at(2026, 9, 8, 9, 0, loc), "event"),
+		testPoint(1, "applied", at(2026, 9, 8, 9, 5, loc), "event"),
 	}
 	sub := time.Date(2026, 9, 6, 14, 0, 0, 0, loc)
-	got := buildStageHistory(evs, loc, map[int64]*time.Time{1: &sub})[1]
+
+	got := buildStageHistoryFromPoints(points, loc, map[int64]*time.Time{1: &sub})[1]
+
 	if got["applied"] != "2026-09-06" {
 		t.Errorf("applied = %q, want backfilled 2026-09-06", got["applied"])
 	}
@@ -100,10 +115,119 @@ func TestBuildStageHistorySubmittedAtOverridesApplied(t *testing.T) {
 		t.Errorf("saved = %q, want 2026-09-08", got["saved"])
 	}
 
-	// A nil map must keep the event-derived day (callers without snapshots).
-	got = buildStageHistory(evs, loc, nil)[1]
+	// A nil map must keep the point-derived day (callers without snapshots).
+	got = buildStageHistoryFromPoints(points, loc, nil)[1]
 	if got["applied"] != "2026-09-08" {
 		t.Errorf("applied without override = %q, want 2026-09-08", got["applied"])
+	}
+}
+
+// 推导规则：当前状态 = 时间线上最后一个阶段落点的状态。
+func TestReplayStagePointsTakesTheLastPoint(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "saved", at(2026, 9, 1, 9, 0, loc), "event"),
+		testPoint(1, "applied", at(2026, 9, 5, 9, 0, loc), "milestone"),
+		testPoint(1, "assessment", at(2026, 9, 7, 9, 0, loc), "milestone"),
+		testPoint(1, "interviewing", at(2026, 9, 9, 9, 0, loc), "milestone"),
+	}
+
+	d := replayStagePoints(points)
+
+	if d.status != "interviewing" {
+		t.Errorf("status = %q, want interviewing", d.status)
+	}
+	if d.submitted == nil || !d.submitted.Equal(*at(2026, 9, 5, 9, 0, loc)) {
+		t.Errorf("submitted = %v, want 2026-09-05T09:00Z", d.submitted)
+	}
+}
+
+func TestReplayStagePointsWithNoPointsStaysSaved(t *testing.T) {
+	d := replayStagePoints(nil)
+	if d.status != "saved" {
+		t.Errorf("status = %q, want saved", d.status)
+	}
+	if d.submitted != nil || d.rejected != nil || d.accept != nil {
+		t.Errorf("no points must produce no dates; got %v %v %v", d.submitted, d.rejected, d.accept)
+	}
+}
+
+// 回退出「已投递」再回来，不能改写投递时间：日期取首次到达。
+func TestReplayStagePointsKeepsTheFirstSubmissionTime(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "applied", at(2026, 9, 5, 9, 0, loc), "milestone"),
+		testPoint(1, "saved", at(2026, 9, 6, 9, 0, loc), "milestone"),
+		testPoint(1, "applied", at(2026, 9, 7, 9, 0, loc), "milestone"),
+	}
+
+	d := replayStagePoints(points)
+
+	if d.submitted == nil || !d.submitted.Equal(*at(2026, 9, 5, 9, 0, loc)) {
+		t.Errorf("submitted = %v, want the first 2026-09-05T09:00Z", d.submitted)
+	}
+}
+
+// 时间未定的节点决定当前阶段（它在时间线最后），但不能提供投递时间。
+func TestReplayStagePointsTimelessPointSetsStageButNoDate(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "saved", at(2026, 9, 1, 9, 0, loc), "event"),
+		testPoint(1, "applied", nil, "milestone"),
+	}
+
+	d := replayStagePoints(points)
+
+	if d.status != "applied" {
+		t.Errorf("status = %q, want applied", d.status)
+	}
+	if d.submitted != nil {
+		t.Errorf("a timeless node must not fabricate 投递时间; got %v", d.submitted)
+	}
+}
+
+func TestBuildProgressSinceTracksTheLastStageChange(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "saved", at(2026, 9, 1, 9, 0, loc), "event"),
+		testPoint(1, "applied", at(2026, 9, 5, 9, 0, loc), "milestone"),
+		testPoint(1, "interviewing", at(2026, 9, 9, 9, 0, loc), "milestone"),
+	}
+
+	got := buildProgressSinceFromPoints(points, loc)
+
+	if got[1] != "2026-09-09" {
+		t.Errorf("progress_since = %q, want 2026-09-09", got[1])
+	}
+}
+
+// 重复记录同一个阶段（两轮面试各记一个节点）不重启「停留至今」的计时。
+func TestBuildProgressSinceIgnoresRepeatsOfTheSameStage(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "interviewing", at(2026, 9, 9, 9, 0, loc), "milestone"),
+		testPoint(1, "interviewing", at(2026, 9, 14, 9, 0, loc), "milestone"),
+	}
+
+	got := buildProgressSinceFromPoints(points, loc)
+
+	if got[1] != "2026-09-09" {
+		t.Errorf("progress_since = %q, want the first entry 2026-09-09", got[1])
+	}
+}
+
+// 最后一格没有时间时，「进入当前进度的日期」是不详的——不能沿用上一段的日期。
+func TestBuildProgressSinceReportsNothingWhenTheCurrentStageHasNoTime(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "applied", at(2026, 9, 5, 9, 0, loc), "event"),
+		testPoint(1, "interviewing", nil, "milestone"),
+	}
+
+	got := buildProgressSinceFromPoints(points, loc)
+
+	if v, ok := got[1]; ok {
+		t.Errorf("progress_since = %q, want no entry", v)
 	}
 }
 
@@ -129,19 +253,5 @@ func TestStripIdempotencyMarkerOnlyRemovesTheGeneratedSuffix(t *testing.T) {
 				t.Errorf("StripIdempotencyMarker(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
-	}
-}
-
-// A correction exists to repair a wrong time, so the replay must adopt the
-// correction's occurred_at — otherwise the timeline shows the fix while the
-// stage rail and submitted_at keep the mistyped day.
-func TestBuildStageHistoryCorrectionReplacesTime(t *testing.T) {
-	loc := time.UTC
-	orig := testEvent(1, "status_change", ptr("saved"), ptr("applied"), time.Date(2026, 9, 8, 10, 0, 0, 0, loc), nil)
-	orig.ID = 21
-	corr := testEvent(1, "correction", ptr("applied"), ptr("applied"), time.Date(2026, 9, 6, 10, 0, 0, 0, loc), &orig.ID)
-	got := buildStageHistory([]*Event{orig, corr}, loc, nil)[1]
-	if got["applied"] != "2026-09-06" {
-		t.Errorf("applied = %q, want the corrected day 2026-09-06", got["applied"])
 	}
 }
