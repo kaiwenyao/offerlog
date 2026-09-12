@@ -1,10 +1,16 @@
 // Verifies plan §12.2 case 1 on a clean dataset with exactly the benchmark
 // distribution: the current-mode sankey conserves flow at every layer and all
 // final nodes total the cohort, and drilldown equals the list ids.
+//
+// Also pins the v2 classification: 未投递 must reuse the 待投递 metric
+// definition (repo.Counts), so an in-progress row without submitted_at
+// (内推 / 猎头) and a preparing row that still carries a submission fact both
+// stay on the submitted branch instead of being counted 未投递.
 package analytics
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,16 +20,27 @@ import (
 	"offerlog/backend/internal/platform/migrate"
 )
 
-func TestSankeyConservationBenchmarkFixture(t *testing.T) {
+func sankeyTestDB(t *testing.T) *database.DB {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		url = "postgres://offerlog:offerlog@localhost:5433/offerlog?sslmode=disable"
+	}
 	ctx := context.Background()
-	db, err := database.New(ctx, "postgres://offerlog:offerlog@localhost:5433/offerlog?sslmode=disable")
+	db, err := database.New(ctx, url)
 	if err != nil {
 		t.Skip("no local db:", err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 	if err := migrate.Up(ctx, db.Pool()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	return db
+}
+
+func TestSankeyConservationBenchmarkFixture(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
 	owner := createBenchUser(t, db)
 	defer cleanupBench(ctx, db, owner)
 
@@ -102,6 +119,68 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 	}
 	if allToNS+finals != 10 {
 		t.Fatalf("leaves %d + 未投递 %d, want cohort 10", finals, allToNS)
+	}
+}
+
+// Regression for the v2 misclassification: rows past the preparing phase
+// count as submitted even without submitted_at (内推 / 猎头直接约面), and a
+// preparing row that still carries a submission fact (投递后退回补材料) is
+// not 未投递 — mirroring the 待投递 metric card on the same page.
+func TestSankeyAUnsubmittedMatchesToApplyMetric(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
+	owner := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner)
+
+	now := time.Now()
+	fixture := []struct {
+		status string
+		sub    bool
+	}{
+		{domain.StatusApplied, true},
+		{domain.StatusAssessment, false}, // 内推免正式投递：无 submitted_at
+		{domain.StatusPreparing, true},   // 投递后退回准备材料：仍带 submitted_at
+		{domain.StatusSaved, false},
+	}
+	for i, f := range fixture {
+		var sub *time.Time
+		if f.sub {
+			s := now.AddDate(0, 0, -(i + 1))
+			sub = &s
+		}
+		if err := seedApp(ctx, db, owner, f.status, sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repo := New(db)
+	sk, err := repo.SankeyA(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sk.CohortCount != 4 {
+		t.Fatalf("cohort = %d, want 4", sk.CohortCount)
+	}
+	var allToNS, allToSub int64
+	split := map[string]int64{}
+	for _, l := range sk.Links {
+		if l.Source == "all" && l.Target == "not_submitted" {
+			allToNS = l.Value
+		}
+		if l.Source == "all" && l.Target == "submitted" {
+			allToSub = l.Value
+		}
+		if l.Source == "submitted" {
+			split[l.Target] = l.Value
+		}
+	}
+	if allToNS != 1 || allToSub != 3 {
+		t.Fatalf("layer1 = %d not-submitted / %d submitted, want 1/3", allToNS, allToSub)
+	}
+	for _, want := range []string{"s_applied", "s_assessment", "s_preparing"} {
+		if split[want] != 1 {
+			t.Fatalf("submitted branch %s = %d, want 1", want, split[want])
+		}
 	}
 }
 

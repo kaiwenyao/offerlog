@@ -33,6 +33,12 @@
 - 历史桑基 B：按事件重建，(step_index,status) 作节点 ID 防环；
   连续同状态不算迁移；>12 步折叠；导入记录只画“导入起点 → 当前状态”。
 - 下钻 token 短期存 analytics_snapshots，与图表生成时刻绑定。
+- 2026-09 更新（口径版本 v2）：「未投递」从 submitted_at IS NOT NULL 改为
+  与「待投递」指标同口径（saved/preparing 且无投递、无回复事实）——
+  内推/猎头免正式投递的记录没有 submitted_at，却已进入招聘流程，
+  旧口径把这类记录算成未投递，与同页指标卡和列表自相矛盾。
+  渲染上「未投递」固定在第二层（echarts 节点 depth），
+  不再被 justify 挤到最右列横穿中间层造成丝带重叠。
 
 ## ADR-006 单账号但全量 owner_id
 - 首版关闭注册、单管理员账号；但 users/companies/applications/… 全带 owner_id，

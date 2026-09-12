@@ -35,19 +35,27 @@ type Sankey struct {
 	DrilldownToken    string `json:"drilldown_token,omitempty"`
 }
 
-const DefinitionVersion = 1
+// v2: 未投递 moved from "submitted_at IS NULL" to the 待投递 metric
+// definition (repo.Counts) so the chart cannot contradict the cards or the
+// list rendered on the same page — 内推 / 猎头 rows in screening/assessment/
+// interviewing legitimately carry no submitted_at but are past 未投递.
+const DefinitionVersion = 2
 
 // SankeyA builds the fixed three-layer "current progress" graph:
 //
 //	全部机会 → 已投递 / 未投递 → 已投递按当前状态细分
 //
-// Every application appears once per layer; the middle layer keys on
-// submitted_at presence. 未投递 is a leaf — only the submitted branch is
+// Every application appears once per layer. The middle layer reuses the
+// 待投递 metric definition verbatim (repo.Counts): 未投递 = still
+// saved/preparing with neither a submission nor a response fact. Records
+// past the preparing phase ride the submitted branch even when
+// submitted_at is NULL (内推 / 猎头直接约面 rows legitimately carry no
+// submitted_at). 未投递 is a leaf — only the submitted branch is
 // subdivided by its current status.
 func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, error) {
 	where, args := r.whereClause(req)
 	rows, err := r.db.Pool().Query(ctx, `SELECT id, status,
-		CASE WHEN submitted_at IS NOT NULL THEN true ELSE false END
+		(status IN ('saved','preparing') AND submitted_at IS NULL AND first_response_at IS NULL)
 		FROM applications WHERE `+where, args...)
 	if err != nil {
 		return nil, err
@@ -62,8 +70,8 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 	for rows.Next() {
 		var id int64
 		var st string
-		var sub bool
-		if err := rows.Scan(&id, &st, &sub); err != nil {
+		var notSubRow bool
+		if err := rows.Scan(&id, &st, &notSubRow); err != nil {
 			return nil, err
 		}
 		key := fmt.Sprintf("%d", id)
@@ -72,7 +80,7 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 		}
 		seen[key] = true
 		cohort++
-		if !sub {
+		if notSubRow {
 			notSub++
 			continue
 		}
@@ -122,7 +130,7 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 		Nodes: nodes, Links: links, CohortCount: cohort,
 		AsOf: req.Now.UTC().Format(time.RFC3339), DefinitionVersion: DefinitionVersion,
 		Mode:  "current",
-		Notes: "当前快照：全部机会先分为已投递 / 未投递；已投递再按当前状态细分，未投递不再细分。不声称展示历史顺序。",
+		Notes: "当前快照：全部机会先分为已投递 / 未投递（与「待投递」指标同口径）；已投递再按当前状态细分，未投递不再细分。不声称展示历史顺序。",
 	}, nil
 }
 
