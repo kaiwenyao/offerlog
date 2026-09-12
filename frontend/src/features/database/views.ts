@@ -55,6 +55,13 @@ export function statusesForView(viewId: number): string[] {
 }
 
 /**
+ * Fields the database-page search box matches. Mirrors the ⌘K search
+ * endpoint (position / company_name / notes) so the topbar placeholder
+ * 「搜岗位、公司、备注…」 is honest about both surfaces.
+ */
+const SEARCH_FIELDS = ['company_name', 'position', 'notes'] as const
+
+/**
  * Build the `/views/query` filter list for the active view, search term and
  * ad-hoc chips. Pure so the query shape stays testable.
  */
@@ -69,7 +76,18 @@ export function buildFilters(
     if (view.id >= 0 && Array.isArray(ast.conditions)) conds.push(...ast.conditions)
     else if (view.id < 0) conds.push(ast)
   }
-  if (search) conds.push({ field: 'position', op: 'contains', value: search })
+  // Search is a match on ANY of the searched fields, not just the position:
+  // typing a company name must find its rows. Kept as one `or` group so it
+  // stays a single term at the top level (AND-ed with the view's own filter).
+  if (search) {
+    const term = search.trim()
+    if (term) {
+      conds.push({
+        op: 'or',
+        conditions: SEARCH_FIELDS.map((field) => ({ field, op: 'contains', value: term })),
+      })
+    }
+  }
   return [...conds, ...extra]
 }
 
