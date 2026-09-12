@@ -44,7 +44,7 @@ export interface AppRow {
   updated_at: string
   /**
    * include=stage_history 时附加：已到达状态 → 用户时区最早日历日 YYYY-MM-DD。
-   * 工序线（StageTrail/StageRail）把它当 path 用，终态岗位也能画出灰色真实进度。
+   * 工序进度条（StageRail）把它当 path 用，终态岗位也能画出灰色真实进度。
    */
   stage_history?: Record<string, string>
   /** include=stage_history 时附加：当前进度是在哪一天进入的（用户时区 YYYY-MM-DD）。 */
@@ -70,6 +70,33 @@ export interface AppEvent {
   occurred_at: string
   recorded_at: string
   corrects_event_id: number | null
+}
+
+/**
+ * 时间线事件（迁移 00005 / 00006）——记录进度的唯一方式。
+ *
+ * 不是每个岗位都有 OA / 初筛 / 面试，发生了什么由用户自己决定；岗位阶段由这些
+ * 事件推导：当前状态 = 时间线上最后一个带 status_effect 的事件的那个阶段。
+ * occurred_at 为 null 表示时间未定（排序时排在有时间的事件之后，绝不伪造时间）。
+ *
+ * AppEvent 是它的前身：「更新进度」时代留下的追加式审计，只读地一并显示。
+ */
+export interface Milestone {
+  id: number
+  application_id: number
+  /** 事件类型 slug：apply / screen / oa / interview / offer / custom…（开放集合） */
+  kind: string
+  /** 展示名，空时展示层按 kind 取默认名。 */
+  label: string
+  /**
+   * 这一步把岗位带进哪个阶段；'' = 只记事，不改阶段。服务端按 kind 推导后返回，
+   * 请求体里不接受这个字段。
+   */
+  status_effect: string
+  occurred_at: string | null
+  note: string
+  created_at: string
+  updated_at: string
 }
 
 export interface FileItem {

@@ -180,6 +180,10 @@ func ComboLabelForKind(status, substatus, kind string) string {
 type StatusModel struct {
 	Stages  []StageMeta              `json:"stages"`
 	Targets map[string][]TargetCombo `json:"targets"`
+	// MilestoneKinds is the event list the 「添加事件」 picker offers, and the
+	// reference flow chart draws. Served from here so the client never keeps a
+	// second copy of the kind → stage table (迁移 00006).
+	MilestoneKinds []MilestoneKind `json:"milestone_kinds"`
 }
 
 // TargetCombo is one selectable target for a stage, including the substatuses
@@ -204,9 +208,12 @@ const (
 
 // flowOrder is the recommended pipeline order; it only decides how targets are
 // grouped (推进 vs 回退), never what is permitted.
+//
+// 初筛沟通 sits AFTER OA / 作业 — the common path is 投递 → 自动收到 OA, with the
+// HR call happening once the test is passed (方案 §2：不要求先经过初筛).
 var flowOrder = []string{
-	StatusSaved, StatusPreparing, StatusApplied, StatusScreening,
-	StatusAssessment, StatusInterviewing, StatusOffer, StatusAccepted,
+	StatusSaved, StatusPreparing, StatusApplied, StatusAssessment,
+	StatusScreening, StatusInterviewing, StatusOffer, StatusAccepted,
 }
 
 func rank(s string) int {
@@ -261,7 +268,7 @@ func TargetCombos(from string) []TargetCombo {
 
 // StatusModelFor builds the whole payload.
 func StatusModelFor() StatusModel {
-	m := StatusModel{Stages: []StageMeta{}, Targets: map[string][]TargetCombo{}}
+	m := StatusModel{Stages: []StageMeta{}, Targets: map[string][]TargetCombo{}, MilestoneKinds: MilestoneKinds}
 	for _, s := range AllStatuses {
 		m.Stages = append(m.Stages, StageMeta{
 			Key: s, Label: StageLabels[s], Category: StatusCategories[s],

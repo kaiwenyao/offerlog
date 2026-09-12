@@ -112,13 +112,18 @@ type ChannelRow struct {
 	OfferRate     *float64 `json:"offer_rate"`
 }
 
-// effectiveToStatusSQL resolves the status an event REALLY produced: if a later
-// correction points at it, that correction's target wins. 方案 §4.3/§5: 真实回退
-// 保留曾到达记录，而误操作更正必须从统计里排除 —— counting raw to_status kept a
-// 「误点拿到 Offer」 in the conversion funnel forever.
-const effectiveToStatusSQL = `COALESCE((SELECT c.to_status FROM application_events c
-	WHERE c.corrects_event_id = e.id AND c.to_status IS NOT NULL
-	ORDER BY c.sequence DESC LIMIT 1), e.to_status)`
+// reachedSQL tests whether an application ever reached a stage. It reads the
+// application_stage_points view (迁移 00006), which unions two sources and
+// already resolves both of the subtleties this used to spell out inline:
+//
+//   - 误操作更正必须从统计里排除（方案 §4.3/§5）—— the view lets a later
+//     correction override the event it points at, so a 「误点拿到 Offer」 stops
+//     living in the conversion funnel forever;
+//   - 用户自己添加的时间线节点同样算数 —— since the progress UI became
+//     event-driven, most stages are recorded as milestones, and a funnel that
+//     only counted state-machine events would read empty.
+const reachedSQL = `EXISTS (SELECT 1 FROM application_stage_points p
+	WHERE p.application_id = applications.id AND p.status = `
 
 // Counts returns key metrics for the scope (default by saved date cohort).
 func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, error) {
@@ -180,12 +185,8 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 		var resp, interv, offer int64
 		if err := q.QueryRow(ctx, `SELECT
 			count(*) FILTER (WHERE first_response_at IS NOT NULL),
-			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e
-				WHERE e.application_id = applications.id AND e.event_type <> 'correction'
-				  AND `+effectiveToStatusSQL+` = 'interviewing')),
-			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e
-				WHERE e.application_id = applications.id AND e.event_type <> 'correction'
-				  AND `+effectiveToStatusSQL+` = 'offer'))
+			count(*) FILTER (WHERE `+reachedSQL+`'interviewing')),
+			count(*) FILTER (WHERE `+reachedSQL+`'offer'))
 			FROM applications WHERE `+cohortWhere, cohortArgs...).Scan(&resp, &interv, &offer); err != nil {
 			return nil, err
 		}
@@ -253,12 +254,8 @@ func (r *Repo) ByChannel(ctx context.Context, req *SnapshotRequest) ([]ChannelRo
 	where, args := r.submittedCohortWhere(req)
 	where += " AND channel <> ''"
 	rows, err := r.db.Pool().Query(ctx, `SELECT channel, count(*) FILTER (WHERE first_response_at IS NOT NULL),
-		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e
-			WHERE e.application_id = applications.id AND e.event_type <> 'correction'
-			  AND `+effectiveToStatusSQL+` = 'interviewing')),
-		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM application_events e
-			WHERE e.application_id = applications.id AND e.event_type <> 'correction'
-			  AND `+effectiveToStatusSQL+` = 'offer')),
+		count(*) FILTER (WHERE `+reachedSQL+`'interviewing')),
+		count(*) FILTER (WHERE `+reachedSQL+`'offer')),
 		count(*)
 		FROM applications WHERE `+where+` GROUP BY channel ORDER BY count(*) DESC`, args...)
 	if err != nil {

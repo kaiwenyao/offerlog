@@ -183,7 +183,6 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 
 type pathStep struct {
 	Status string
-	Time   time.Time
 }
 
 // SankeyB reconstructs the actual path for every application from its events.
@@ -201,10 +200,9 @@ func (r *Repo) SankeyB(ctx context.Context, req *SnapshotRequest, maxSteps int) 
 	where = strings.ReplaceAll(where, "submitted_at", "a.submitted_at")
 	where = strings.ReplaceAll(where, "company_name = $", "a.company_name = $")
 	rows, err := r.db.Pool().Query(ctx, `SELECT a.id,
-		CASE WHEN EXISTS (SELECT 1 FROM application_events e WHERE e.application_id=a.id) THEN 'events' ELSE 'none' END,
+		CASE WHEN EXISTS (SELECT 1 FROM application_stage_points p WHERE p.application_id=a.id) THEN 'events' ELSE 'none' END,
 		a.status
 		FROM applications a
-		LEFT JOIN application_events e ON e.application_id = a.id AND e.event_type <> 'correction'
 		WHERE `+where+` GROUP BY a.id`, args...)
 	if err != nil {
 		return nil, err
@@ -250,32 +248,19 @@ func (r *Repo) SankeyB(ctx context.Context, req *SnapshotRequest, maxSteps int) 
 			nodeCount["root"]++
 			continue
 		}
-		evs, err := r.eventsFor(ctx, ai.id)
+		stages, err := r.stagePathFor(ctx, ai.id)
 		if err != nil {
 			return nil, err
 		}
-		// Compress consecutive same-status events into single steps; each step
-		// gets (stepIndex,status). The initial created event (FromStatus nil)
-		// contributes the first status so saved-only records still show a path.
+		// Compress consecutive same-status points into single steps; each step
+		// gets (stepIndex,status). The first point (建档) anchors the path, so
+		// saved-only records still show one.
 		var steps []pathStep
-		for _, e := range evs {
-			if e.ToStatus == nil {
-				continue
-			}
-			if e.FromStatus == nil && e.EventType == "created" {
-				// created → initial state is the anchor of the path
-				if len(steps) == 0 {
-					steps = append(steps, pathStep{Status: *e.ToStatus, Time: e.OccurredAt})
-				}
-				continue
-			}
-			if e.FromStatus == nil || e.ToStatus == nil {
-				continue
-			}
-			if len(steps) > 0 && steps[len(steps)-1].Status == *e.ToStatus {
+		for _, st := range stages {
+			if len(steps) > 0 && steps[len(steps)-1].Status == st {
 				continue // same status repetition is not a transition
 			}
-			steps = append(steps, pathStep{Status: *e.ToStatus, Time: e.OccurredAt})
+			steps = append(steps, pathStep{Status: st})
 		}
 		// Steps beyond maxSteps collapse into a terminal "更多步骤已折叠" node.
 		folded := len(steps) > maxSteps
@@ -342,30 +327,30 @@ func (r *Repo) SankeyB(ctx context.Context, req *SnapshotRequest, maxSteps int) 
 	}, nil
 }
 
-type eventRow struct {
-	FromStatus *string
-	ToStatus   *string
-	EventType  string
-	OccurredAt time.Time
-}
-
-func (r *Repo) eventsFor(ctx context.Context, appID int64) ([]eventRow, error) {
-	// The effective target status (a later correction wins) is what the flow
-	// actually did; the raw to_status would keep a mis-click in the diagram.
-	rows, err := r.db.Pool().Query(ctx, `SELECT e.from_status, `+effectiveToStatusSQL+`, e.event_type, e.occurred_at
-		FROM application_events e
-		WHERE e.application_id=$1 AND e.event_type <> 'correction' ORDER BY e.occurred_at, e.sequence`, appID)
+// stagePathFor returns the application's stage points in timeline order — the
+// statuses it actually walked through. It reads application_stage_points
+// (迁移 00006), so the diagram covers both legacy state-machine events (with a
+// later correction overriding the event it points at, since the raw target
+// would keep a mis-click in the picture forever) and the timeline nodes the
+// user added themselves.
+//
+// Ordering mirrors what the user sees in the timeline panel: 建档 first, then
+// business time ascending, nodes with no time last, ties resolved event-first.
+func (r *Repo) stagePathFor(ctx context.Context, appID int64) ([]string, error) {
+	rows, err := r.db.Pool().Query(ctx, `SELECT status FROM application_stage_points
+		WHERE application_id=$1
+		ORDER BY pinned_first DESC, occurred_at ASC NULLS LAST, (source = 'milestone') ASC, source_id ASC`, appID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []eventRow
+	var out []string
 	for rows.Next() {
-		var e eventRow
-		if err := rows.Scan(&e.FromStatus, &e.ToStatus, &e.EventType, &e.OccurredAt); err != nil {
+		var st string
+		if err := rows.Scan(&st); err != nil {
 			return nil, err
 		}
-		out = append(out, e)
+		out = append(out, st)
 	}
 	return out, rows.Err()
 }

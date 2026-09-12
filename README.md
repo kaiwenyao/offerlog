@@ -1,6 +1,6 @@
 # OfferLog 求职追踪系统
 
-全栈求职管理应用：收藏 → 投递 → 面试 → Offer → 接受/撤回 的完整追踪，类 Notion 数据库视图、跨岗位日历与站内提醒、桑基分析、私有附件存储。
+全栈求职管理应用：给每个岗位自由添加时间线事件（投递 / 初筛 / OA / 面试 / Offer / 任意自定义），时间线按发生时间自动排序、岗位状态随之推导——不是每个岗位都有 OA 或初筛，流程由你决定。另有类 Notion 数据库视图、跨岗位日历与站内提醒、桑基分析、私有附件存储。
 后端 Go + Gin + pgx/PostgreSQL，前端 React + TypeScript + Vite + ECharts。
 
 ## 主要能力
@@ -20,10 +20,17 @@ cp .env.example .env    # 必需：本地配置文件（默认值可直接用，
 make up
 ```
 
-构建并启动 postgres + api + worker。完成后打开 <http://localhost:8080>：
-本地栈默认开放注册（`REGISTRATION_OPEN=true`），没有默认初始用户 ——
-首次使用在登录页「注册」标签直接开号，smoke/e2e 验收脚本也会自动注册一次性账号；
-要闭门使用就在 `.env` 设 `REGISTRATION_OPEN=false`，再用 api-admin create-user
+构建并启动 postgres + api + worker，并自动建好本地测试账号。完成后打开
+<http://localhost:8080>，用 `make up` 最后打印的账号登录：
+
+```
+  测试账号：demo@offerlog.local  /  offerlog-demo-1234
+```
+
+账号默认值见 `.env.example` 的 `SEED_USER_*`（可改 `.env`，或 `make up SEED_USER_EMAIL=...`）；
+账号已存在时不会重置密码，`SEED_USER=0` 可完全跳过建号。登录页「注册」标签也能自助
+开号（`REGISTRATION_OPEN=true`），smoke/e2e 验收脚本同样自动注册一次性账号；要闭门
+使用就在 `.env` 设 `REGISTRATION_OPEN=false`，再用 api-admin create-user
 建号（见 [docs/runbook.md](./docs/runbook.md)）。
 
 ```bash
@@ -35,6 +42,7 @@ make down
 说明：
 
 - `make up` 强制要求根目录存在 `.env`（缺失会直接报错并提示 cp 命令），所有本地变量集中在 `.env`。
+- `make up` 最后会创建 / 校验本地测试账号并打印账号密码（见 `.env.example` 的 `SEED_USER_*`）。
 - 数据保存在 Docker 命名卷中，`make up` 反复重启不丢数据；只有 `make down` 会清空。
 - 改 `.env` 里的 postgres 口令只对新初始化的卷生效：需 `make down` 清卷后再 `make up`。
 - postgres 同时暴露在 `127.0.0.1:55432`，便于本机 psql / DBeaver 连接排查。

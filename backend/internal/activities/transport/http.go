@@ -29,11 +29,16 @@ type Handler struct {
 	sync ProgressSync
 }
 
-// ProgressSync mirrors an activity round's progress into the application
-// snapshot. Implemented by the applications repository, so the activity write
-// and the application update commit in one transaction.
+// ProgressSync keeps the owning application's snapshot in step with what this
+// package writes. Implemented by the applications repository, so the activity
+// write and the application update commit in one transaction.
+//
+//   - SyncFromActivity mirrors an activity round's progress onto the substatus;
+//   - RecomputeStatus re-derives the whole stage from the application's
+//     timeline (迁移 00006), and is what every milestone write ends with.
 type ProgressSync interface {
 	SyncFromActivity(ctx context.Context, q database.Querier, ownerID, appID int64, kind string, activityID int64, substatus string) error
+	RecomputeStatus(ctx context.Context, q database.Querier, appID, ownerID int64) error
 }
 
 func New(repo *actrepo.Repo) *Handler { return &Handler{repo: repo} }
@@ -52,6 +57,17 @@ func (h *Handler) mirrorProgress(ctx context.Context, q database.Querier, ownerI
 	}
 	return h.sync.SyncFromActivity(ctx, q, ownerID, appID, kind, activityID,
 		appdomain.SubstatusForActivity(kind, progress, result))
+}
+
+// recomputeStage re-derives the application's stage from its timeline inside
+// the caller's transaction. A no-op when no syncer is wired (tests that only
+// exercise activities). 每一条改动时间线的写路径都必须以它结尾——这是
+// 「状态 = 时间线最后一格」唯一的兑现点。
+func (h *Handler) recomputeStage(ctx context.Context, q database.Querier, ownerID, appID int64) error {
+	if h.sync == nil {
+		return nil
+	}
+	return h.sync.RecomputeStatus(ctx, q, appID, ownerID)
 }
 
 // WithNotifications attaches the in-app notification store so action lifecycle
@@ -83,6 +99,11 @@ func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.DELETE("/assessments/:assessment_id", h.deleteAssessment)
 	g.POST("/assessments/:assessment_id/complete", h.completeAssessment)
 	g.POST("/assessments/:assessment_id/reopen", h.reopenAssessment)
+	// milestones (用户自定义时间线节点，migration 00005)
+	g.GET("/milestones", h.listMilestones)
+	g.POST("/milestones", h.createMilestone)
+	g.PATCH("/milestones/:milestone_id", h.updateMilestone)
+	g.DELETE("/milestones/:milestone_id", h.deleteMilestone)
 	// actions
 	g.GET("/actions", h.listActions)
 	g.POST("/actions", h.createAction)

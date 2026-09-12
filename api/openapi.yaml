@@ -52,6 +52,25 @@ components:
         version: { type: integer, description: 乐观锁版本 }
         archived: { type: boolean }
         deleted: { type: boolean }
+    MilestoneInput:
+      type: object
+      properties:
+        kind:
+          type: string
+          description: |
+            事件类型 slug（开放集合，≤40 字，不含空白与「·」）。建议值见
+            /meta/status-model 的 milestone_kinds；未知类型照存不误，但不改变阶段。
+        label: { type: string, description: 展示名（≤100 字），留空按 kind 取默认名 }
+        occurred_at:
+          type: [string, 'null']
+          format: date-time
+          description: 业务发生时间；PATCH 时不传表示保持不变
+        clear_occurred_at:
+          type: boolean
+          description: PATCH 专用——显式清空时间（回到「时间未定」）
+        note: { type: string, description: 备注（≤2000 字）；终态事件的备注会成为岗位的「原因」 }
+      # status_effect 是只读的：由服务端按 kind 推导，请求体里传了也会被忽略，
+      # 否则调用方可以绕过类型表把岗位设成任意阶段。
     AssessmentRoundInput:
       type: object
       description: 一轮 OA / 作业（方案 §3.2）。收到、计划、截止、完成四种时间各自保存，互不覆盖。
@@ -167,7 +186,8 @@ paths:
     delete: { summary: 软删除 }
   /applications/{id}/transitions:
     post:
-      summary: 状态转换（version + idempotency_key；规则见领域层）
+      deprecated: true
+      summary: 状态转换（旧的固定流程接口；迁移 00006 起界面不再调用）
       description: |
         方案 §4.1：任意非终态 → 任意非终态（含回退），终态 → 非终态需填原因；
         进入 accepted 只允许从 offer，accepted → withdrawn（毁约）单独放行。
@@ -206,7 +226,8 @@ paths:
                   $ref: '#/components/schemas/InterviewRoundInput'
   /applications/{id}/correct-current:
     post:
-      summary: 更正当前进度（「之前选错了」）
+      deprecated: true
+      summary: 更正当前进度（「之前选错了」；旧固定流程接口）
       description: |
         方案 §4.2：把当前有效进度改成另一个（阶段, 子状态）。自动挑选最近一条未被
         更正的状态事件作为更正对象（可用 corrected_event_id 指定），插入 correction
@@ -227,10 +248,15 @@ paths:
                 version: { type: integer }
                 corrected_event_id: { type: [integer, 'null'] }
   /applications/{id}/events:
-    get: { summary: 状态时间线（含前后子状态、活动引用与变更类型） }
+    get:
+      summary: 旧的状态事件审计（只读历史；时间线与 milestones 合并展示）
+      description: |
+        迁移 00006 起，进度由 /milestones 记录，这里只剩「更新进度」时代留下的
+        追加式审计。前端把两者按业务时间合并渲染：事件行只读，节点行可编辑可删除。
   /applications/{id}/corrections:
     post:
-      summary: 历史纠正（指定事件 id，保留 corrects_event_id 审计）
+      deprecated: true
+      summary: 历史纠正（指定事件 id，保留 corrects_event_id 审计；旧固定流程接口）
   /applications/{id}/restore: { post: { summary: 从回收站恢复 } }
   /applications/{id}/archive: { post: { summary: 归档 } }
   /applications/{id}/unarchive: { post: { summary: 取消归档 } }
@@ -262,13 +288,45 @@ paths:
     post:
       summary: 标记本轮面试已完成（完成 ≠ 通过，不会自动通过或结束申请）
   /applications/{id}/interviews/{interview_id}/reopen: { post: { summary: 撤回本轮面试的完成标记 } }
+  /applications/{id}/milestones:
+    get:
+      summary: 时间线事件列表（按业务时间升序，时间未定的排最后）
+    post:
+      summary: 添加一个时间线事件
+      description: |
+        迁移 00006：记录进度的唯一入口。用户只说「发生了什么」——岗位阶段由服务端
+        按 kind 推导（status_effect），当前状态 = 时间线上最后一个带 status_effect
+        的事件。没有目标阶段选择、没有子状态、没有必填原因。
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MilestoneInput' }
+      responses:
+        '201': { description: 已创建；响应含服务端推导出的 status_effect }
+        '400': { description: kind / label / note 不合法 }
+        '404': { description: 岗位不存在或不属于当前用户 }
+  /applications/{id}/milestones/{milestone_id}:
+    patch:
+      summary: 编辑一个时间线事件（未提及的字段保持不变）
+      description: |
+        改时间会让时间线重排，改类型会换掉阶段效果——两者都可能换掉「最后一格」，
+        所以服务端在同一事务里重算岗位阶段。清空时间用 clear_occurred_at（线上
+        无法区分「没传」与「传了 null」）。
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MilestoneInput' }
+    delete:
+      summary: 移除一个时间线事件（状态随之退回上一格）
   /meta/status-model:
     get:
-      summary: 大阶段 / 合法子状态组合 / 可用目标白名单（方案 §6.5）
+      summary: 大阶段 / 合法子状态组合 / 事件类型清单（方案 §6.5 + 迁移 00006）
       description: |
-        前端据此渲染进度选择器，避免两套手写白名单。targets[from] 列出每个阶段
-        可选的 (目标阶段, 子状态) 及是否必须填原因、属于哪个分组
-        （advance / backward / reopen / end）。
+        单一白名单，前端据此渲染，避免两套手写表。
+        milestone_kinds 是「添加事件」选择器与参考流程图的数据源：每项为
+        {key, label, status_effect, group}，status_effect 为空表示这个事件只记在
+        时间线上、不改变岗位阶段。
+        targets 是旧固定流程选择器的遗留字段，界面已不再消费。
   /applications/{id}/actions: { get: {}, post: {} }
   /applications/{id}/notes: { get: {}, post: {} }
   /actions:

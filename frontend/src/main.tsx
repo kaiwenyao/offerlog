@@ -18,7 +18,7 @@ import { fetchMe, setCsrf, api } from './lib/api'
 import { setUserZone } from './lib/tz'
 import type { Me } from './lib/types'
 import { hydrateStatusModel, type ServerStatusModel } from './lib/status'
-import { hydrateTransitions } from './lib/transitions'
+import { hydrateMilestoneKinds } from './lib/milestones'
 import { AppLayout } from './app/layout'
 import { PageSpinner } from './components/ui'
 import { TodayPage } from './features/today/TodayPage'
@@ -55,7 +55,8 @@ async function fetchStatusModel(): Promise<ServerStatusModel | null> {
 function applyStatusModel(m: ServerStatusModel | null): void {
   if (!m) return
   hydrateStatusModel(m)
-  hydrateTransitions(m.targets)
+  // 事件类型清单（迁移 00006）：旧后端不返回时保留 lib/milestones.ts 的兜底表。
+  hydrateMilestoneKinds(m.milestone_kinds)
 }
 
 export default function App() {

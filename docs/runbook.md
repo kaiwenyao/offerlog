@@ -27,8 +27,11 @@ docker compose --profile seaweedfs up -d   # 需要时一并启动 SeaweedFS
 - 开放注册：`.env` 设 `REGISTRATION_OPEN=true` 重启 api，登录页出现「注册」标签，
   自助开号即签会话；密码规则 8-128 位，邮箱唯一。公开配置端点
   `GET /api/v1/auth/config` 返回 `{"registration_open": bool}` 供前端渲染。
-- 本地部署（compose.local）默认开放注册、不 seed 初始账号；测试栈同样开放，
-  smoke/e2e 每次注册一次性账号（唯一邮箱，重跑免清库）。
+- 本地部署（compose.local）`make up` 会自动建一个测试账号并打印账号密码
+  （`.env` 的 `SEED_USER_*`，`SEED_USER=0` 关闭），同时默认开放注册；测试栈
+  （compose.test）不 seed 初始账号，smoke/e2e 每次注册一次性账号（唯一邮箱，重跑免清库）。
+- `api-admin create-user -if-not-exists` 在邮箱已注册时打印提示并退出 0、不改密码，
+  供 `make up` 这类需要在保留数据卷上反复执行的场景使用。
 
 连已有 SeaweedFS/S3：设 `OBJECTSTORE_PROVIDER=s3` 与 `S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/S3_BUCKET`，
 不启动 seaweedfs profile；bucket 禁止匿名读写，凭证只进后端。

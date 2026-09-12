@@ -1,20 +1,12 @@
-import { ENDED, FLOW_ORDER, statusMeta } from '../lib/status'
-import { effectiveZone } from '../lib/tz'
+// 工序进度条：表格行与看板卡片上的那一排小格子。
+//
+// 迁移 00006 起，抽屉里那条带标签的完整工序线（StageTrail）已经被参考流程图
+// components/FlowGuide.tsx 取代——固定流水线不再是记录进度的方式，它只剩「一眼
+// 看到走到哪了」这一个用途，所以这里只保留紧凑版。
+import { FLOW_ORDER, statusMeta } from '../lib/status'
 
 /** Statuses that end a pipeline without reaching 已接受. */
 const DEAD = new Set(['rejected', 'withdrawn', 'closed'])
-
-/**
- * YYYY-MM-DD → the compact label under a rail node: MM-DD for the current
- * year, the full date for any other year (applications routinely span year
- * boundaries and a bare "12-03" would hide which December).
- */
-function shortDay(day: string): string {
-  const [y, ...rest] = day.split('-')
-  const zone = effectiveZone() ?? undefined
-  const thisYear = Number(new Date().toLocaleString('en-CA', { timeZone: zone, year: 'numeric' }))
-  return Number(y) === thisYear ? rest.join('-') : day
-}
 
 /**
  * Where the rail's highlight sits. For a live application that is the current
@@ -74,80 +66,6 @@ function visitedStages(path: string[], dates?: Record<string, string> | null) {
   const set = new Set<string>(path)
   if (dates) for (const s of Object.keys(dates)) if (dates[s]) set.add(s)
   return { set, known: set.size > 0 }
-}
-
-/**
- * Whether a node should read as 曾经历. Without stage history the only signal
- * is the index, which is also how the old code filled the bar.
- */
-function hasBeenTo(stage: string, i: number, at: number, reached: Set<string>, known: boolean): boolean {
-  if (i === at) return true
-  return known ? reached.has(stage) : i < at
-}
-
-/**
- * 工序线: the whole pipeline as a run of process blocks, filled up to the
- * stage the application has reached and hairline-outlined beyond it. When the
- * server's stage history is available its reached-status dates double as the
- * walked path (终态岗位画到它真正走到的那一格) and render under each reached
- * block's label.
- */
-export function StageTrail({
-  current,
-  path,
-  dates,
-}: {
-  current: string
-  path: string[]
-  /** stage → YYYY-MM-DD（最早到达日，include=stage_history） */
-  dates?: Record<string, string> | null
-}) {
-  const at = railIndex(current, path.length ? path : walkedPath(dates))
-  const dead = DEAD.has(current)
-  const done = ENDED.has(current)
-  const { set: reached, known } = visitedStages(path.length ? path : walkedPath(dates), dates)
-
-  return (
-    <div className="stage-trail" aria-label={`工序线 ${statusMeta(current).label}`}>
-      {FLOW_ORDER.map((stage, i) => {
-        const skin = cellSkin(i, at, dead, known ? reached.has(stage) : i < at)
-        const full = dates?.[stage]
-        const date = full ? shortDay(full) : undefined // compact inside the tight block
-        const isTip = i === at
-        const hasBeen = hasBeenTo(stage, i, at, reached, known)
-        const sub = isTip
-          ? date
-            ? `${date} · ${dead ? statusMeta(current).label : done ? '完成' : '当前'}`
-            : dead
-              ? statusMeta(current).label
-              : done
-                ? '完成'
-                : '当前'
-          : hasBeen && date
-            ? date
-            : ''
-        return (
-          <span
-            key={stage}
-            className="stage-node"
-            title={full ? `${statusMeta(stage).label} · ${full.split('-').join('/')}` : statusMeta(stage).label}
-          >
-            <span
-              aria-hidden
-              className="bar"
-              style={{ background: skin.fill, boxShadow: `inset 0 0 0 1px ${skin.edge}` }}
-            />
-            <span className="label" style={{ color: skin.label }}>
-              {statusMeta(stage).label}
-            </span>
-            {sub && (
-              <span style={{ fontSize: 10, letterSpacing: '.06em', color: 'var(--neutral-600)' }}>{sub}</span>
-            )}
-          </span>
-        )
-      })}
-    </div>
-  )
 }
 
 interface StageRailProps {

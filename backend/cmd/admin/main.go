@@ -9,12 +9,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 
 	"offerlog/backend/internal/bootstrap"
+	idservice "offerlog/backend/internal/identity/service"
 	"offerlog/backend/internal/platform/config"
 	"offerlog/backend/internal/platform/migrate"
 	"offerlog/backend/internal/platform/observability"
@@ -26,6 +28,10 @@ func main() {
 	password := create.String("password", "", "password (min 8 chars)")
 	name := create.String("name", "Owner", "display name")
 	tz := create.String("timezone", "Europe/Dublin", "user timezone")
+	// -if-not-exists makes the command safe to run on every boot of a stack
+	// whose data volume survives (the local `make up` seed does exactly that):
+	// an account that is already there is the expected case, not a failure.
+	ifNotExists := create.Bool("if-not-exists", false, "exit 0 when the email is already registered")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -61,6 +67,13 @@ func main() {
 			os.Exit(1)
 		}
 		if _, err := app.Auth.Register(ctx, *email, *password, *name, *tz); err != nil {
+			// Leave the existing password alone: silently resetting it would
+			// invalidate a session the user is already logged into, and the
+			// printed credentials would then be a lie about someone's real data.
+			if *ifNotExists && errors.Is(err, idservice.ErrEmailTaken) {
+				fmt.Printf("user %s already exists, left unchanged\n", *email)
+				return
+			}
 			fmt.Println("create user failed:", err)
 			os.Exit(1)
 		}

@@ -1,9 +1,17 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
-import { toInstantInUserZone } from '../../lib/tz'
-import type { AppRow } from '../../lib/types'
-import { NEXT_STEP_SUGGESTION } from '../../lib/status'
+import { toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
+import type { AppRow, Milestone } from '../../lib/types'
+import { ENDED, NEXT_STEP_SUGGESTION, statusMeta } from '../../lib/status'
+import {
+  isDefaultLabel,
+  MILESTONE_GROUP_LABEL,
+  MILESTONE_KIND_GROUPS,
+  milestoneDefaultLabel,
+  milestoneKindsByGroup,
+  statusEffectForKind,
+} from '../../lib/milestones'
 import { Button, Checkbox, Input, Select, Textarea } from '../../ds'
 import { ErrorText, Modal, Spinner } from '../../components/ui'
 
@@ -289,6 +297,133 @@ export function AssessmentForm({
         )}
         <Input label="测试链接" value={link} onChange={(e) => setLink(e.target.value)} />
         <Textarea label="备注" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+      </div>
+    </Modal>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 添加 / 编辑一个时间线事件（迁移 00005 / 00006）。
+ *
+ * 这是记录进度的**唯一入口**：不是每个岗位都有 OA、初筛或面试——发生了什么由
+ * 用户自己选择，时间也可以留空（时间未定）。岗位阶段由后端按事件类型推导，
+ * 所以这个表单里没有「目标状态」「子状态」，也没有任何必填的原因。
+ *
+ * milestone 传入时为编辑模式（PATCH），否则新建（POST）。
+ */
+export function MilestoneForm({
+  appId,
+  milestone,
+  initialKind,
+  onClose,
+  onDone,
+}: {
+  appId: number
+  milestone?: Milestone
+  /** 从参考流程图点进来时预填的事件类型。 */
+  initialKind?: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [kind, setKind] = useState(milestone?.kind ?? initialKind ?? 'apply')
+  const [label, setLabel] = useState(milestone?.label ?? milestoneDefaultLabel(milestone?.kind ?? initialKind ?? 'apply'))
+  const [occurred, setOccurred] = useState(
+    milestone?.occurred_at ? toLocalDateTimeInput(milestone.occurred_at) : '',
+  )
+  const [note, setNote] = useState(milestone?.note ?? '')
+  const [err, setErr] = useState('')
+
+  const effect = statusEffectForKind(kind)
+  const isEnding = effect !== '' && ENDED.has(effect)
+
+  const mut = useMutation({
+    mutationFn: () => {
+      let occurredAt: string | null = null
+      if (occurred) {
+        const { iso } = toInstantInUserZone(occurred)
+        if (iso == null) throw new ApiError('bad_occurred_at', '时间格式不正确', 400)
+        occurredAt = iso
+      }
+      const body = {
+        kind,
+        label: label.trim() || milestoneDefaultLabel(kind),
+        occurred_at: occurredAt,
+        note,
+      }
+      return milestone
+        ? api.patch(`/api/v1/applications/${appId}/milestones/${milestone.id}`, {
+            ...body,
+            // 新时间留空 = 回到「时间未定」，而不是悄悄保留旧时间。
+            clear_occurred_at: occurredAt == null,
+          })
+        : api.post(`/api/v1/applications/${appId}/milestones`, body)
+    },
+    onSuccess: onDone,
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+  })
+
+  return (
+    <Modal
+      title={milestone ? '编辑事件' : '添加事件'}
+      onClose={onClose}
+      footer={
+        <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+          {mut.isPending ? <Spinner size={14} /> : '保存'}
+        </Button>
+      }
+    >
+      {err && <ErrorText>{err}</ErrorText>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+          <Select
+            label="事件类型"
+            options={[]}
+            value={kind}
+            onChange={(e) => {
+              const next = e.target.value
+              setKind(next)
+              // 名称没改过（还是某个类型的默认名）时跟随类型走；改过则保留用户写的。
+              setLabel((l) => (l === '' || isDefaultLabel(l) ? milestoneDefaultLabel(next) : l))
+            }}
+          >
+            {MILESTONE_KIND_GROUPS.map((g) => (
+              <optgroup key={g} label={MILESTONE_GROUP_LABEL[g]}>
+                {milestoneKindsByGroup(g).map((k) => (
+                  <option key={k.key} value={k.key}>
+                    {k.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </Select>
+          <span style={{ font: 'var(--type-caption)', fontWeight: 400, color: 'var(--text-muted)' }}>
+            {effect
+              ? `记下这一步，岗位状态会更新为「${statusMeta(effect).label}」`
+              : '只记在时间线上，不改变岗位状态'}
+          </span>
+        </div>
+        <Input
+          label="名称"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          hint="可自由修改，例如「一面」「背调」「谈薪」"
+        />
+        <Input
+          label="发生时间"
+          type="datetime-local"
+          value={occurred}
+          onChange={(e) => setOccurred(e.target.value)}
+          hint="留空则记为「时间未定」；时间线按这个时间自动排序"
+        />
+        <Textarea
+          label="备注"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={2}
+          placeholder={isEnding ? '为什么结束？会显示在岗位详情的「原因」里' : '细节、结果、要点…'}
+        />
       </div>
     </Modal>
   )

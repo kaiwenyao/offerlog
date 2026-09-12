@@ -644,11 +644,22 @@ type CorrectionInput struct {
 }
 
 // Correct validates the resulting timeline then records a correction event.
+//
+// An omitted OccurredAt must stay omitted: CorrectCurrent reads nil as 「时间
+// 没错，只改状态」 and keeps the corrected event's own business time. Passing
+// &in.OccurredAt unconditionally handed it the zero Time instead, stamping the
+// correction with year 1 — invisible while the replay walked events in
+// insertion order, and a wrong current status the moment it walks them in
+// business-time order (迁移 00006).
 func (s *Service) Correct(ctx context.Context, ownerID, appID int64, in *CorrectionInput) error {
-	occ := in.OccurredAt
+	var occ *time.Time
+	if !in.OccurredAt.IsZero() {
+		t := in.OccurredAt
+		occ = &t
+	}
 	_, err := s.CorrectCurrent(ctx, ownerID, appID, &CorrectCurrentInput{
 		ToStatus: in.NewStatus, ToSubstatus: in.NewSubstatus,
-		Reason: in.Reason, OccurredAt: &occ, Version: in.Version,
+		Reason: in.Reason, OccurredAt: occ, Version: in.Version,
 		CorrectedEventID: &in.EventID,
 	})
 	return err
