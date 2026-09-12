@@ -18,6 +18,20 @@ export function paletteRows(items: SearchItem[], cmds: Array<{ key: string }>): 
 }
 
 /**
+ * Query that isolates one application row in the database-page search box.
+ * The palette's application label is「公司 · 岗位」; the search takes
+ * whitespace-separated terms ANDed together (每个词都要命中)， so feeding
+ * 公司 + 岗位 as two terms lands on exactly that row（同名岗位自然一起列出）。
+ */
+export function applicationSearchQuery(label: string): string {
+  return label
+    .split(' · ')
+    .map((part) => part.trim())
+    .filter((part) => part !== '' && !/^[·\s]+$/.test(part))
+    .join(' ')
+}
+
+/**
  * Next highlight index for a palette key press, or null when the key is not a
  * navigation key (Enter/Esc are handled by the caller). Wraps around both ends
  * and clamps to `len - 1` so a stale index can never point past the list after

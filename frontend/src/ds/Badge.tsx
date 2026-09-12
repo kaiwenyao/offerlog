@@ -90,7 +90,20 @@ export function Tag({ selected = false, onRemove, onClick, style, children, ...r
             onRemove(e)
           }}
           aria-label="移除"
-          style={{ all: 'unset', cursor: 'pointer', lineHeight: 0, opacity: 0.5, fontSize: 14 }}
+          style={{
+            all: 'unset',
+            cursor: 'pointer',
+            opacity: 0.5,
+            fontSize: 14,
+            // all:unset + lineHeight:0 会把按钮压成 0 高——几何上点不到。
+            // 给它真实占位，鼠标才能命中（搜索 chip 的 × 就是靠它移除的）。
+            display: 'inline-grid',
+            placeItems: 'center',
+            width: 14,
+            height: 14,
+            flex: '0 0 auto',
+            borderRadius: 2,
+          }}
         >
           ×
         </button>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDay, localDateTimeToInstant, toDayString } from '../../lib/api'
 import { effectiveZone } from '../../lib/tz'
 import type { AppRow, SavedView } from '../../lib/types'
@@ -89,6 +89,7 @@ function isDayBeforeToday(dayStr: string): boolean {
 export function DatabasePage() {
   const { id: routeApp } = useParams()
   const [params, setParams] = useSearchParams()
+  const loc = useLocation()
   const nav = useNavigate()
   const qc = useQueryClient()
 
@@ -108,7 +109,9 @@ export function DatabasePage() {
   const [sort, setSort] = useState<SortClause>(() => loadDbSort(localStorage.getItem(DB_SORT_STORAGE_KEY)))
 
   // Header search / saved views / the header's ＋ 记一个岗位 button all
-  // navigate here with query params.
+  // navigate here with query params. 依赖里带上 loc.key：导航到**完全相同的
+  // URL**（例如搜索同一个词两次）时 params 引用不变，但每次导航 location.key
+  // 都会变——否则那一次同步会被整个跳过。
   useEffect(() => {
     // `q === null`（URL 里没有 ?q=，比如「清除筛选」或移除搜索 chip 后回到
     // /database）也要把搜索词清空——否则组件里还留着旧词，列表依旧被过滤，
@@ -117,6 +120,16 @@ export function DatabasePage() {
     setSearch(q ?? '')
     const v = params.get('view')
     if (v !== null) setViewId(Number(v))
+    else if (q !== null) setViewId(-1)
+    // 携带 q 的导航（⌘K 面板选岗位/公司、顶栏搜索）是全局搜索意图：回到
+    // 「全部机会」并清掉快捷筛选、退出回收站、关掉旧抽屉。否则在「进行中」
+    // 视图上搜一个已结束岗位会空列表，抽屉还盖在新结果上（PR #32 review P1）。
+    // 不带 q 的导航（清除筛选、侧栏已保存视图）仍保留这些本地状态。
+    if (q !== null) {
+      setExtraFilters([])
+      setTrashMode(false)
+      setSelApp(null)
+    }
     const l = params.get('layout') as Layout | null
     if (l) setLayout(l)
     if (params.get('new') === '1') {
@@ -128,7 +141,7 @@ export function DatabasePage() {
       setParams(next, { replace: true })
     }
     setPage(1)
-  }, [params, setParams])
+  }, [params, setParams, loc.key])
 
   useEffect(() => {
     localStorage.setItem(DB_SORT_STORAGE_KEY, JSON.stringify(sort))
