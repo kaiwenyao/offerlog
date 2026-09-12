@@ -28,6 +28,7 @@ import { defaultSubmittedIso } from '../src/lib/tz'
 import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
 import { mergeTimeline } from '../src/features/database/timeline'
+import { moveHighlight, paletteRows } from '../src/features/search/paletteNav'
 import {
   BUILTIN,
   buildFilters,
@@ -379,6 +380,48 @@ describe('analytics rate display semantics (§4.2)', () => {
     expect(rateOrDash(0.5, 10)).toBe('50.0%')
     expect(rateOrDash(null, 0)).toBe('—') // 空样本
     expect(rateOrDash(undefined, 0)).toBe('—')
+  })
+})
+
+describe('⌘K palette keyboard navigation', () => {
+  const items = [
+    { kind: 'application', id: 1, label: '字节跳动', hint: '已投递' },
+    { kind: 'company', id: 1, label: '字节跳动', hint: '1 个岗位' },
+  ] as const
+  const cmds = [{ key: 'today', label: '今日待办' }, { key: 'db', label: '求职数据库' }]
+
+  it('flattens search hits then commands into one navigable list', () => {
+    const rows = paletteRows([...items], cmds)
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toMatchObject({ kind: 'item' })
+    expect(rows[2]).toMatchObject({ kind: 'cmd' })
+  })
+
+  it('Enter is not a navigation key — the caller decides what it means', () => {
+    // ↵ 由组件处理（执行高亮行），导航层只管 ↑↓/Home/End。
+    expect(moveHighlight(0, 4, 'Enter')).toBeNull()
+    expect(moveHighlight(0, 4, 'Escape')).toBeNull()
+    expect(moveHighlight(0, 4, 'k')).toBeNull()
+  })
+
+  it('arrows move and wrap around both ends', () => {
+    expect(moveHighlight(0, 4, 'ArrowDown')).toBe(1)
+    expect(moveHighlight(3, 4, 'ArrowDown')).toBe(0) // 末尾再 ↓ 回到开头
+    expect(moveHighlight(0, 4, 'ArrowUp')).toBe(3) // 开头再 ↑ 跳到末尾
+    expect(moveHighlight(2, 4, 'ArrowUp')).toBe(1)
+  })
+
+  it('clamps stale indexes instead of pointing past the list', () => {
+    // 结果从 5 条变成 3 条后旧高亮位 4 不能越界
+    expect(moveHighlight(4, 3, 'ArrowDown')).toBe(0)
+    expect(moveHighlight(4, 3, 'ArrowUp')).toBe(1)
+  })
+
+  it('Home/End jump to the list edges; empty list never moves', () => {
+    expect(moveHighlight(2, 4, 'Home')).toBe(0)
+    expect(moveHighlight(2, 4, 'End')).toBe(3)
+    expect(moveHighlight(0, 0, 'ArrowDown')).toBeNull()
+    expect(moveHighlight(0, 0, 'End')).toBeNull()
   })
 })
 
