@@ -104,3 +104,48 @@ export function boardBuckets(viewId: number): BoardBucket[] {
     (b) => b.statuses.length > 0,
   )
 }
+
+// ---------------------------------------------------------------- Sorting --
+// 用户在数据库页自选列表排序（按最后更新时间 / 创建岗位时间）。字段名与
+// 后端 views.CoreFields 的可排序字段一一对应（updated_at / created_at 都在
+// 白名单里），方向沿用后端约束 asc|desc。
+
+export type SortField = 'updated_at' | 'created_at'
+export type SortDir = 'asc' | 'desc'
+
+/** Wire shape of one `/views/query` sort clause. */
+export interface SortClause {
+  field: SortField
+  dir: SortDir
+}
+
+export const DB_SORT_STORAGE_KEY = 'offerlog:db-sort'
+
+export const DEFAULT_DB_SORT: SortClause = { field: 'updated_at', dir: 'desc' }
+
+export const DB_SORT_FIELDS: Array<{ value: SortField; label: string }> = [
+  { value: 'updated_at', label: '最后更新时间' },
+  { value: 'created_at', label: '创建岗位时间' },
+]
+
+export function sortDirLabel(dir: SortDir): string {
+  return dir === 'desc' ? '新 → 旧' : '旧 → 新'
+}
+
+/**
+ * Parse + validate the persisted sort preference. localStorage 内容不可信，
+ * 任何不认识/残缺的形状都静默回退到默认（最新更新在前），不让坏数据
+ * 变成一次 400。
+ */
+export function loadDbSort(raw: string | null): SortClause {
+  if (!raw) return DEFAULT_DB_SORT
+  try {
+    const v = JSON.parse(raw) as { field?: unknown; dir?: unknown }
+    const field = DB_SORT_FIELDS.some((f) => f.value === v.field) ? (v.field as SortField) : null
+    if (!field) return DEFAULT_DB_SORT
+    const dir: SortDir = v.dir === 'asc' ? 'asc' : v.dir === 'desc' ? 'desc' : DEFAULT_DB_SORT.dir
+    return { field, dir }
+  } catch {
+    return DEFAULT_DB_SORT
+  }
+}

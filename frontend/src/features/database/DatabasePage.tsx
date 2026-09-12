@@ -14,9 +14,16 @@ import {
   BUILTIN,
   boardBuckets,
   buildFilters,
+  DB_SORT_FIELDS,
+  DB_SORT_STORAGE_KEY,
+  loadDbSort,
+  sortDirLabel,
   type BoardBucket,
   type FilterNode,
   type Layout,
+  type SortClause,
+  type SortDir,
+  type SortField,
 } from './views'
 
 const PAGE_SIZE = 60
@@ -96,6 +103,9 @@ export function DatabasePage() {
   const [selRows, setSelRows] = useState<Set<number>>(new Set())
   const [bulkTag, setBulkTag] = useState('')
   const [bulkPriority, setBulkPriority] = useState('')
+  // 用户自选排序（最后更新时间 / 创建岗位时间），偏好存在 localStorage，
+  // 跨会话保留；不进 URL 参数，因为它是个人偏好而不是可分享的导航状态。
+  const [sort, setSort] = useState<SortClause>(() => loadDbSort(localStorage.getItem(DB_SORT_STORAGE_KEY)))
 
   // Header search / saved views / the header's ＋ 记一个岗位 button all
   // navigate here with query params.
@@ -117,11 +127,15 @@ export function DatabasePage() {
     setPage(1)
   }, [params, setParams])
 
+  useEffect(() => {
+    localStorage.setItem(DB_SORT_STORAGE_KEY, JSON.stringify(sort))
+  }, [sort])
+
   const viewsQ = useQuery({ queryKey: ['views'], queryFn: () => api.get<{ items: SavedView[] }>('/api/v1/views') })
   const allViews = useMemo(() => [...BUILTIN, ...(viewsQ.data?.items ?? [])], [viewsQ.data])
 
   const appsQ = useQuery({
-    queryKey: ['apps', 'db', viewId, search, page, JSON.stringify(extraFilters), trashMode],
+    queryKey: ['apps', 'db', viewId, search, page, JSON.stringify(extraFilters), trashMode, sort],
     queryFn: async () => {
       if (trashMode) {
         return api.get<{ items: AppRow[]; total: number }>('/api/v1/applications?trash=1&page=1&page_size=60&include=stage_history')
@@ -130,7 +144,7 @@ export function DatabasePage() {
       return api.post<{ items: AppRow[]; total: number }>('/api/v1/views/query', {
         page,
         page_size: PAGE_SIZE,
-        sort: [{ field: 'updated_at', dir: 'desc' }],
+        sort: [{ field: sort.field, dir: sort.dir }],
         filters: buildFilters(view, search, extraFilters),
         include: ['stage_history'],
       })
@@ -221,7 +235,32 @@ export function DatabasePage() {
           回收站
         </Tag>
 
-        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {/* 自选排序：字段 + 方向。两个小控件的宽度都固定，避免切换时挤压后面的计数。 */}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>排序</span>
+            <Select
+              options={DB_SORT_FIELDS.map((f) => ({ value: f.value, label: f.label }))}
+              value={sort.field}
+              size="sm"
+              fullWidth={false}
+              onChange={(e) =>
+                setSort((s) => ({ ...s, field: e.target.value as SortField }))
+              }
+              style={{ width: 140 }}
+              aria-label="排序字段"
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              title={sort.dir === 'desc' ? '当前：新的在前，点击改为旧的在前' : '当前：旧的在前，点击改为新的在前'}
+              onClick={() =>
+                setSort((s) => ({ ...s, dir: (s.dir === 'desc' ? 'asc' : 'desc') as SortDir }))
+              }
+            >
+              {sortDirLabel(sort.dir)}
+            </Button>
+          </span>
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
             共 <Num color="var(--text)">{total}</Num> 条
             {extraFilters.length > 0 && (
