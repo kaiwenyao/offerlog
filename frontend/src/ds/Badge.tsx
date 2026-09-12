@@ -94,13 +94,15 @@ export function Tag({ selected = false, onRemove, onClick, style, children, ...r
             all: 'unset',
             cursor: 'pointer',
             opacity: 0.5,
-            fontSize: 14,
-            // all:unset + lineHeight:0 会把按钮压成 0 高——几何上点不到。
-            // 给它真实占位，鼠标才能命中（搜索 chip 的 × 就是靠它移除的）。
-            display: 'inline-grid',
+            // all:unset 不重置继承的 line-height（Noto Sans SC ≈ 1.55），14px
+            // 字号的行盒高 ~17px，会溢出 14×14 的格子把 × 顶偏。lineHeight:1
+            // 让行盒回到字号大小，grid 居中才真正居中。
+            display: 'grid',
             placeItems: 'center',
-            width: 14,
-            height: 14,
+            width: 16,
+            height: 16,
+            fontSize: 13,
+            lineHeight: 1,
             flex: '0 0 auto',
             borderRadius: 2,
           }}
