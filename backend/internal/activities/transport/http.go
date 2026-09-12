@@ -1302,6 +1302,16 @@ type noteDTO struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+func noteToDTO(n *actrepo.Note) noteDTO {
+	return noteDTO{
+		ID:            n.ID,
+		ApplicationID: n.ApplicationID,
+		ContentMD:     n.ContentMD,
+		CreatedAt:     n.CreatedAt,
+		UpdatedAt:     n.UpdatedAt,
+	}
+}
+
 func (h *Handler) listNotes(c *gin.Context) {
 	user := httpx.UserFrom(c)
 	appID, err := h.appID(c)
@@ -1314,7 +1324,13 @@ func (h *Handler) listNotes(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	// Repo struct has no JSON tags — always map through the DTO, otherwise the
+	// wire keys are "ContentMD" etc. and the frontend sees no content_md.
+	out := make([]noteDTO, len(items))
+	for i, n := range items {
+		out[i] = noteToDTO(n)
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
 }
 
 func (h *Handler) createNote(c *gin.Context) {
@@ -1335,7 +1351,7 @@ func (h *Handler) createNote(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, n)
+	c.JSON(http.StatusCreated, noteToDTO(n))
 }
 
 func (h *Handler) updateNote(c *gin.Context) {
@@ -1351,7 +1367,14 @@ func (h *Handler) updateNote(c *gin.Context) {
 		writeNoteErr(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, n)
+	// Refetch so created_at/updated_at in the response are the stored values,
+	// not the zero time left on the in-memory struct.
+	cur, err := h.repo.GetNote(c.Request.Context(), user.ID, nid)
+	if err != nil {
+		writeNoteErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, noteToDTO(cur))
 }
 
 func (h *Handler) deleteNote(c *gin.Context) {
