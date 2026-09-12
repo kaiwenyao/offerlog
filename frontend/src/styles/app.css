@@ -529,6 +529,50 @@ button.panel-row:hover {
   border-bottom: 1px solid var(--border);
 }
 
+/* 可拖拽列宽的表头：手柄贴在右边界上，hover / 拖动时亮成强调色。 */
+.tbl th.col-head {
+  position: relative;
+}
+
+.col-resize {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  width: 11px;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.col-resize::after {
+  content: '';
+  position: absolute;
+  top: 18%;
+  bottom: 18%;
+  right: 5px;
+  width: 1px;
+  background: var(--border);
+}
+
+.col-resize:hover::after,
+.col-resize:focus-visible::after,
+.col-resize.active::after {
+  background: var(--accent);
+  width: 2px;
+}
+
+.col-resize:focus-visible {
+  outline: none;
+}
+
+/* 拖动期间锁住整页光标与选中，避免光标跑出手柄后变回默认箭头。 */
+body.col-resizing,
+body.col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 .tbl td {
   padding: 8px var(--space-3);
   border-bottom: 1px solid var(--border-alt);

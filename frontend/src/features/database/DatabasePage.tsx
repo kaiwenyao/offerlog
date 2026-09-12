@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDay, localDateTimeToInstant, toDayString } from '../../lib/api'
@@ -10,6 +10,19 @@ import { CompanyMark } from '../../components/Icon'
 import { StageRail } from '../../components/StageRail'
 import { Dot, EmptyHint, ErrorText, Modal, Num, PageSpinner, Spinner, StatusChip } from '../../components/ui'
 import { Drawer } from './drawer'
+import {
+  clampColWidth,
+  COL_WIDTHS_STORAGE_KEY,
+  columnByKey,
+  fitWidths,
+  loadColWidths,
+  resolveWidths,
+  totalWidth,
+  visibleColumnKeys,
+  type ColWidths,
+  type DbColumnKey,
+} from './columns'
+import { createTextMeasurer } from './measure'
 import {
   BUILTIN,
   boardBuckets,
@@ -75,10 +88,17 @@ const LAYOUT_TABS = [
   { value: 'list', label: '列表' },
 ]
 
-/** Table geometry from the design's 工序进度 grid, as fixed table columns. The
- *  rail column is wide enough for the current stage's label to sit inside its
- *  block, the way the canvas draws it. 公司与岗位各占一列，不再合并。 */
-const COLS = ['150px', '150px', '176px', '116px', 'auto', '92px', '88px', '104px', '56px']
+/**
+ * 列宽偏好存在 localStorage（个人偏好，不进 URL）：读不到 / 存不了都只是退回
+ * 默认自适应，不能让 localStorage 的异常炸掉整张表。
+ */
+function readColWidths(): ColWidths {
+  try {
+    return loadColWidths(localStorage.getItem(COL_WIDTHS_STORAGE_KEY))
+  } catch {
+    return {}
+  }
+}
 
 /** YYYY-MM-DD strictly before today (user-zone day-key compare). */
 function isDayBeforeToday(dayStr: string): boolean {
@@ -421,127 +441,304 @@ function TableView({
   onRestore: (id: number) => void
 }) {
   const allChecked = rows.length > 0 && rows.every((r) => selected.has(r.id))
+  // 列宽：默认按本页内容量出来的自适应宽度（公司与岗位不再被 150px 截断），
+  // 用户拖过手柄的列用显式宽度覆盖，flex 列（下一步）吃掉卡片剩余宽度。
+  const keys = useMemo(() => visibleColumnKeys(trashMode), [trashMode])
+  const [overrides, setOverrides] = useState<ColWidths>(readColWidths)
+  const [dragKey, setDragKey] = useState<DbColumnKey | null>(null)
+  const [cardWidth, setCardWidth] = useState(0)
+  const [fitPass, setFitPass] = useState(0)
+  const tableRef = useRef<HTMLTableElement | null>(null)
+  const colRefs = useRef(new Map<DbColumnKey, HTMLTableColElement>())
+  const dragRef = useRef<{ key: DbColumnKey; startX: number; startWidth: number } | null>(null)
+  const draggedWidth = useRef(0)
+  const measurer = useMemo(() => createTextMeasurer(), [])
+
+  // 表格父级就是 Card（overflow:auto 的块级容器），它的 clientWidth 决定 flex
+  // 列吃多少剩余空间。表格宽度由 colgroup 决定，不改父级宽度，不会 resize 循环。
+  useEffect(() => {
+    const parent = tableRef.current?.parentElement
+    if (!parent) return
+    const update = () => setCardWidth(parent.clientWidth)
+    update()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update)
+      return () => window.removeEventListener('resize', update)
+    }
+    const ro = new ResizeObserver(update)
+    ro.observe(parent)
+    return () => ro.disconnect()
+  }, [])
+
+  // 自定义字体（Barlow / Noto Sans SC）比首屏晚到时，探针量的是回退字体宽度
+  // （偏窄，长公司名会被截）。fonts.ready 之后清缓存重量一遍；Noto Sans SC 按
+  // unicode-range 分片按需加载，后续分片落地还会再触发 loadingdone，所以两个
+  // 事件都要听（用计数器而不是布尔量，保证每次都真的重算）。
+  useEffect(() => {
+    const fonts = typeof document === 'undefined' ? undefined : document.fonts
+    if (!fonts) return
+    let alive = true
+    const remeasure = () => {
+      if (!alive) return
+      measurer.reset()
+      setFitPass((n) => n + 1)
+    }
+    fonts.ready.then(remeasure).catch(() => {})
+    fonts.addEventListener('loadingdone', remeasure)
+    return () => {
+      alive = false
+      fonts.removeEventListener('loadingdone', remeasure)
+    }
+  }, [measurer])
+
+  const autoFit = useMemo(() => fitWidths(rows, measurer), [rows, measurer, fitPass])
+  // 卸载时把隐藏探针节点一起收走，别在 body 里留一个孤儿 span。
+  useEffect(() => () => measurer.dispose(), [measurer])
+  const widths = useMemo(
+    () => resolveWidths(keys, autoFit, overrides, cardWidth),
+    [keys, autoFit, overrides, cardWidth],
+  )
+  const tableWidth = useMemo(() => totalWidth(widths, keys), [widths, keys])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COL_WIDTHS_STORAGE_KEY, JSON.stringify(overrides))
+    } catch {
+      // 隐私模式 / 禁用存储：偏好存不下而已，表格本身照常工作。
+    }
+  }, [overrides])
+
+  // 拖动时直接写 <col> / <table> 的 DOM 宽度，不 setState——60 行 × 11 列的重渲染
+  // 会让拖拽掉帧。松手时再一次性提交到 overrides。
+  const applyLiveWidths = useCallback(
+    (next: ColWidths) => {
+      const live = resolveWidths(keys, autoFit, next, cardWidth)
+      for (const key of keys) {
+        const el = colRefs.current.get(key)
+        if (el) el.style.width = `${live[key]}px`
+      }
+      if (tableRef.current) tableRef.current.style.minWidth = `${totalWidth(live, keys)}px`
+    },
+    [keys, autoFit, cardWidth],
+  )
+
+  useEffect(() => {
+    if (!dragKey) return
+    const col = columnByKey(dragKey)
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current
+      if (!d) return
+      const next = clampColWidth(col, d.startWidth + (e.clientX - d.startX))
+      draggedWidth.current = next
+      applyLiveWidths({ ...overrides, [dragKey]: next })
+    }
+    const onUp = () => {
+      const d = dragRef.current
+      // 只是点了一下手柄（没拖动）不应把这一列从「自适应」变成「固定宽度」。
+      if (d && draggedWidth.current !== d.startWidth) {
+        setOverrides((prev) => ({ ...prev, [dragKey]: draggedWidth.current }))
+      }
+      dragRef.current = null
+      setDragKey(null)
+    }
+    document.body.classList.add('col-resizing')
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      document.body.classList.remove('col-resizing')
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [dragKey, overrides, applyLiveWidths])
+
+  const startDrag = (key: DbColumnKey, e: React.MouseEvent) => {
+    e.preventDefault()
+    dragRef.current = { key, startX: e.clientX, startWidth: widths[key] }
+    draggedWidth.current = widths[key]
+    setDragKey(key)
+  }
+
+  const setWidth = (key: DbColumnKey, width: number) =>
+    setOverrides((prev) => ({ ...prev, [key]: clampColWidth(columnByKey(key), width) }))
+
+  const resetColumn = (key: DbColumnKey) =>
+    setOverrides((prev) => {
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+
+  const onHandleKey = (key: DbColumnKey, e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowLeft') setWidth(key, widths[key] - 16)
+    else if (e.key === 'ArrowRight') setWidth(key, widths[key] + 16)
+    else if (e.key === 'Enter' || e.key === ' ' || e.key === 'Home') resetColumn(key)
+    else return
+    e.preventDefault()
+  }
+
   return (
-    <Card padding={0} style={{ overflow: 'auto' }}>
-      <table className="tbl" style={{ minWidth: 1120, tableLayout: 'fixed' }}>
-        <colgroup>
-          <col style={{ width: 36 }} />
-          {COLS.map((w, i) => (
-            <col key={i} style={{ width: w }} />
-          ))}
-          {trashMode && <col style={{ width: 80 }} />}
-        </colgroup>
-        <thead>
-          <tr>
-            <th>
-              <input
-                type="checkbox"
-                aria-label="选择本页"
-                checked={allChecked}
-                onChange={(e) => onToggleAll(e.target.checked)}
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+        <span>拖动表头分隔线可调整列宽；公司 / 岗位默认按内容自适应，双击手柄恢复。</span>
+        {Object.keys(overrides).length > 0 && (
+          <Button variant="ghost" size="sm" onClick={() => setOverrides({})}>
+            重置列宽
+          </Button>
+        )}
+      </div>
+      <Card padding={0} style={{ overflow: 'auto' }}>
+        <table
+          ref={tableRef}
+          className="tbl"
+          style={{ width: tableWidth, minWidth: tableWidth, tableLayout: 'fixed' }}
+        >
+          <colgroup>
+            {keys.map((key) => (
+              <col
+                key={key}
+                ref={(el) => {
+                  if (el) colRefs.current.set(key, el)
+                  else colRefs.current.delete(key)
+                }}
+                style={{ width: widths[key] }}
               />
-            </th>
-            <th>公司</th>
-            <th>岗位</th>
-            <th>阶段推进</th>
-            <th>状态</th>
-            <th>下一步</th>
-            <th>截止</th>
-            <th>渠道</th>
-            <th>薪资</th>
-            <th>优先</th>
-            {trashMode && <th>操作</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((a) => {
-            const dueDay = a.next_action_due_at ?? a.deadline
-            const overdue =
-              a.next_action_due_at != null &&
-              isDayBeforeToday(a.next_action_due_at) &&
-              !['accepted', 'rejected', 'withdrawn', 'closed'].includes(a.status)
-            return (
-              <tr key={a.id} className="tbl-row" onClick={() => onOpen(a.id)}>
-                <td onClick={(e) => e.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    aria-label={`选择 ${a.company_name} ${a.position}`}
-                    checked={selected.has(a.id)}
-                    onChange={() => onToggle(a.id)}
-                  />
-                </td>
-                <td>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
-                    <CompanyMark name={a.company_name} seed={a.id} />
-                    <span className="ellipsis" style={{ fontSize: 14, fontWeight: 500 }}>
-                      {a.company_name}
+            ))}
+          </colgroup>
+          <thead>
+            <tr>
+              {keys.map((key) => {
+                const col = columnByKey(key)
+                return (
+                  <th key={key} className={col.locked ? undefined : 'col-head'}>
+                    {key === 'select' ? (
+                      <input
+                        type="checkbox"
+                        aria-label="选择本页"
+                        checked={allChecked}
+                        onChange={(e) => onToggleAll(e.target.checked)}
+                      />
+                    ) : (
+                      col.label
+                    )}
+                    {!col.locked && (
+                      <span
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label={`调整「${col.label}」列宽`}
+                        aria-valuenow={widths[key]}
+                        aria-valuemin={col.min}
+                        aria-valuemax={col.max}
+                        tabIndex={0}
+                        title="拖动调整列宽，双击恢复自动宽度"
+                        className={'col-resize' + (dragKey === key ? ' active' : '')}
+                        onMouseDown={(e) => startDrag(key, e)}
+                        onDoubleClick={() => resetColumn(key)}
+                        onKeyDown={(e) => onHandleKey(key, e)}
+                      />
+                    )}
+                  </th>
+                )
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((a) => {
+              const dueDay = a.next_action_due_at ?? a.deadline
+              const overdue =
+                a.next_action_due_at != null &&
+                isDayBeforeToday(a.next_action_due_at) &&
+                !['accepted', 'rejected', 'withdrawn', 'closed'].includes(a.status)
+              const salaryText =
+                a.salary_max != null ? `${a.salary_min ?? '—'}–${a.salary_max} ${a.salary_currency}` : '—'
+              return (
+                <tr key={a.id} className="tbl-row" onClick={() => onOpen(a.id)}>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      aria-label={`选择 ${a.company_name} ${a.position}`}
+                      checked={selected.has(a.id)}
+                      onChange={() => onToggle(a.id)}
+                    />
+                  </td>
+                  <td>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+                      <CompanyMark name={a.company_name} seed={a.id} />
+                      {/* title 是兜底：把列拖窄时 hover 仍能看到全称。 */}
+                      <span className="ellipsis" style={{ fontSize: 14, fontWeight: 500 }} title={a.company_name}>
+                        {a.company_name}
+                      </span>
                     </span>
-                  </span>
-                </td>
-                <td>
-                  <span style={{ minWidth: 0 }}>
-                    <span className="ellipsis" style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>
-                      {a.position}
-                    </span>
-                    {a.location && (
+                  </td>
+                  <td>
+                    <span style={{ minWidth: 0 }}>
                       <span
                         className="ellipsis"
-                        style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}
+                        style={{ display: 'block', fontSize: 13, fontWeight: 500 }}
+                        title={a.position}
                       >
-                        {a.location}
+                        {a.position}
+                      </span>
+                      {a.location && (
+                        <span
+                          className="ellipsis"
+                          style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}
+                          title={a.location}
+                        >
+                          {a.location}
+                        </span>
+                      )}
+                    </span>
+                  </td>
+                  <td>
+                    <StageRail status={a.status} pips={FLOW_PIPS} dates={a.stage_history} />
+                  </td>
+                  <td>
+                    {/* 方案 §5：列表直接显示具体进度（「准备 OA」），而不是笼统的大阶段；
+                        旁边补上「最近一次进入当前进度的日期」。 */}
+                    <StatusChip status={a.status} substatus={a.substatus} />
+                    {a.progress_since && (
+                      <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                        {fmtDay(a.progress_since)} 进入
                       </span>
                     )}
-                  </span>
-                </td>
-                <td>
-                  <StageRail status={a.status} pips={FLOW_PIPS} dates={a.stage_history} />
-                </td>
-                <td>
-                  {/* 方案 §5：列表直接显示具体进度（「准备 OA」），而不是笼统的大阶段；
-                      旁边补上「最近一次进入当前进度的日期」。 */}
-                  <StatusChip status={a.status} substatus={a.substatus} />
-                  {a.progress_since && (
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
-                      {fmtDay(a.progress_since)} 进入
-                    </span>
-                  )}
-                </td>
-                <td className="ellipsis" style={{ fontSize: 13 }}>
-                  {a.next_action || <span style={{ color: 'var(--text-muted)' }}>—</span>}
-                </td>
-                <td>
-                  <Num color={overdue ? 'var(--danger)' : 'var(--text-muted)'}>
-                    {overdue ? `逾期 ${fmtDay(dueDay)}` : fmtDay(dueDay)}
-                  </Num>
-                </td>
-                <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{a.channel || '—'}</td>
-                <td>
-                  <Num>
-                    {a.salary_max != null ? `${a.salary_min ?? '—'}–${a.salary_max} ${a.salary_currency}` : '—'}
-                  </Num>
-                </td>
-                <td
-                  style={{
-                    fontSize: 12,
-                    color: a.priority === 'high' ? 'var(--text)' : 'var(--text-muted)',
-                    fontWeight: a.priority === 'high' ? 500 : 400,
-                  }}
-                >
-                  {priorityLabel(a.priority)}
-                </td>
-                {trashMode && (
-                  <td onClick={(e) => e.stopPropagation()}>
-                    <Button variant="ghost" size="sm" onClick={() => onRestore(a.id)}>
-                      恢复
-                    </Button>
                   </td>
-                )}
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </Card>
+                  <td className="ellipsis" style={{ fontSize: 13 }} title={a.next_action || undefined}>
+                    {a.next_action || <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                  </td>
+                  <td>
+                    <Num color={overdue ? 'var(--danger)' : 'var(--text-muted)'}>
+                      {overdue ? `逾期 ${fmtDay(dueDay)}` : fmtDay(dueDay)}
+                    </Num>
+                  </td>
+                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }} title={a.channel || undefined}>
+                    {a.channel || '—'}
+                  </td>
+                  <td title={salaryText}>
+                    <Num>{salaryText}</Num>
+                  </td>
+                  <td
+                    style={{
+                      fontSize: 12,
+                      color: a.priority === 'high' ? 'var(--text)' : 'var(--text-muted)',
+                      fontWeight: a.priority === 'high' ? 500 : 400,
+                    }}
+                  >
+                    {priorityLabel(a.priority)}
+                  </td>
+                  {trashMode && (
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <Button variant="ghost" size="sm" onClick={() => onRestore(a.id)}>
+                        恢复
+                      </Button>
+                    </td>
+                  )}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </>
   )
 }
 
