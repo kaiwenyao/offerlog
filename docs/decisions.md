@@ -39,6 +39,11 @@
   旧口径把这类记录算成未投递，与同页指标卡和列表自相矛盾。
   渲染上「未投递」固定在第二层（echarts 节点 depth），
   不再被 justify 挤到最右列横穿中间层造成丝带重叠。
+  同批把「已投递」卡、回复/面试/Offer 率的分母（样本）与各渠道面板
+  统一到同一「进入流程」谓词（repo.toApplyFactSQL 的补集）：
+  旧分母按 submitted_at 锚定，会把免正式投递的记录从所有比率里藏掉，
+  而同一条记录就显示在上方的「进行中」里。回复中位耗时仍要求
+  submitted_at 与 first_response_at 齐备（需要投递时间锚点）。
 
 ## ADR-006 单账号但全量 owner_id
 - 首版关闭注册、单管理员账号；但 users/companies/applications/… 全带 owner_id，

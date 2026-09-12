@@ -106,7 +106,7 @@ function MetricGrid({ metrics }: { metrics: Metrics }) {
     // 方案 §5：大阶段统计之外，单列 OA 的准备与等结果数量。
     { label: '准备 OA', value: metrics.preparing_assessment, def: 'OA / 作业阶段 · 准备中' },
     { label: 'OA 等结果', value: metrics.awaiting_oa_result, def: '已完成 / 已通过 · 等反馈' },
-    { label: '已投递', value: metrics.submitted_count, def: '去重申请数' },
+    { label: '已投递', value: metrics.submitted_count, def: '已进入流程 · 含免正式投递' },
     { label: '有效回复率', value: rateOrDash(metrics.response_rate, metrics.denominator), def: `已回复 ${metrics.responded} / 样本 ${metrics.denominator}` },
     {
       label: '面试到达率',
@@ -116,7 +116,8 @@ function MetricGrid({ metrics }: { metrics: Metrics }) {
     { label: 'Offer 率', value: rateOrDash(metrics.offer_rate, metrics.denominator), def: metrics.denominator === 0 ? '暂无样本' : `曾收 Offer ${metrics.received_offer} / 样本 ${metrics.denominator}` },
     {
       label: '回复中位耗时',
-      value: metrics.replied_sample ? `${(metrics.response_median_hours ?? 0).toFixed(0)}h` : '—',
+      // 只有带投递时间锚点的回复才算得出中位数；纯内推回复无耗时可言，显示 —。
+      value: metrics.median_sample ? `${(metrics.response_median_hours ?? 0).toFixed(0)}h` : '—',
       def: `已回复 ${metrics.replied_sample}，未回复 ${metrics.pending_response}`,
     },
   ]

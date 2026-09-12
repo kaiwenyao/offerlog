@@ -65,7 +65,7 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 			s := now.AddDate(0, 0, -(i + 1))
 			sub = &s
 		}
-		if err := seedApp(ctx, db, owner, f.status, sub); err != nil {
+		if err := seedApp(ctx, db, owner, f.status, sub, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -148,7 +148,7 @@ func TestSankeyAUnsubmittedMatchesToApplyMetric(t *testing.T) {
 			s := now.AddDate(0, 0, -(i + 1))
 			sub = &s
 		}
-		if err := seedApp(ctx, db, owner, f.status, sub); err != nil {
+		if err := seedApp(ctx, db, owner, f.status, sub, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -184,6 +184,117 @@ func TestSankeyAUnsubmittedMatchesToApplyMetric(t *testing.T) {
 	}
 }
 
+// The metrics panel must read the same cohort as the sankey middle layer:
+// 已投递 / 样本 count pipeline entries (NOT 未投递), so the 内推 OA row and
+// the rolled-back preparing row stay in every rate denominator instead of
+// vanishing behind a missing submitted_at.
+func TestCountsSubmittedCohortMatchesPipeline(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
+	owner := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner)
+
+	now := time.Now()
+	fixture := []struct {
+		status string
+		sub    bool
+	}{
+		{domain.StatusApplied, true},
+		{domain.StatusAssessment, false}, // 内推免正式投递：无 submitted_at
+		{domain.StatusPreparing, true},   // 投递后退回准备材料：仍带 submitted_at
+		{domain.StatusSaved, false},
+	}
+	for i, f := range fixture {
+		var sub *time.Time
+		if f.sub {
+			s := now.AddDate(0, 0, -(i + 1))
+			sub = &s
+		}
+		if err := seedApp(ctx, db, owner, f.status, sub, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repo := New(db)
+	m, err := repo.Counts(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ToApply != 1 {
+		t.Fatalf("to_apply = %d, want 1", m.ToApply)
+	}
+	if m.SubmittedCount != 3 || m.Denominator != 3 {
+		t.Fatalf("submitted_count = %d / denominator = %d, want 3/3", m.SubmittedCount, m.Denominator)
+	}
+	if m.Responded != 0 || m.PendingResponse != 3 {
+		t.Fatalf("responded = %d / pending = %d, want 0/3", m.Responded, m.PendingResponse)
+	}
+	if m.ResponseRate == nil || *m.ResponseRate != 0 {
+		t.Fatalf("response_rate = %v, want 0 (denominator > 0, numerator 0)", m.ResponseRate)
+	}
+	ch, err := repo.ByChannel(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// every seeded row has channel='' → excluded from the channel panel
+	if len(ch) != 0 {
+		t.Fatalf("by_channel rows = %d, want 0", len(ch))
+	}
+}
+
+// 口径 v2 regression (PR #38 review P1): a reply on a no-formal-submission
+// row (内推) counts as responded but has no submission anchor. With ONLY such
+// replies the median query matches zero rows and percentile_cont returns SQL
+// NULL — it must scan as "no median" instead of failing /summary.
+func TestCountsMedianIgnoresRepliesWithoutSubmissionAnchor(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
+	owner := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner)
+
+	now := time.Now()
+	// applied with anchors: submitted 96h ago, replied 48h ago → median 48h
+	sub := now.Add(-96 * time.Hour)
+	resp48 := now.Add(-48 * time.Hour)
+	if err := seedApp(ctx, db, owner, domain.StatusApplied, &sub, &resp48); err != nil {
+		t.Fatal(err)
+	}
+	// 内推 OA replied with no submitted_at: responded, but no elapsed anchor
+	if err := seedApp(ctx, db, owner, domain.StatusAssessment, nil, &resp48); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := New(db)
+	m, err := repo.Counts(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Responded != 2 || m.Denominator != 2 {
+		t.Fatalf("responded = %d / denominator = %d, want 2/2", m.Responded, m.Denominator)
+	}
+	if m.MedianSample != 1 {
+		t.Fatalf("median_sample = %d, want 1", m.MedianSample)
+	}
+	if m.ResponseMedianH != 48 {
+		t.Fatalf("response_median_hours = %v, want 48", m.ResponseMedianH)
+	}
+
+	// now the pure-referral cohort: a replied row with no anchor at all must
+	// leave the median unset (and not error) — the exact P1 shape.
+	owner2 := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner2)
+	if err := seedApp(ctx, db, owner2, domain.StatusAssessment, nil, &resp48); err != nil {
+		t.Fatal(err)
+	}
+	m2, err := repo.Counts(ctx, &SnapshotRequest{OwnerID: owner2, Now: now})
+	if err != nil {
+		t.Fatalf("counts on anchor-less replied cohort: %v", err)
+	}
+	if m2.Responded != 1 || m2.MedianSample != 0 || m2.ResponseMedianH != 0 {
+		t.Fatalf("responded/median_sample/median = %d/%d/%v, want 1/0/0", m2.Responded, m2.MedianSample, m2.ResponseMedianH)
+	}
+}
+
 func createBenchUser(t *testing.T, db *database.DB) int64 {
 	t.Helper()
 	var id int64
@@ -202,7 +313,7 @@ func cleanupBench(ctx context.Context, db *database.DB, owner int64) {
 	_, _ = db.Pool().Exec(ctx, `DELETE FROM users WHERE id=$1`, owner)
 }
 
-func seedApp(ctx context.Context, db *database.DB, owner int64, status string, sub *time.Time) error {
+func seedApp(ctx context.Context, db *database.DB, owner int64, status string, sub, resp *time.Time) error {
 	tx, err := db.Pool().Begin(ctx)
 	if err != nil {
 		return err
@@ -215,8 +326,8 @@ func seedApp(ctx context.Context, db *database.DB, owner int64, status string, s
 		return err
 	}
 	var aid int64
-	if err := tx.QueryRow(ctx, `INSERT INTO applications(owner_id, company_id, company_name, position, status, submitted_at, custom_values, saved_at)
-		VALUES($1,$2,'C','P',$3,$4,'{}',now()) RETURNING id`, owner, cid, status, sub).Scan(&aid); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO applications(owner_id, company_id, company_name, position, status, submitted_at, first_response_at, custom_values, saved_at)
+		VALUES($1,$2,'C','P',$3,$4,$5,'{}',now()) RETURNING id`, owner, cid, status, sub, resp).Scan(&aid); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO application_events(application_id, owner_id, sequence, event_type, from_status, to_status, occurred_at)
