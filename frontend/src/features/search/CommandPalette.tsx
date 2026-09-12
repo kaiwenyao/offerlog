@@ -5,7 +5,7 @@ import { api } from '../../lib/api'
 import type { SavedView } from '../../lib/types'
 import { Dialog } from '../../ds/Dialog'
 import { Icon, type IconName } from '../../components/Icon'
-import { moveHighlight, paletteRows } from './paletteNav'
+import { moveHighlight, applicationSearchQuery, paletteRows } from './paletteNav'
 
 export interface SearchItem {
   kind: 'application' | 'company' | 'file'
@@ -116,9 +116,18 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   }, [q])
 
   const jump = (it: SearchItem) => {
-    if (it.kind === 'application') nav(`/database/${it.id}`)
-    else if (it.kind === 'company') nav(`/database?q=${encodeURIComponent(it.label)}`)
-    else nav('/files')
+    // 岗位行不再跳 /database/:id 去开抽屉：从数据库页上方打开面板时
+    // /database → /database/:id 的路由变化不会重开抽屉（同一组件实例），
+    // Enter 看起来毫无反应。改为把「公司 + 岗位」填进搜索框——与公司行
+    // 一致的自动填写体验，多词 AND 语义会精确收敛到这条岗位。
+    if (it.kind === 'application') {
+      const query = applicationSearchQuery(it.label)
+      nav(query ? `/database?q=${encodeURIComponent(query)}` : '/database')
+    } else if (it.kind === 'company') {
+      nav(`/database?q=${encodeURIComponent(it.label)}`)
+    } else {
+      nav('/files')
+    }
     onClose()
   }
 

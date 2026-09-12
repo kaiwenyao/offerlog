@@ -28,7 +28,7 @@ import { defaultSubmittedIso } from '../src/lib/tz'
 import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
 import { mergeTimeline } from '../src/features/database/timeline'
-import { moveHighlight, paletteRows } from '../src/features/search/paletteNav'
+import { applicationSearchQuery, moveHighlight, paletteRows } from '../src/features/search/paletteNav'
 import {
   BUILTIN,
   buildFilters,
@@ -410,6 +410,24 @@ describe('analytics rate display semantics (§4.2)', () => {
     expect(rateOrDash(0.5, 10)).toBe('50.0%')
     expect(rateOrDash(null, 0)).toBe('—') // 空样本
     expect(rateOrDash(undefined, 0)).toBe('—')
+  })
+})
+
+describe('⌘K palette application-row → search-box autofill (applicationSearchQuery)', () => {
+  it('turns「公司 · 岗位」into two AND search terms', () => {
+    // 多词 AND 语义下两个词都必须命中 → 精确收敛到这条岗位
+    expect(applicationSearchQuery('字节跳动 · 资深后端工程师')).toBe('字节跳动 资深后端工程师')
+  })
+  it('keeps spaces inside a term intact (they just become more AND terms)', () => {
+    expect(applicationSearchQuery('Acme Corp · Senior Back End Engineer')).toBe(
+      'Acme Corp Senior Back End Engineer',
+    )
+  })
+  it('drops parts that are only separator dots / whitespace', () => {
+    // 后端只会产出「公司 · 岗位」形标签；这里只防御孤点不变成搜索词。
+    expect(applicationSearchQuery('字节跳动 · 后端')).toBe('字节跳动 后端')
+    expect(applicationSearchQuery('·')).toBe('')
+    expect(applicationSearchQuery('   ')).toBe('')
   })
 })
 
