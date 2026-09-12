@@ -116,6 +116,7 @@ export function OverviewTab({
   const [showNote, setShowNote] = useState(false)
   const [showAssessment, setShowAssessment] = useState(false)
   const [actionErr, setActionErr] = useState('')
+  const [noteErr, setNoteErr] = useState('')
 
   // 活动进度快捷操作（方案 §3.3/§5）：只改轮次自身的完成事实，绝不自动改大阶段，
   // 也不把「完成」当成「通过」。
@@ -171,6 +172,16 @@ export function OverviewTab({
       invalidateAfterAction()
     },
     onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '延期失败，请重试'),
+  })
+  // 删除备注：行内的「删除」按钮走 DELETE /notes/:note_id。
+  const delNoteMut = useMutation({
+    mutationFn: (id: number) => api.del(`/api/v1/applications/${app.id}/notes/${id}`),
+    onSuccess: () => {
+      setNoteErr('')
+      qc.invalidateQueries({ queryKey: ['notes', app.id] })
+      refetchAll()
+    },
+    onError: (e: unknown) => setNoteErr(e instanceof ApiError ? e.message : '删除备注失败，请重试'),
   })
 
   const facts: Array<[string, string]> = [
@@ -423,6 +434,11 @@ export function OverviewTab({
             </Button>
           </span>
         </div>
+        {noteErr && (
+          <div style={{ padding: '6px 16px' }}>
+            <ErrorText>{noteErr}</ErrorText>
+          </div>
+        )}
         {notes.length === 0 ? (
           <div style={{ padding: '12px 16px', fontSize: 13, color: 'var(--text-muted)' }}>
             记录沟通要点、联系方式等
@@ -436,6 +452,15 @@ export function OverviewTab({
                   {fmtDateTime(n.created_at)}
                 </span>
               </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={delNoteMut.isPending}
+                onClick={() => delNoteMut.mutate(n.id)}
+                title="删除这条备注"
+              >
+                删除
+              </Button>
             </div>
           ))
         )}
