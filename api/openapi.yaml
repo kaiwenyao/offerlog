@@ -329,6 +329,9 @@ paths:
         targets 是旧固定流程选择器的遗留字段，界面已不再消费。
   /applications/{id}/actions: { get: {}, post: {} }
   /applications/{id}/notes: { get: {}, post: {} }
+  /applications/{id}/notes/{note_id}:
+    patch: { summary: 编辑一条备注（content_md） }
+    delete: { summary: 删除一条备注（不可恢复） }
   /actions:
     get: { summary: 今日待办用的跨申请开放行动项（open=1） }
   /files:
