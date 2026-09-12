@@ -39,6 +39,10 @@ const NODE_COLORS: Record<string, string> = {
 }
 
 function nodeColor(name: string): string {
+  if (NODE_COLORS[name]) return NODE_COLORS[name]
+  // History-mode node ids are prefixed (cur_, end_, s_, …) — strip to the
+  // status suffix. "not_submitted" is handled by the full-name lookup above
+  // so the underscore in "not" does not leak into the suffix.
   const suffix = name.includes('_') ? name.slice(name.indexOf('_') + 1) : name
   return NODE_COLORS[suffix] ?? DROPPED
 }
@@ -215,7 +219,7 @@ function SankeyPanel({
 
       <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>
         {mode === 'current'
-          ? '全部机会 → 是否已投递 → 当前状态。当前快照，不声称展示历史顺序或转化率。下钻数量与列表一致。'
+          ? '第一层全部机会，第二层只分已投递 / 未投递，第三层仅对已投递按当前状态细分（未投递不再展开）。当前快照，不声称展示历史顺序或转化率。下钻数量与列表一致。'
           : '从每条申请的有效事件重建真实路径；节点 =（步骤, 状态）；终点 = 截至当前状态；超过 12 步折叠。导入记录显示“导入起点 → 已知当前状态”。'}
       </p>
 

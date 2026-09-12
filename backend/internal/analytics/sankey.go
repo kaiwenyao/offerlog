@@ -39,11 +39,11 @@ const DefinitionVersion = 1
 
 // SankeyA builds the fixed three-layer "current progress" graph:
 //
-//	全部机会 → 是否已投递 → 当前状态
+//	全部机会 → 已投递 / 未投递 → 已投递按当前状态细分
 //
 // Every application appears once per layer; the middle layer keys on
-// submitted_at presence so withdrawn-before-submit never merges with
-// withdrawn-after-submit (§5.3).
+// submitted_at presence. 未投递 is a leaf — only the submitted branch is
+// subdivided by its current status.
 func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, error) {
 	where, args := r.whereClause(req)
 	rows, err := r.db.Pool().Query(ctx, `SELECT id, status,
@@ -54,9 +54,10 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 	}
 	defer rows.Close()
 
-	type bucket struct{ notSubmitted, submitted []string }
-	byStatus := map[string]*bucket{}
-	var cohort int64
+	// Submitted branch: current-status counts. Not-submitted records go
+	// straight into the 未投递 leaf.
+	byStatus := map[string]int64{}
+	var cohort, notSub int64
 	seen := map[string]bool{}
 	for rows.Next() {
 		var id int64
@@ -71,111 +72,57 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 		}
 		seen[key] = true
 		cohort++
-		b := byStatus[st]
-		if b == nil {
-			b = &bucket{}
-			byStatus[st] = b
+		if !sub {
+			notSub++
+			continue
 		}
-		if sub {
-			b.submitted = append(b.submitted, key)
-		} else {
-			b.notSubmitted = append(b.notSubmitted, key)
-		}
+		byStatus[st]++
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	sub := cohort - notSub
 
-	// Count not-submitted and submitted totals.
-	var notSub, sub int64
-	for _, b := range byStatus {
-		notSub += int64(len(b.notSubmitted))
-		sub += int64(len(b.submitted))
+	const nsName, sName = "not_submitted", "submitted"
+	nodes := []Node{
+		{Name: "all", Label: "全部机会"},
+		{Name: nsName, Label: "未投递"},
+		{Name: sName, Label: "已投递"},
 	}
-
-	nodes := []Node{{Name: "all", Label: "全部机会"}}
-	links := []Link{}
-	nsName, sName := "not_submitted", "submitted"
-	submittedNodes := map[string]bool{}
-	// "尚未投递" statuses are in PreparingStatuses, but defensively: any
-	// application in a preparing status counts as not submitted.
-	submittedNodeName := map[string]string{
-		domain.StatusApplied: "applied", domain.StatusScreening: "screening",
-		domain.StatusAssessment: "assessment", domain.StatusInterviewing: "interviewing",
-		domain.StatusOffer: "offer", domain.StatusAccepted: "accepted",
-		domain.StatusRejected: "rejected", domain.StatusWithdrawn: "withdrawn_post",
-		domain.StatusClosed: "closed",
-	}
-	notSubmittedNodeName := map[string]string{
-		domain.StatusSaved: "saved", domain.StatusPreparing: "preparing",
-		domain.StatusWithdrawn: "withdrawn_pre", domain.StatusClosed: "closed_pre",
+	links := []Link{
+		// layer 1: 全部机会 → 未投递 / 已投递. Zero-value edges keep an empty
+		// branch visible instead of dropping its node.
+		{Source: "all", Target: nsName, Value: notSub},
+		{Source: "all", Target: sName, Value: sub},
 	}
 
-	// layer 1 edges
-	if notSub > 0 {
-		links = append(links, Link{Source: "all", Target: nsName, Value: notSub})
+	// layer 2 → 3: subdivide the submitted branch by current status, sorted
+	// for a stable render.
+	statuses := make([]string, 0, len(byStatus))
+	for st := range byStatus {
+		statuses = append(statuses, st)
 	}
-	if sub > 0 {
-		links = append(links, Link{Source: "all", Target: sName, Value: sub})
-	}
-	// layer 2 edges + layer 3 nodes
-	type sn struct{ name, label string }
-	grouped := map[sn]int64{}
-	for st, b := range byStatus {
-		for _, k := range b.notSubmitted {
-			label := StatusName[st]
-			if label == "" {
-				label = st
-			}
-			grouped[sn{name: "ns_" + st, label: label}]++
-			_ = k
+	sort.Strings(statuses)
+	for _, st := range statuses {
+		name := "s_" + st
+		label := StatusName[st]
+		if label == "" {
+			label = st
 		}
-		for _, k := range b.submitted {
-			label := StatusName[st]
-			if label == "" {
-				label = st
-			}
-			grouped[sn{name: "s_" + st, label: label}]++
-			_ = k
+		// 已投递 → 已投递 reads like a self-loop; disambiguate the plain
+		// applied status under the submitted branch.
+		if st == domain.StatusApplied {
+			label = "已投递 · 等待反馈"
 		}
+		nodes = append(nodes, Node{Name: name, Label: label})
+		links = append(links, Link{Source: sName, Target: name, Value: byStatus[st]})
 	}
-	// emit layer-3 nodes sorted
-	names := make([]sn, 0, len(grouped))
-	for n := range grouped {
-		names = append(names, n)
-	}
-	sort.Slice(names, func(i, j int) bool { return names[i].name < names[j].name })
-	for _, n := range names {
-		nodes = append(nodes, Node{Name: n.name, Label: n.label})
-		prefix := nsName
-		if len(n.name) > 3 && n.name[:2] == "s_" {
-			prefix = sName
-		}
-		links = append(links, Link{Source: prefix, Target: n.name, Value: grouped[n]})
-	}
-	// only add middle nodes when non-empty
-	if notSub > 0 {
-		nodes = append(nodes, Node{Name: nsName, Label: "尚未投递"})
-	} else {
-		// still include for visual consistency with 0 value handled by ECharts
-		nodes = append(nodes, Node{Name: nsName, Label: "尚未投递"})
-		links = append(links, Link{Source: "all", Target: nsName, Value: 0})
-	}
-	if sub > 0 {
-		nodes = append(nodes, Node{Name: sName, Label: "已投递"})
-	} else {
-		nodes = append(nodes, Node{Name: sName, Label: "已投递"})
-		links = append(links, Link{Source: "all", Target: sName, Value: 0})
-	}
-	_ = submittedNodes
-	_ = submittedNodeName
-	_ = notSubmittedNodeName
 
 	return &Sankey{
 		Nodes: nodes, Links: links, CohortCount: cohort,
 		AsOf: req.Now.UTC().Format(time.RFC3339), DefinitionVersion: DefinitionVersion,
 		Mode:  "current",
-		Notes: "当前快照：全部机会按是否已投递分组，再按当前状态细分。不声称展示历史顺序。",
+		Notes: "当前快照：全部机会先分为已投递 / 未投递；已投递再按当前状态细分，未投递不再细分。不声称展示历史顺序。",
 	}, nil
 }
 
