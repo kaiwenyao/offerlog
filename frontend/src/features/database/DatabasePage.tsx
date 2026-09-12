@@ -77,8 +77,8 @@ const LAYOUT_TABS = [
 
 /** Table geometry from the design's 工序进度 grid, as fixed table columns. The
  *  rail column is wide enough for the current stage's label to sit inside its
- *  block, the way the canvas draws it. */
-const COLS = ['236px', '176px', '116px', 'auto', '92px', '88px', '104px', '56px']
+ *  block, the way the canvas draws it. 公司与岗位各占一列，不再合并。 */
+const COLS = ['150px', '150px', '176px', '116px', 'auto', '92px', '88px', '104px', '56px']
 
 /** YYYY-MM-DD strictly before today (user-zone day-key compare). */
 function isDayBeforeToday(dayStr: string): boolean {
@@ -407,7 +407,7 @@ function TableView({
   const allChecked = rows.length > 0 && rows.every((r) => selected.has(r.id))
   return (
     <Card padding={0} style={{ overflow: 'auto' }}>
-      <table className="tbl" style={{ minWidth: 980, tableLayout: 'fixed' }}>
+      <table className="tbl" style={{ minWidth: 1120, tableLayout: 'fixed' }}>
         <colgroup>
           <col style={{ width: 36 }} />
           {COLS.map((w, i) => (
@@ -425,7 +425,8 @@ function TableView({
                 onChange={(e) => onToggleAll(e.target.checked)}
               />
             </th>
-            <th>公司 / 岗位</th>
+            <th>公司</th>
+            <th>岗位</th>
             <th>阶段推进</th>
             <th>状态</th>
             <th>下一步</th>
@@ -456,18 +457,24 @@ function TableView({
                 <td>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
                     <CompanyMark name={a.company_name} seed={a.id} />
-                    <span style={{ minWidth: 0 }}>
-                      <span className="ellipsis" style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>
-                        {a.company_name}
-                      </span>
+                    <span className="ellipsis" style={{ fontSize: 14, fontWeight: 500 }}>
+                      {a.company_name}
+                    </span>
+                  </span>
+                </td>
+                <td>
+                  <span style={{ minWidth: 0 }}>
+                    <span className="ellipsis" style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>
+                      {a.position}
+                    </span>
+                    {a.location && (
                       <span
                         className="ellipsis"
                         style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}
                       >
-                        {a.position}
-                        {a.location ? ` · ${a.location}` : ''}
+                        {a.location}
                       </span>
-                    </span>
+                    )}
                   </span>
                 </td>
                 <td>
