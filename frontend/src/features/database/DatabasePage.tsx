@@ -256,7 +256,10 @@ export function DatabasePage() {
               setViewId(v.id)
               setTrashMode(false)
               setPage(1)
-              if (v.layout === 'board' || v.layout === 'list' || v.layout === 'table') setLayout(v.layout as Layout)
+              // 只切换筛选，不动布局：这些 chip 是「筛选」而不是布局开关，用户
+              // 当前停留在表格 / 看板 / 列表哪个布局就保持哪个（需求：点筛选
+              // 不要把人拽到看板）。布局只能由布局 Tabs（或带 layout 参数的
+              // 显式导航）改变。
             }}
           >
             {v.name}
