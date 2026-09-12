@@ -225,6 +225,8 @@ export interface Metrics {
   reached_interview: number
   received_offer: number
   response_median_hours: number
+  /** 带投递时间锚点的回复数；为 0 时中位数未定义（内推免投递的回复无耗时可言），卡片显示 —。 */
+  median_sample: number
   pending_response: number
   replied_sample: number
   denominator: number

@@ -116,7 +116,8 @@ function MetricGrid({ metrics }: { metrics: Metrics }) {
     { label: 'Offer 率', value: rateOrDash(metrics.offer_rate, metrics.denominator), def: metrics.denominator === 0 ? '暂无样本' : `曾收 Offer ${metrics.received_offer} / 样本 ${metrics.denominator}` },
     {
       label: '回复中位耗时',
-      value: metrics.replied_sample ? `${(metrics.response_median_hours ?? 0).toFixed(0)}h` : '—',
+      // 只有带投递时间锚点的回复才算得出中位数；纯内推回复无耗时可言，显示 —。
+      value: metrics.median_sample ? `${(metrics.response_median_hours ?? 0).toFixed(0)}h` : '—',
       def: `已回复 ${metrics.replied_sample}，未回复 ${metrics.pending_response}`,
     },
   ]

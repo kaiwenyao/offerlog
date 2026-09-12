@@ -104,6 +104,7 @@ type Metrics struct {
 	ReachedInterview int64    `json:"reached_interview"`
 	ReceivedOffer    int64    `json:"received_offer"`
 	ResponseMedianH  float64  `json:"response_median_hours"` // hours from submit to first response (median, responded only)
+	MedianSample     int64    `json:"median_sample"`         // replies with BOTH submitted_at and first_response_at — 0 时中位数未定义，前端显示 —
 	PendingResponse  int64    `json:"pending_response"`      // submitted, no response yet
 	RepliedSample    int64    `json:"replied_sample"`
 	Denominator      int64    `json:"denominator"` // cohort size = 已投递（pipeline cohort）
@@ -215,15 +216,24 @@ func (r *Repo) Counts(ctx context.Context, req *SnapshotRequest) (*Metrics, erro
 		m.ReceivedOffer = offer
 		m.RepliedSample = resp
 		if resp > 0 {
-			// median hours: submitted_at → first_response_at among responded
-			var med float64
-			if err := q.QueryRow(ctx, `SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (first_response_at - submitted_at))/3600.0)
-				FROM applications WHERE `+cohortWhere+` AND first_response_at IS NOT NULL AND submitted_at IS NOT NULL`, cohortArgs...).Scan(&med); err != nil {
+			// median hours: submitted_at → first_response_at, over replies that
+			// carry BOTH anchors. Replies on no-formal-submission rows (内推
+			// 免投递) have no elapsed anchor; when the cohort holds only those,
+			// percentile_cont returns SQL NULL — scan it nullable and leave the
+			// median unset instead of failing /summary (reachable since the
+			// pipeline cohort widened in 口径 v2).
+			var med *float64
+			if err := q.QueryRow(ctx, `SELECT
+				count(*) FILTER (WHERE submitted_at IS NOT NULL),
+				percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (first_response_at - submitted_at))/3600.0)
+				FROM applications WHERE `+cohortWhere+` AND first_response_at IS NOT NULL`, cohortArgs...).Scan(&m.MedianSample, &med); err != nil {
 				if err.Error() != "no rows" {
 					return nil, err
 				}
 			}
-			m.ResponseMedianH = med
+			if med != nil {
+				m.ResponseMedianH = *med
+			}
 		}
 		var pending int64
 		if err := q.QueryRow(ctx, `SELECT count(*) FROM applications WHERE `+cohortWhere+` AND first_response_at IS NULL`, cohortArgs...).Scan(&pending); err != nil {
