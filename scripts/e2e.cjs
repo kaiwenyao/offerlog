@@ -223,6 +223,59 @@ async function addEvent(page, kind, opts = {}) {
   console.log('13 投递时间 shows the 投递 event day (2026/09/01):',
     /投递时间\s*2026\/09\/01/.test(submittedTxt));
 
+  // 14. 表格列宽（公司与岗位）：默认按内容自适应，长名字不再被旧的固定 150px 截断；
+  //     表头分隔线可拖拽调整、跨刷新保留，双击手柄 /「重置列宽」回到自动宽度。
+  const longCo = '某某某科技（深圳）有限公司' + String(Date.now()).slice(-4);
+  const longPos = '高级后端开发工程师（Go / 云原生方向）';
+  // 上一节结束时抽屉还开着，它的 backdrop 会吃掉侧边栏的点击。
+  await page.click('.drawer button[aria-label="关闭"]');
+  await page.waitForTimeout(400);
+  await page.locator('a:has-text("求职数据库")').first().click();
+  await page.waitForSelector('text=求职数据库');
+  await page.click('button:has-text("＋ 新增岗位")');
+  await page.fill('#cf-company', longCo);
+  await page.fill('#cf-pos', longPos);
+  await page.click('button:has-text("创建")');
+  await page.waitForSelector(`tbody tr:has-text("${longCo}")`, { timeout: 7000 });
+
+  const cellFit = await page.evaluate((co) => {
+    const row = [...document.querySelectorAll('tbody tr')].find((tr) => tr.textContent.includes(co));
+    const tds = row.querySelectorAll('td');
+    const company = tds[1].querySelector('span.ellipsis');
+    const position = tds[2].querySelector('span.ellipsis');
+    return {
+      company: company.scrollWidth <= company.clientWidth + 1,
+      position: position.scrollWidth <= position.clientWidth + 1,
+      companyTextWidth: company.scrollWidth,
+    };
+  }, longCo);
+  console.log('14a 公司 / 岗位默认就显示全（未被 .ellipsis 截断）:', cellFit.company && cellFit.position);
+  console.log('14a 公司名宽于旧的固定 150px（旧布局必然截断）:', cellFit.companyTextWidth > 150);
+
+  const headerWidths = () => page.$$eval('thead th', (ths) => ths.map((th) => Math.round(th.getBoundingClientRect().width)));
+  const widthsBefore = await headerWidths();
+  const companyHandle = await page.locator('thead th.col-head:has-text("公司") .col-resize').boundingBox();
+  await page.mouse.move(companyHandle.x + companyHandle.width / 2, companyHandle.y + companyHandle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(companyHandle.x + companyHandle.width / 2 + 80, companyHandle.y + companyHandle.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const widthsDragged = await headerWidths();
+  console.log('14b 拖公司列表头手柄可加宽 ~80px:', widthsDragged[1] - widthsBefore[1] >= 76);
+  console.log('14b 拖动只影响被拖的那一列:', widthsDragged[2] === widthsBefore[2]);
+
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector(`tbody tr:has-text("${longCo}")`, { timeout: 7000 });
+  const widthsReloaded = await headerWidths();
+  console.log('14c 手动列宽跨刷新保留:', widthsReloaded[1] === widthsDragged[1]);
+
+  await page.locator('thead th.col-head:has-text("公司") .col-resize').dblclick();
+  await page.waitForTimeout(300);
+  const widthsReset = await headerWidths();
+  console.log('14d 双击手柄恢复按内容自适应的宽度:', Math.abs(widthsReset[1] - widthsBefore[1]) <= 2);
+  const stored = await page.evaluate(() => localStorage.getItem('offerlog:db-col-widths'));
+  console.log('14d 重置后本地不再留手动宽度:', stored === '{}');
+
   console.log('E2E JS errors:', errors.length ? errors : 'none');
   await browser.close();
 })().catch((e) => { console.error('E2E FAIL', e.message); process.exit(1); });
