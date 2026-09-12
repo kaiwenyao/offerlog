@@ -104,12 +104,13 @@ export function AppLayout({ me }: { me: Me | null }) {
     setSearch(new URLSearchParams(loc.search).get('q') ?? '')
   }, [loc.search])
 
-  // ⌘K / Ctrl+K opens the command palette (跨实体搜索 + 跳转命令).
+  // ⌘K / Ctrl+K toggles the command palette (跨实体搜索 + 跳转命令)：
+  // 再按一次关闭，与常见快捷键面板的行为一致。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        setPaletteOpen(true)
+        setPaletteOpen((v) => !v)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -243,7 +244,20 @@ export function AppLayout({ me }: { me: Me | null }) {
                 placeholder="搜岗位、公司、备注…"
                 aria-label="搜索"
               />
-              <span className="kbd" aria-hidden onClick={() => setPaletteOpen(true)} style={{ cursor: 'pointer' }}>
+              <span
+                className="kbd"
+                role="button"
+                tabIndex={0}
+                aria-label="打开快速搜索（⌘K）"
+                onClick={() => setPaletteOpen(true)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    setPaletteOpen(true)
+                  }
+                }}
+                style={{ cursor: 'pointer' }}
+              >
                 ⌘K
               </span>
             </form>

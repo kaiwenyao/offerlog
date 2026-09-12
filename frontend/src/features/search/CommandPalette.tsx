@@ -5,6 +5,7 @@ import { api } from '../../lib/api'
 import type { SavedView } from '../../lib/types'
 import { Dialog } from '../../ds/Dialog'
 import { Icon, type IconName } from '../../components/Icon'
+import { moveHighlight, paletteRows } from './paletteNav'
 
 export interface SearchItem {
   kind: 'application' | 'company' | 'file'
@@ -51,11 +52,17 @@ const ROW_STYLE: React.CSSProperties = {
  * ⌘K command palette: mixed 岗位 / 公司 / 文件 results from the cross-entity
  * search endpoint plus local commands (跳转 / 记一个岗位 / 已保存视图). 空输入
  * 时后端返回「最近打开」记录。Esc / backdrop 关闭。
+ *
+ * 全键盘可用：↑↓/Home/End 移动高亮，↵ 执行高亮行——行尾的 ↵ 标记不再只是
+ * 装饰。输入法组字中的 Enter 交给 IME（isComposing），不会误触跳转。
  */
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const nav = useNavigate()
   const [q, setQ] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  // 高亮行索引，作用于 search 结果 + 命令 拼成的完整列表；查询变化后重置。
+  const [highlight, setHighlight] = useState(0)
 
   const searchQ = useQuery({
     queryKey: ['search', 'palette', q],
@@ -96,11 +103,17 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   useEffect(() => {
     if (open) {
       setQ('')
+      setHighlight(0)
       // Let the dialog mount before focusing its input.
       const t = setTimeout(() => inputRef.current?.focus(), 10)
       return () => clearTimeout(t)
     }
   }, [open])
+
+  // 结果集随输入变化后，旧高亮可能指向已消失的行——回到首行。
+  useEffect(() => {
+    setHighlight(0)
+  }, [q])
 
   const jump = (it: SearchItem) => {
     if (it.kind === 'application') nav(`/database/${it.id}`)
@@ -116,6 +129,50 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     ? navCmds.filter((c) => trimmed === '' || c.label.toLowerCase().includes(trimmed) || c.sub.toLowerCase().includes(trimmed))
     : []
 
+  // ↑↓ 键在“搜索结果 + 命令”的完整列表上移动；↵ 执行高亮行。
+  const rows = useMemo(() => paletteRows(items, filteredCmds), [items, filteredCmds])
+
+  const activate = (idx: number) => {
+    const row = rows[idx]
+    if (!row) return
+    if (row.kind === 'cmd') {
+      ;(row.data as Cmd).run()
+      onClose()
+    } else {
+      jump(row.data)
+    }
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // 输入法组字中：Enter 在提交候选词，不是“执行高亮行”。
+    if (e.nativeEvent.isComposing) return
+    // Emacs/readline 风格：Ctrl+P 上一个、Ctrl+N 下一个（与 ↑↓ 等价）。
+    // preventDefault 顺带拦下部分平台的 Ctrl+P 打印对话框。
+    let navKey = e.key
+    if (e.ctrlKey) {
+      const lower = e.key.toLowerCase()
+      if (lower === 'p') navKey = 'ArrowUp'
+      else if (lower === 'n') navKey = 'ArrowDown'
+    }
+    const next = moveHighlight(highlight, rows.length, navKey)
+    if (next !== null) {
+      e.preventDefault()
+      setHighlight(next)
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      activate(highlight)
+    }
+  }
+
+  // 高亮行滚进可视区（结果多时 ↓ 到列表底部不能盲飞）。
+  useEffect(() => {
+    listRef.current
+      ?.querySelector('[data-highlight="1"]')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [highlight])
+
   return (
     <Dialog open={open} onClose={onClose} title="快速搜索" width={560} description="搜岗位、公司、备注与文件，或直接跳转">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)', paddingBottom: 10 }}>
@@ -124,8 +181,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           ref={inputRef}
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={onKeyDown}
           placeholder="搜岗位、公司、跳转、推进阶段…"
           aria-label="命令面板搜索"
+          aria-describedby="cmd-kbd-nav"
           style={{
             flex: 1,
             border: 0,
@@ -140,70 +199,94 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           ⌘K
         </span>
       </div>
+      <span id="cmd-kbd-nav" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
+        ↑↓ 或 Ctrl+P / Ctrl+N 移动高亮，回车执行高亮行，Esc 关闭
+      </span>
 
-      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 380, overflowY: 'auto' }}>
-        {items.map((it) => (
-          <button key={`${it.kind}-${it.id}`} type="button" className="cmd-row" onClick={() => jump(it)} style={ROW_STYLE}>
-            <span
-              aria-hidden
-              style={{
-                width: 22,
-                height: 22,
-                flex: '0 0 auto',
-                display: 'grid',
-                placeItems: 'center',
-                background: 'var(--surface-thin)',
-                border: '1px solid var(--border)',
-                color: 'var(--neutral-600)',
-              }}
+      <div ref={listRef} role="listbox" aria-label="搜索结果与命令" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 380, overflowY: 'auto' }}>
+        {items.map((it, i) => {
+          const on = highlight === i
+          return (
+            <button
+              key={`${it.kind}-${it.id}`}
+              type="button"
+              className="cmd-row"
+              role="option"
+              aria-selected={on}
+              data-highlight={on ? '1' : '0'}
+              onMouseEnter={() => setHighlight(i)}
+              onClick={() => jump(it)}
+              style={{ ...ROW_STYLE, background: on ? 'var(--accent-soft, color-mix(in srgb, var(--accent) 12%, transparent))' : undefined }}
             >
-              <Icon name={KIND_ICON[it.kind]} size={13} />
-            </span>
-            <span className="grow" style={{ minWidth: 0 }}>
-              <span className="ellipsis" style={{ display: 'block', fontSize: 14 }}>
-                {it.label}
+              <span
+                aria-hidden
+                style={{
+                  width: 22,
+                  height: 22,
+                  flex: '0 0 auto',
+                  display: 'grid',
+                  placeItems: 'center',
+                  background: 'var(--surface-thin)',
+                  border: '1px solid var(--border)',
+                  color: 'var(--neutral-600)',
+                }}
+              >
+                <Icon name={KIND_ICON[it.kind]} size={13} />
               </span>
-              <span className="ellipsis" style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>
-                {KIND_LABEL[it.kind]}
-                {it.hint ? ` · ${it.hint}` : ''}
+              <span className="grow" style={{ minWidth: 0 }}>
+                <span className="ellipsis" style={{ display: 'block', fontSize: 14 }}>
+                  {it.label}
+                </span>
+                <span className="ellipsis" style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>
+                  {KIND_LABEL[it.kind]}
+                  {it.hint ? ` · ${it.hint}` : ''}
+                </span>
               </span>
-            </span>
-            <span style={{ fontSize: 10, color: 'var(--neutral-500)', flex: '0 0 auto' }}>↵</span>
-          </button>
-        ))}
+              <span style={{ fontSize: 10, color: 'var(--neutral-500)', flex: '0 0 auto' }}>↵</span>
+            </button>
+          )
+        })}
 
         {items.length > 0 && filteredCmds.length > 0 && (
           <div style={{ margin: '6px 8px', borderTop: '1px dashed var(--border)' }} />
         )}
 
-        {filteredCmds.map((c) => (
-          <button
-            key={c.key}
-            type="button"
-            className="cmd-row"
-            onClick={() => {
-              c.run()
-              onClose()
-            }}
-            style={ROW_STYLE}
-          >
-            <span
-              aria-hidden
-              style={{ width: 22, flex: '0 0 auto', display: 'grid', placeItems: 'center', color: 'var(--neutral-600)' }}
+        {filteredCmds.map((c, j) => {
+          const i = items.length + j
+          const on = highlight === i
+          return (
+            <button
+              key={c.key}
+              type="button"
+              className="cmd-row"
+              role="option"
+              aria-selected={on}
+              data-highlight={on ? '1' : '0'}
+              onMouseEnter={() => setHighlight(i)}
+              onClick={() => {
+                c.run()
+                onClose()
+              }}
+              style={{ ...ROW_STYLE, background: on ? 'var(--accent-soft, color-mix(in srgb, var(--accent) 12%, transparent))' : undefined }}
             >
-              <Icon name={c.icon} size={14} />
-            </span>
-            <span className="grow" style={{ minWidth: 0 }}>
-              <span className="ellipsis" style={{ display: 'block', fontSize: 14 }}>
-                {c.label}
+              <span
+                aria-hidden
+                style={{ width: 22, flex: '0 0 auto', display: 'grid', placeItems: 'center', color: 'var(--neutral-600)' }}
+              >
+                <Icon name={c.icon} size={14} />
               </span>
-              <span className="ellipsis" style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>
-                {c.sub}
+              <span className="grow" style={{ minWidth: 0 }}>
+                <span className="ellipsis" style={{ display: 'block', fontSize: 14 }}>
+                  {c.label}
+                </span>
+                <span className="ellipsis" style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>
+                  {c.sub}
+                </span>
               </span>
-            </span>
-            <span style={{ fontSize: 10, color: 'var(--neutral-500)', flex: '0 0 auto' }}>↵</span>
-          </button>
-        ))}
+              <span style={{ fontSize: 10, color: 'var(--neutral-500)', flex: '0 0 auto' }}>↵</span>
+            </button>
+          )
+        })}
 
         {items.length === 0 && filteredCmds.length === 0 && (
           <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
