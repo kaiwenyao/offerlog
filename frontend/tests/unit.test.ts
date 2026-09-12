@@ -28,6 +28,11 @@ import { defaultSubmittedIso } from '../src/lib/tz'
 import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
 import { mergeTimeline } from '../src/features/database/timeline'
+import {
+  DB_SORT_FIELDS,
+  DEFAULT_DB_SORT,
+  loadDbSort,
+} from '../src/features/database/views'
 import type { AppEvent, CalendarEvent, Milestone } from '../src/lib/types'
 
 describe('status dictionary', () => {
@@ -241,6 +246,35 @@ describe('filter tree helpers (used by saved views)', () => {
     }
     expect(statusForBuiltin(-2)).toEqual(['saved', 'preparing'])
     expect(statusForBuiltin(-4)).toEqual(['offer', 'accepted'])
+  })
+})
+
+describe('database sort preference (自选排序)', () => {
+  it('defaults to newest-update-first when nothing / garbage is persisted', () => {
+    expect(loadDbSort(null)).toEqual(DEFAULT_DB_SORT)
+    expect(loadDbSort('')).toEqual(DEFAULT_DB_SORT)
+    expect(loadDbSort('not json')).toEqual(DEFAULT_DB_SORT)
+    expect(loadDbSort('{"field":"company_name"}')).toEqual(DEFAULT_DB_SORT) // 不可排序字段
+    expect(loadDbSort('{"field":"updated_at","dir":"sideways"}')).toEqual({
+      field: 'updated_at',
+      dir: 'desc',
+    }) // 方向非法回退默认，字段保留
+  })
+  it('keeps every persisted field×dir combination the UI can produce', () => {
+    // 两个字段 × 两个方向，都是后端 views.CoreFields 白名单里的可排序字段
+    expect(loadDbSort('{"field":"created_at","dir":"asc"}')).toEqual({
+      field: 'created_at',
+      dir: 'asc',
+    })
+    expect(loadDbSort('{"field":"created_at","dir":"desc"}')).toEqual({
+      field: 'created_at',
+      dir: 'desc',
+    })
+    expect(loadDbSort('{"field":"updated_at","dir":"asc"}')).toEqual({
+      field: 'updated_at',
+      dir: 'asc',
+    })
+    expect(DB_SORT_FIELDS.map((f) => f.value)).toEqual(['updated_at', 'created_at'])
   })
 })
 
