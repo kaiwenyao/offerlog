@@ -30,10 +30,13 @@ import (
 	"offerlog/backend/internal/platform/objectstore"
 )
 
+// DBQuerier is satisfied by *database.DB. RunInTx keeps multi-table writes
+// (PATCH category touches files + application_files) atomic.
 type DBQuerier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	RunInTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error
 }
 
 type Config struct {
@@ -81,6 +84,36 @@ var allowedMIME = map[string]bool{
 }
 
 func extOf(name string) string { return strings.ToLower(filepath.Ext(name)) }
+
+// Category whitelist shared by upload and PATCH: anything else would silently
+// drop out of the library filters (resume/cover_letter/portfolio/other).
+var allowedCategory = map[string]bool{
+	"resume":       true,
+	"cover_letter": true,
+	"portfolio":    true,
+	"other":        true,
+}
+
+func normalizeCategory(raw string) (string, error) {
+	c := strings.TrimSpace(raw)
+	if c == "" {
+		return "other", nil
+	}
+	if !allowedCategory[c] {
+		return "", fmt.Errorf("无效的附件类别 %q（允许 简历/求职信/作品集/其它）", c)
+	}
+	return c, nil
+}
+
+// previewable lists the content types the browser can render inline
+// (embed/iframe or img). Everything else — DOCX is a zip container — must
+// keep the attachment disposition so unrenderable bytes never open in a tab.
+var previewable = map[string]bool{
+	"application/pdf": true,
+	"image/png":       true,
+	"image/jpeg":      true,
+	"text/plain":      true,
+}
 
 // validateNameAndMIME rejects unsupported types before storing.
 func validateNameAndMIME(origName, contentType string, sniff []byte) error {
@@ -154,6 +187,7 @@ func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.POST("", h.upload)
 	g.GET("", h.list)
 	g.GET("/:id/download", h.download)
+	g.PATCH("/:id", h.update)
 	g.DELETE("/:id", h.delete)
 }
 
@@ -180,9 +214,10 @@ func (h *Handler) upload(c *gin.Context) {
 		httpx.WriteErr(c, httpx.BadRequest("file_too_large", fmt.Sprintf("文件超过 %d MiB 上限", h.cfg.MaxFileBytes/(1<<20))))
 		return
 	}
-	category := strings.TrimSpace(c.PostForm("category"))
-	if category == "" {
-		category = "other"
+	category, err := normalizeCategory(c.PostForm("category"))
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_category", err.Error()))
+		return
 	}
 	appIDStr := c.PostForm("application_id")
 	usedBy := int64(0)
@@ -296,6 +331,51 @@ func (h *Handler) upload(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"id": fid, "status": "ready", "sha256": digest, "size_bytes": size, "name": origName, "interview_id": nilOrID(interviewID)})
 }
 
+// update changes the category of an existing file (correcting a mis-filed
+// resume/cover letter without re-uploading). Linked application_files rows
+// keep purpose/is_resume in sync so resume filtering stays consistent.
+func (h *Handler) update(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	fid := c.Param("id")
+	if fid == "" {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_id", "无效的文件 ID"))
+		return
+	}
+	var body struct {
+		Category string `json:"category"`
+	}
+	if err := httpx.BindJSON(c, &body); err != nil {
+		return
+	}
+	category, err := normalizeCategory(body.Category)
+	if err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_category", err.Error()))
+		return
+	}
+	// Two tables must move together — separate autocommitted statements could
+	// leave purpose/is_resume diverging from the displayed category.
+	err = h.db.RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE files SET category=$2, updated_at=now() WHERE id=$1 AND owner_id=$3 AND status='ready'`,
+			fid, category, user.ID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return httpx.NotFound("文件不存在")
+		}
+		_, err = tx.Exec(ctx,
+			`UPDATE application_files SET purpose=$2, is_resume=$3 WHERE file_id=$1 AND owner_id=$4`,
+			fid, category, category == "resume", user.ID)
+		return err
+	})
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"id": fid, "category": category})
+}
+
 func (h *Handler) promote(ctx context.Context, ownerID int64, fid, finalKey, stagingKey string) error {
 	// copy staging → final (GET then PUT)
 	rc, _, err := h.store.Get(ctx, stagingKey)
@@ -373,9 +453,20 @@ func (h *Handler) download(c *gin.Context) {
 		return
 	}
 	defer rc.Close()
+	// Inline disposition is only honored for browser-renderable types
+	// (在线预览)；the default stays attachment so nothing downloads-by-surprise
+	// and unrenderable types (DOCX) can never open in a tab.
+	disposition := "attachment"
+	if c.Query("disposition") == "inline" && previewable[row.ContentType] {
+		disposition = "inline"
+		// bootstrap 的 SecurityHeaders 对所有响应加 X-Frame-Options: DENY，
+		// 会把 iframe 预览一起拦掉；内联响应改用更窄的 frame-ancestors 'self'
+		// （仅同源页面可嵌入），预览可用而外站嵌入门都没有。
+		c.Writer.Header().Del("X-Frame-Options")
+		c.Header("Content-Security-Policy", "frame-ancestors 'self'")
+	}
 	// encoded Content-Disposition with UTF-8 filename
-	disposition := fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, escapeQuotes(row.OriginalName), url.PathEscape(row.OriginalName))
-	c.Header("Content-Disposition", disposition)
+	c.Header("Content-Disposition", fmt.Sprintf(`%s; filename="%s"; filename*=UTF-8''%s`, disposition, escapeQuotes(row.OriginalName), url.PathEscape(row.OriginalName)))
 	c.Header("Content-Type", row.ContentType)
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.DataFromReader(http.StatusOK, row.SizeBytes, row.ContentType, rc, nil)
