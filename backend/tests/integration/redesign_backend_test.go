@@ -688,7 +688,6 @@ func TestFileCategoryUpdateAndInlinePreview(t *testing.T) {
 	res.Body.Close()
 }
 
-
 // 写的业务时间」这条不变量 —— 用户报的 bug 是建档行冒充投递日、跳阶时投递时间
 // 只进快照列而事件被盖上写库时刻。
 func TestTimelineCarriesUserEnteredBusinessTime(t *testing.T) {
