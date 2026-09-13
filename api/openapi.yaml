@@ -337,11 +337,12 @@ paths:
   /files:
     post:
       summary: 流式上传（multipart file + category + 可选 application_id / interview_id）
-      description: 单文件 ≤20MiB；允许 PDF/DOCX/TXT/PNG/JPEG。interview_id 需归属当前用户且属于该 application_id
+      description: 单文件 ≤20MiB；允许 PDF/DOCX/TXT/PNG/JPEG。category ∈ resume/cover_letter/portfolio/other（缺省 other，白名单外 400）。interview_id 需归属当前用户且属于该 application_id
     get: { summary: 文件列表（可 filter application_id；每行含 interview_id） }
   /files/{id}/download:
-    get: { summary: 鉴权后下载（校验 owner） }
+    get: { summary: 鉴权后下载（校验 owner）；?disposition=inline 仅对 PDF/图片/TXT 以内联返回供在线预览，其余类型仍强制 attachment }
   /files/{id}:
+    patch: { summary: 更新附件类别（category 白名单同上传；同步 application_files.purpose / is_resume） }
     delete: { summary: 删除文件（清理申请关联与引用它的自定义字段；单用户私有无共享） }
   /views:
     get: {}

@@ -1,31 +1,23 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, fmtBytes, fmtDate } from '../../lib/api'
+import { FILE_CATEGORIES } from '../../lib/files'
 import type { FileItem } from '../../lib/types'
 import { Button, Card, LinkButton, Tag } from '../../ds'
 import { Icon } from '../../components/Icon'
 import { EmptyHint, ErrorText, Num, PageSpinner, Spinner } from '../../components/ui'
 import { FileTile } from '../database/tabs'
+import { CategorySelect, FileViewerModal, useUpdateCategory } from './shared'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
 const QUOTA_BYTES = 5 * 1024 * 1024 * 1024
-
-const CATEGORIES: Array<{ key: string; label: string }> = [
-  { key: 'all', label: '全部' },
-  { key: 'resume', label: '简历' },
-  { key: 'cover_letter', label: '求职信' },
-  { key: 'portfolio', label: '作品集' },
-  { key: 'other', label: '其它' },
-]
-
-function categoryLabel(key: string): string {
-  return CATEGORIES.find((c) => c.key === key)?.label ?? '其它'
-}
 
 export function FilesPage() {
   const qc = useQueryClient()
   const [err, setErr] = useState('')
   const [filter, setFilter] = useState('all')
+  const [uploadCat, setUploadCat] = useState('other')
+  const [viewing, setViewing] = useState<FileItem | null>(null)
 
   const q = useQuery({ queryKey: ['files'], queryFn: () => api.get<{ items: FileItem[] }>('/api/v1/files') })
 
@@ -35,11 +27,13 @@ export function FilesPage() {
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
   })
 
+  const recat = useUpdateCategory(setErr)
+
   const up = useMutation({
     mutationFn: (f: File) => {
       const fd = new FormData()
       fd.append('file', f)
-      fd.append('category', 'other')
+      fd.append('category', uploadCat)
       return api.post('/api/v1/files', fd, true)
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['files'] }),
@@ -59,12 +53,32 @@ export function FilesPage() {
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        {CATEGORIES.map((c) => (
+        {[{ key: 'all', label: '全部' }, ...FILE_CATEGORIES].map((c) => (
           <Tag key={c.key} selected={filter === c.key} onClick={() => setFilter(c.key)}>
             {c.label} {counts[c.key] ?? 0}
           </Tag>
         ))}
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: 'var(--text-muted)' }}>
+          <select
+            aria-label="上传类别"
+            value={uploadCat}
+            onChange={(e) => setUploadCat(e.target.value)}
+            style={{
+              height: 'var(--control-h-sm)',
+              borderRadius: 'var(--radius-control)',
+              border: '1px solid var(--border)',
+              background: 'var(--surface)',
+              fontSize: 'var(--text-13)',
+              padding: '0 8px',
+              color: 'var(--text)',
+            }}
+          >
+            {FILE_CATEGORIES.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.label}
+              </option>
+            ))}
+          </select>
           <span className="meter slim" style={{ width: 120, flex: '0 0 auto' }}>
             <span style={{ width: `${Math.min(100, (used / QUOTA_BYTES) * 100)}%`, background: 'var(--accent)' }} />
           </span>
@@ -89,7 +103,7 @@ export function FilesPage() {
       </div>
 
       <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-        私有存储：PDF/DOCX/TXT/PNG/JPEG，单文件 ≤ 20 MiB。下载需登录并校验归属。
+        私有存储：PDF/DOCX/TXT/PNG/JPEG，单文件 ≤ 20 MiB。PDF/图片/TXT 可在线预览，DOCX 需下载查看；类别传错了在行内直接改。
       </p>
 
       {err && <ErrorText>{err}</ErrorText>}
@@ -126,7 +140,9 @@ export function FilesPage() {
                         </span>
                       </span>
                     </td>
-                    <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{categoryLabel(f.category)}</td>
+                    <td>
+                      <CategorySelect value={f.category} disabled={recat.isPending} onChange={(c) => recat.mutate({ id: f.id, category: c })} />
+                    </td>
                     <td>
                       <Num>{fmtBytes(f.size_bytes)}</Num>
                     </td>
@@ -139,9 +155,14 @@ export function FilesPage() {
                     <td>
                       <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                         {f.status === 'ready' && (
-                          <LinkButton variant="ghost" size="sm" href={`/api/v1/files/${f.id}/download`} download>
-                            下载
-                          </LinkButton>
+                          <>
+                            <Button variant="ghost" size="sm" onClick={() => setViewing(f)}>
+                              预览
+                            </Button>
+                            <LinkButton variant="ghost" size="sm" href={`/api/v1/files/${f.id}/download`} download>
+                              下载
+                            </LinkButton>
+                          </>
                         )}
                         <Button variant="ghost" size="sm" disabled={del.isPending} onClick={() => del.mutate(f.id)}>
                           删除
@@ -155,6 +176,8 @@ export function FilesPage() {
           </div>
         </Card>
       )}
+
+      {viewing && <FileViewerModal file={viewing} onClose={() => setViewing(null)} />}
     </section>
   )
 }

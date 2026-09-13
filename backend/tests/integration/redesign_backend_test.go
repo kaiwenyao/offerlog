@@ -11,6 +11,7 @@
 package integration
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -546,7 +547,148 @@ func TestUploadFileToInterviewRoundAndCleanup(t *testing.T) {
 	}
 }
 
-// 时间线右侧显示的是事件的 occurred_at。这些用例锁住「occurred_at 永远是用户
+// 类别必须可选可改（resume/cover_letter/... 白名单），PDF/图片/TXT 支持在线
+// 预览（?disposition=inline），其余类型（DOCX=zip 容器）保持强制下载。
+func TestFileCategoryUpdateAndInlinePreview(t *testing.T) {
+	ctx := context.Background()
+	db, svc, _, owner := setup(t)
+	app := mustCreate(t, svc, owner, "FileCo", "岗位")
+	srv := newRedesignServer(t, db, owner, "Asia/Shanghai")
+	defer srv.Close()
+
+	// 白名单外的类别直接 400，不再默默落库。
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "cover_letter_stripe.pdf")
+	_, _ = fw.Write([]byte("%PDF-1.4\n%fake-pdf-bytes"))
+	_ = mw.WriteField("category", "letter_of_intent")
+	_ = mw.WriteField("application_id", itoa(app.ID))
+	_ = mw.Close()
+	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/files", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, res, http.StatusBadRequest)
+
+	// 正常上传求职信（旧前端把非图片一律写死成 resume——这里显式选 cover_letter）。
+	buf.Reset()
+	mw = multipart.NewWriter(&buf)
+	fw, _ = mw.CreateFormFile("file", "cover_letter_stripe.pdf")
+	_, _ = fw.Write([]byte("%PDF-1.4\n%fake-pdf-bytes"))
+	_ = mw.WriteField("category", "cover_letter")
+	_ = mw.WriteField("application_id", itoa(app.ID))
+	_ = mw.Close()
+	req, _ = http.NewRequest("POST", srv.URL+"/api/v1/files", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var up struct {
+		ID string `json:"id"`
+	}
+	decode(t, res, &up)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("upload status = %d", res.StatusCode)
+	}
+
+	var cat string
+	var isResume bool
+	if err := db.Pool().QueryRow(ctx, `SELECT af.purpose, af.is_resume FROM application_files af WHERE af.file_id=$1`, up.ID).Scan(&cat, &isResume); err != nil {
+		t.Fatal(err)
+	}
+	if cat != "cover_letter" || isResume {
+		t.Fatalf("linked purpose/is_resume = %q/%v, want cover_letter/false", cat, isResume)
+	}
+
+	// PATCH 改类别：files.category 与 application_files.purpose/is_resume 同步；
+	// 白名单外的值与别人的文件都被拒。
+	patch := func(fid, body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest("PATCH", srv.URL+"/api/v1/files/"+fid, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	mustStatus(t, patch(up.ID, `{"category":"resume"}`), http.StatusOK)
+	mustStatus(t, patch(up.ID, `{"category":"login_page"}`), http.StatusBadRequest)
+	if err := db.Pool().QueryRow(ctx,
+		`SELECT f.category, af.purpose, af.is_resume FROM files f JOIN application_files af ON af.file_id=f.id WHERE f.id=$1`,
+		up.ID).Scan(&cat, &cat, &isResume); err != nil {
+		t.Fatal(err)
+	}
+	if cat != "resume" || !isResume {
+		t.Fatalf("after PATCH category/purpose/is_resume = %q/%v, want resume/true", cat, isResume)
+	}
+
+	ownerB := createOwner(t, db)
+	var fidB string
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO files(owner_id, object_key, final_key, original_name, category, status)
+		VALUES($1,'staging/b','owners/$1/files/b','x.pdf','other','ready') RETURNING id`, ownerB).Scan(&fidB); err != nil {
+		t.Fatal(err)
+	}
+	mustStatus(t, patch(fidB, `{"category":"resume"}`), http.StatusNotFound)
+
+	// 下载默认 attachment；?disposition=inline 对 PDF 生效（在线预览）。
+	res, err = http.Get(srv.URL + "/api/v1/files/" + up.ID + "/download")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cd := res.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
+		t.Fatalf("plain download disposition = %q, want attachment…", cd)
+	}
+	res.Body.Close()
+	res, err = http.Get(srv.URL + "/api/v1/files/" + up.ID + "/download?disposition=inline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cd := res.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "inline") {
+		t.Fatalf("inline download disposition = %q, want inline…", cd)
+	}
+	res.Body.Close()
+
+	// DOCX（zip 容器，content_type=application/zip）不可预览：带 disposition=inline
+	// 也强制 attachment。
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	zf, _ := zw.Create("word/document.xml")
+	_, _ = zf.Write([]byte("<doc/>"))
+	_ = zw.Close()
+	buf.Reset()
+	mw = multipart.NewWriter(&buf)
+	fw, _ = mw.CreateFormFile("file", "cv.docx")
+	_, _ = fw.Write(zipBuf.Bytes())
+	_ = mw.WriteField("category", "resume")
+	_ = mw.Close()
+	req, _ = http.NewRequest("POST", srv.URL+"/api/v1/files", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upDoc struct {
+		ID string `json:"id"`
+	}
+	decode(t, res, &upDoc)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("docx upload status = %d", res.StatusCode)
+	}
+	res, err = http.Get(srv.URL + "/api/v1/files/" + upDoc.ID + "/download?disposition=inline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cd := res.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
+		t.Fatalf("docx inline disposition = %q, want attachment…", cd)
+	}
+	res.Body.Close()
+}
+
+
 // 写的业务时间」这条不变量 —— 用户报的 bug 是建档行冒充投递日、跳阶时投递时间
 // 只进快照列而事件被盖上写库时刻。
 func TestTimelineCarriesUserEnteredBusinessTime(t *testing.T) {

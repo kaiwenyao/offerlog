@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, fmtBytes, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
 import { effectiveZone } from '../../lib/tz'
+import { FILE_CATEGORIES, guessCategory } from '../../lib/files'
 import type { ActionItem, AppRow, AssessmentRound, FileItem, Interview, Note } from '../../lib/types'
 import { comboLabel, NEXT_STEP_SUGGESTION } from '../../lib/status'
 import { Button, Card, Eyebrow, LinkButton, PanelTitle } from '../../ds'
 import { Icon } from '../../components/Icon'
 import { ErrorText, Num, Spinner } from '../../components/ui'
+import { CategorySelect, FileViewerModal, useUpdateCategory } from '../files/shared'
 import { ActionForm, AssessmentForm, InterviewForm, NoteForm } from './forms'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
@@ -550,6 +552,8 @@ export function FilesTab({
   const [err, setErr] = useState('')
   const [uploading, setUploading] = useState(false)
   const [attachTo, setAttachTo] = useState<number>(0)
+  const [category, setCategory] = useState('resume')
+  const [catDirty, setCatDirty] = useState(false)
 
   // 画布：⌘V 直接粘贴截图，自动挂到当前轮次。监听全局 paste：只有当焦点不在
   // 输入框/文本域里（避免用户在表单里粘贴文字时误传）才处理剪贴板图片。
@@ -561,7 +565,7 @@ export function FilesTab({
       const img = files.find((f) => f.type.startsWith('image/'))
       if (img) {
         e.preventDefault()
-        uploadOne(img)
+        uploadOne(img, 'other')
       }
     }
     window.addEventListener('paste', onPaste)
@@ -569,11 +573,20 @@ export function FilesTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attachTo])
 
-  const uploadOne = async (file: File) => {
+  // 上传即落库，类别无法二次询问：用户动过下拉就以他选的为准，否则按文件名猜
+  // （cover_letter_stripe.pdf → 求职信；图片归「其它」）。猜错了可在行内直接改。
+  const resolveCategory = (f: File): string => {
+    if (catDirty) return category
+    const g = f.type.startsWith('image/') ? 'other' : guessCategory(f.name)
+    setCategory(g)
+    return g
+  }
+
+  const uploadOne = async (file: File, cat: string) => {
     setUploading(true)
     setErr('')
     try {
-      await upMut.mutateAsync(file)
+      await upMut.mutateAsync({ file, category: cat })
     } catch {
       /* surfaced through the mutation's onError */
     } finally {
@@ -582,10 +595,10 @@ export function FilesTab({
   }
 
   const upMut = useMutation({
-    mutationFn: (file: File) => {
+    mutationFn: ({ file, category }: { file: File; category: string }) => {
       const fd = new FormData()
       fd.append('file', file)
-      fd.append('category', /[.]png|jpe?g$/i.test(file.name) ? 'other' : 'resume')
+      fd.append('category', category)
       fd.append('application_id', String(appId))
       // 截图/附件挂到选中的轮次（默认挂到当前正在进行的轮次）
       if (attachTo > 0) fd.append('interview_id', String(attachTo))
@@ -638,11 +651,35 @@ export function FilesTab({
             onChange={async (e) => {
               const f = e.target.files?.[0]
               if (!f) return
-              await uploadOne(f)
+              await uploadOne(f, resolveCategory(f))
               e.target.value = ''
             }}
           />
         </label>
+        <select
+          aria-label="附件类别"
+          title="上传时使用的类别；粘贴的截图固定归「其它」"
+          value={category}
+          onChange={(e) => {
+            setCategory(e.target.value)
+            setCatDirty(true)
+          }}
+          style={{
+            height: 'var(--control-h-sm)',
+            borderRadius: 'var(--radius-control)',
+            border: '1px solid var(--border)',
+            background: 'var(--surface)',
+            fontSize: 'var(--text-13)',
+            padding: '0 8px',
+            color: 'var(--text)',
+          }}
+        >
+          {FILE_CATEGORIES.map((c) => (
+            <option key={c.key} value={c.key}>
+              {c.label}
+            </option>
+          ))}
+        </select>
         {interviews.length > 0 && (
           <select
             aria-label="附件归属轮次"
@@ -669,7 +706,8 @@ export function FilesTab({
       </div>
 
       <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-        允许 PDF / DOCX / TXT / PNG / JPEG，单文件 ≤ 20 MiB。截图可 ⌘V 直接粘贴，自动挂到当前轮次。
+        允许 PDF / DOCX / TXT / PNG / JPEG，单文件 ≤ 20 MiB。PDF / 图片 / TXT 点击文件名可在线预览（DOCX 请下载查看）；类别猜错了在行内下拉直接改。截图可 ⌘V
+        直接粘贴，自动挂到当前轮次。
       </p>
 
       {files.length === 0 ? (
@@ -711,6 +749,7 @@ export function FilesTab({
 function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
   const qc = useQueryClient()
   const [err, setErr] = useState('')
+  const [viewing, setViewing] = useState<FileItem | null>(null)
   const del = useMutation({
     mutationFn: (id: string) => api.del(`/api/v1/files/${id}`),
     onSuccess: () => {
@@ -719,39 +758,73 @@ function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
   })
+  const recat = useUpdateCategory(setErr)
   return (
-    <Card padding={0}>
-      <div className="panel-head">
-        <PanelTitle>{title}</PanelTitle>
-        <Num color="var(--text-muted)">{items.length}</Num>
-      </div>
-      {err && (
-        <div style={{ padding: '6px 16px' }}>
-          <ErrorText>{err}</ErrorText>
+    <>
+      <Card padding={0}>
+        <div className="panel-head">
+          <PanelTitle>{title}</PanelTitle>
+          <Num color="var(--text-muted)">{items.length}</Num>
         </div>
-      )}
-      {items.map((f) => (
-        <div key={f.id} className="panel-row">
-          <FilePreview f={f} />
-          <span className="grow" style={{ minWidth: 0 }}>
-            <span className="ellipsis" style={{ display: 'block', fontSize: 14 }}>
-              {f.name}
+        {err && (
+          <div style={{ padding: '6px 16px' }}>
+            <ErrorText>{err}</ErrorText>
+          </div>
+        )}
+        {items.map((f) => (
+          <div key={f.id} className="panel-row">
+            <button
+              type="button"
+              onClick={() => setViewing(f)}
+              title="点击预览"
+              style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer', lineHeight: 0, flex: '0 0 auto' }}
+            >
+              <FilePreview f={f} />
+            </button>
+            <span className="grow" style={{ minWidth: 0 }}>
+              <button
+                type="button"
+                className="ellipsis"
+                onClick={() => setViewing(f)}
+                title="点击预览"
+                style={{
+                  display: 'block',
+                  maxWidth: '100%',
+                  fontSize: 14,
+                  color: 'var(--text)',
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                }}
+              >
+                {f.name}
+              </button>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+                {fmtBytes(f.size_bytes)} ·
+                <CategorySelect value={f.category} disabled={recat.isPending} onChange={(c) => recat.mutate({ id: f.id, category: c })} />
+                · {fmtDate(f.created_at)}
+              </span>
+              {f.status !== 'ready' && <span style={{ fontSize: 12, color: 'var(--danger)' }}>状态：{f.status}</span>}
             </span>
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
-              {fmtBytes(f.size_bytes)} · {f.category === 'resume' ? '简历' : '其他'} · {fmtDate(f.created_at)}
-            </span>
-            {f.status !== 'ready' && <span style={{ fontSize: 12, color: 'var(--danger)' }}>状态：{f.status}</span>}
-          </span>
-          {f.status === 'ready' && (
-            <LinkButton variant="ghost" size="sm" href={`/api/v1/files/${f.id}/download`} download>
-              下载
-            </LinkButton>
-          )}
-          <Button variant="ghost" size="sm" disabled={del.isPending} onClick={() => del.mutate(f.id)} title="删除文件并移除关联">
-            删除
-          </Button>
-        </div>
-      ))}
-    </Card>
+            {f.status === 'ready' && (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => setViewing(f)}>
+                  预览
+                </Button>
+                <LinkButton variant="ghost" size="sm" href={`/api/v1/files/${f.id}/download`} download>
+                  下载
+                </LinkButton>
+              </>
+            )}
+            <Button variant="ghost" size="sm" disabled={del.isPending} onClick={() => del.mutate(f.id)} title="删除文件并移除关联">
+              删除
+            </Button>
+          </div>
+        ))}
+      </Card>
+      {viewing && <FileViewerModal file={viewing} onClose={() => setViewing(null)} />}
+    </>
   )
 }
