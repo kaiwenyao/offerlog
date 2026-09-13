@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
 import { FILE_CATEGORIES } from '../../lib/files'
@@ -5,6 +6,78 @@ import type { FileItem } from '../../lib/types'
 import { Button, LinkButton } from '../../ds'
 import { Modal } from '../../components/ui'
 import { FileTile } from '../database/tabs'
+
+function dragHasFiles(e: DragEvent): boolean {
+  return Array.from(e.dataTransfer?.types ?? []).includes('Files')
+}
+
+/**
+ * 窗口级拖拽上传：文件拖进浏览器任意位置松开即回调 onFiles（多文件按顺序逐个
+ * 上传）。默认的浏览器「打开文件」行为一律拦掉；拖拽悬停时返回置顶横幅提示。
+ */
+export function useDropUpload(onFiles: (files: File[]) => void, hint: string) {
+  const [dragOver, setDragOver] = useState(false)
+  const depth = useRef(0)
+  const handler = useRef(onFiles)
+  handler.current = onFiles
+
+  useEffect(() => {
+    const onDragEnter = (e: DragEvent) => {
+      if (!dragHasFiles(e)) return
+      e.preventDefault()
+      depth.current++
+      setDragOver(true)
+    }
+    const onDragOver = (e: DragEvent) => {
+      if (dragHasFiles(e)) e.preventDefault()
+    }
+    const onDragLeave = (e: DragEvent) => {
+      if (!dragHasFiles(e)) return
+      depth.current = Math.max(0, depth.current - 1)
+      if (depth.current === 0) setDragOver(false)
+    }
+    const onDrop = (e: DragEvent) => {
+      if (!dragHasFiles(e)) return
+      e.preventDefault()
+      depth.current = 0
+      setDragOver(false)
+      const files = Array.from(e.dataTransfer?.files ?? [])
+      if (files.length > 0) handler.current(files)
+    }
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [])
+
+  const banner = dragOver ? (
+    <div
+      style={{
+        position: 'fixed',
+        top: 14,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 70,
+        background: 'var(--accent)',
+        color: '#fff',
+        padding: '6px 14px',
+        borderRadius: 'var(--radius-control)',
+        fontSize: 13,
+        boxShadow: 'var(--shadow-pop)',
+        pointerEvents: 'none',
+      }}
+    >
+      {hint}
+    </div>
+  ) : null
+  return { dragOver, banner }
+}
 
 /** 行内改类别的下拉框：上传选错（把求职信传成简历）时不用重传，直接改。 */
 export function CategorySelect({

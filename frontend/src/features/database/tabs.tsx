@@ -8,7 +8,7 @@ import { comboLabel, NEXT_STEP_SUGGESTION } from '../../lib/status'
 import { Button, Card, Eyebrow, LinkButton, PanelTitle } from '../../ds'
 import { Icon } from '../../components/Icon'
 import { ErrorText, Num, Spinner } from '../../components/ui'
-import { CategorySelect, FileViewerModal, useUpdateCategory } from '../files/shared'
+import { CategorySelect, FileViewerModal, useDropUpload, useUpdateCategory } from '../files/shared'
 import { ActionForm, AssessmentForm, InterviewForm, NoteForm } from './forms'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
@@ -608,6 +608,11 @@ export function FilesTab({
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '上传失败'),
   })
 
+  // 文件拖进浏览器任意位置松开即上传（与点选同一套类别解析；多文件逐个传）。
+  const drop = useDropUpload(async (files) => {
+    for (const f of files) await uploadOne(f, resolveCategory(f))
+  }, '松开鼠标，上传到当前岗位')
+
   const roundByID = (id: number | null) => interviews.find((i) => i.id === id) ?? null
   const roundFiles = (rid: number | null) => files.filter((f) => f.interview_id === rid)
   const currentRound =
@@ -623,6 +628,7 @@ export function FilesTab({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+      {drop.banner}
       {err && <ErrorText>{err}</ErrorText>}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
@@ -706,8 +712,8 @@ export function FilesTab({
       </div>
 
       <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-        允许 PDF / DOCX / TXT / PNG / JPEG，单文件 ≤ 20 MiB。PDF / 图片 / TXT 点击文件名可在线预览（DOCX 请下载查看）；类别猜错了在行内下拉直接改。截图可 ⌘V
-        直接粘贴，自动挂到当前轮次。
+        允许 PDF / DOCX / TXT / PNG / JPEG，单文件 ≤ 20 MiB。文件可拖进页面任意位置松开上传（截图可 ⌘V
+        直接粘贴，自动挂到当前轮次）。PDF / 图片 / TXT 点击文件名可在线预览（DOCX 请下载查看）；类别猜错了在行内下拉直接改。
       </p>
 
       {files.length === 0 ? (

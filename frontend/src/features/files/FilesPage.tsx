@@ -7,7 +7,7 @@ import { Button, Card, LinkButton, Tag } from '../../ds'
 import { Icon } from '../../components/Icon'
 import { EmptyHint, ErrorText, Num, PageSpinner, Spinner } from '../../components/ui'
 import { FileTile } from '../database/tabs'
-import { CategorySelect, FileViewerModal, useUpdateCategory } from './shared'
+import { CategorySelect, FileViewerModal, useDropUpload, useUpdateCategory } from './shared'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
 const QUOTA_BYTES = 5 * 1024 * 1024 * 1024
@@ -40,6 +40,17 @@ export function FilesPage() {
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '上传失败'),
   })
 
+  // 文件拖进浏览器任意位置松开即上传，类别用下拉当前选中值（多文件逐个传）。
+  const drop = useDropUpload(async (files) => {
+    for (const f of files) {
+      try {
+        await up.mutateAsync(f)
+      } catch {
+        /* surfaced through the mutation's onError */
+      }
+    }
+  }, '松开鼠标，上传到文件库')
+
   const files = useMemo(() => q.data?.items ?? [], [q.data])
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: files.length }
@@ -52,6 +63,7 @@ export function FilesPage() {
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {drop.banner}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         {[{ key: 'all', label: '全部' }, ...FILE_CATEGORIES].map((c) => (
           <Tag key={c.key} selected={filter === c.key} onClick={() => setFilter(c.key)}>
@@ -103,7 +115,8 @@ export function FilesPage() {
       </div>
 
       <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
-        私有存储：PDF/DOCX/TXT/PNG/JPEG，单文件 ≤ 20 MiB。PDF/图片/TXT 可在线预览，DOCX 需下载查看；类别传错了在行内直接改。
+        私有存储：PDF/DOCX/TXT/PNG/JPEG，单文件 ≤ 20 MiB。文件可拖进页面任意位置松开上传。PDF/图片/TXT
+        可在线预览，DOCX 需下载查看；类别传错了在行内直接改。
       </p>
 
       {err && <ErrorText>{err}</ErrorText>}
