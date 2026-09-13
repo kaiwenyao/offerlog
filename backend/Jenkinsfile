@@ -34,6 +34,12 @@ pipeline {
     agent {
         kubernetes {
             cloud 'kubernetes'
+            // Inherit the shared "ci-base" pod template: node selection (the ci-worker
+            // label) and topology spread constraints are maintained centrally there.
+            inheritFrom 'ci-base'
+            // merge() is essential: the plugin default override() would replace the
+            // parent spec wholesale, silently dropping the shared scheduling rules.
+            yamlMergeStrategy merge()
             defaultContainer 'go'
             yaml '''
 apiVersion: v1
