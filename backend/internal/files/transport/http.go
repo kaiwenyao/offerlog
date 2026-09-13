@@ -30,10 +30,13 @@ import (
 	"offerlog/backend/internal/platform/objectstore"
 )
 
+// DBQuerier is satisfied by *database.DB. RunInTx keeps multi-table writes
+// (PATCH category touches files + application_files) atomic.
 type DBQuerier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	RunInTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error
 }
 
 type Config struct {
@@ -349,20 +352,24 @@ func (h *Handler) update(c *gin.Context) {
 		httpx.WriteErr(c, httpx.BadRequest("bad_category", err.Error()))
 		return
 	}
-	tag, err := h.db.Exec(c.Request.Context(),
-		`UPDATE files SET category=$2, updated_at=now() WHERE id=$1 AND owner_id=$3 AND status='ready'`,
-		fid, category, user.ID)
+	// Two tables must move together — separate autocommitted statements could
+	// leave purpose/is_resume diverging from the displayed category.
+	err = h.db.RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE files SET category=$2, updated_at=now() WHERE id=$1 AND owner_id=$3 AND status='ready'`,
+			fid, category, user.ID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return httpx.NotFound("文件不存在")
+		}
+		_, err = tx.Exec(ctx,
+			`UPDATE application_files SET purpose=$2, is_resume=$3 WHERE file_id=$1 AND owner_id=$4`,
+			fid, category, category == "resume", user.ID)
+		return err
+	})
 	if err != nil {
-		httpx.WriteErr(c, err)
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		httpx.WriteErr(c, httpx.NotFound("文件不存在"))
-		return
-	}
-	if _, err := h.db.Exec(c.Request.Context(),
-		`UPDATE application_files SET purpose=$2, is_resume=$3 WHERE file_id=$1 AND owner_id=$4`,
-		fid, category, category == "resume", user.ID); err != nil {
 		httpx.WriteErr(c, err)
 		return
 	}
@@ -452,6 +459,11 @@ func (h *Handler) download(c *gin.Context) {
 	disposition := "attachment"
 	if c.Query("disposition") == "inline" && previewable[row.ContentType] {
 		disposition = "inline"
+		// bootstrap 的 SecurityHeaders 对所有响应加 X-Frame-Options: DENY，
+		// 会把 iframe 预览一起拦掉；内联响应改用更窄的 frame-ancestors 'self'
+		// （仅同源页面可嵌入），预览可用而外站嵌入门都没有。
+		c.Writer.Header().Del("X-Frame-Options")
+		c.Header("Content-Security-Policy", "frame-ancestors 'self'")
 	}
 	// encoded Content-Disposition with UTF-8 filename
 	c.Header("Content-Disposition", fmt.Sprintf(`%s; filename="%s"; filename*=UTF-8''%s`, disposition, escapeQuotes(row.OriginalName), url.PathEscape(row.OriginalName)))

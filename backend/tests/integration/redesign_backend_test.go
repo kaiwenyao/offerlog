@@ -42,11 +42,13 @@ import (
 )
 
 // newRedesignServer mounts the applications / files / views / search routes
-// over a shared fake-owner session, mirroring the bootstrap wiring.
+// over a shared fake-owner session, mirroring the bootstrap wiring (incl.
+// SecurityHeaders — inline 预览必须能与全局 X-Frame-Options: DENY 共存).
 func newRedesignServer(t *testing.T, db *database.DB, owner int64, timezone string) *httptest.Server {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
+	r.Use(gin.Recovery(), httpx.RequestID(), httpx.SecurityHeaders())
 	r.Use(func(c *gin.Context) {
 		httpx.SetUser(c, &identitydomain.User{ID: owner, Email: "x@y.z", Timezone: timezone, Locale: "zh-CN"})
 		c.Next()
@@ -635,12 +637,17 @@ func TestFileCategoryUpdateAndInlinePreview(t *testing.T) {
 	mustStatus(t, patch(fidB, `{"category":"resume"}`), http.StatusNotFound)
 
 	// 下载默认 attachment；?disposition=inline 对 PDF 生效（在线预览）。
+	// 全局 SecurityHeaders 会加 X-Frame-Options: DENY，内联响应必须换成
+	// frame-ancestors 'self'，否则 iframe 预览被浏览器拦掉。
 	res, err = http.Get(srv.URL + "/api/v1/files/" + up.ID + "/download")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cd := res.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
 		t.Fatalf("plain download disposition = %q, want attachment…", cd)
+	}
+	if xfo := res.Header.Get("X-Frame-Options"); xfo != "DENY" {
+		t.Fatalf("plain download X-Frame-Options = %q, want DENY", xfo)
 	}
 	res.Body.Close()
 	res, err = http.Get(srv.URL + "/api/v1/files/" + up.ID + "/download?disposition=inline")
@@ -649,6 +656,12 @@ func TestFileCategoryUpdateAndInlinePreview(t *testing.T) {
 	}
 	if cd := res.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "inline") {
 		t.Fatalf("inline download disposition = %q, want inline…", cd)
+	}
+	if xfo := res.Header.Get("X-Frame-Options"); xfo != "" {
+		t.Fatalf("inline download X-Frame-Options = %q, want deleted", xfo)
+	}
+	if csp := res.Header.Get("Content-Security-Policy"); csp != "frame-ancestors 'self'" {
+		t.Fatalf("inline download CSP = %q, want frame-ancestors 'self'", csp)
 	}
 	res.Body.Close()
 
