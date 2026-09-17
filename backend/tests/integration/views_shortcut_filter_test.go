@@ -149,9 +149,9 @@ func TestFollowUpFilterMatchesMissingOrOverdueNextAction(t *testing.T) {
 		}
 	}
 
-	noPlan := mk("没安排下一步")            // 命中：缺 next_action
-	tooLate := mk("逾期")                 // 命中：有安排但已逾期
-	onTrack := mk("还早")                 // 不命中：安排在未来
+	noPlan := mk("没安排下一步") // 命中：缺 next_action
+	tooLate := mk("逾期")    // 命中：有安排但已逾期
+	onTrack := mk("还早")    // 不命中：安排在未来
 	setNext(noPlan, "", nil)
 	setNext(tooLate, "回访 HR", &overdue)
 	setNext(onTrack, "回访 HR", &future)
