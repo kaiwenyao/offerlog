@@ -415,6 +415,42 @@ func (r *Repo) MarkActionDone(ctx context.Context, q database.Querier, ownerID, 
 	return err
 }
 
+// ClearLegacyNextActionWhenSettled removes the application's legacy next_action
+// mirror once it has no open actions left.
+//
+// 方案 §5.3：独立待办是唯一真相，岗位行上的 next_action 只是历史镜像
+// （迁移 00002 把老数据搬进 actions）。镜像不跟着关就会出现自相矛盾的界面：
+// 详情说「待办 (0)」，下面却还挂着一条不可操作的旧记录——因为它把镜像当成了
+// 迁移遗留。所以最后一个未完成待办被完成时镜像必须一起清空；还有未完成待办时
+// 绝不能动它（NOT EXISTS 子句）。
+func (r *Repo) ClearLegacyNextActionWhenSettled(ctx context.Context, q database.Querier, ownerID, actionID int64) error {
+	_, err := q.Exec(ctx, `UPDATE applications ap SET next_action='', next_action_due_at=NULL,
+		next_action_due_ts=NULL, version=version+1, updated_at=now()
+		WHERE ap.owner_id=$1
+		  AND ap.id=(SELECT a.application_id FROM actions a WHERE a.id=$2 AND a.owner_id=$1)
+		  AND NOT EXISTS (SELECT 1 FROM actions x
+		        WHERE x.application_id=ap.id AND x.owner_id=$1 AND x.done_at IS NULL)`,
+		ownerID, actionID)
+	return err
+}
+
+// MarkActionDoneAndSettle marks the action (un)done and, on completion, clears
+// the legacy next_action mirror when no open action is left. Both statements run
+// in one transaction: a half-applied pair is exactly the contradiction the mirror
+// caused in the first place. Reopening an action deliberately does NOT restore
+// the mirror — the standalone action is the truth, the mirror stays retired.
+func (r *Repo) MarkActionDoneAndSettle(ctx context.Context, ownerID, id int64, done bool) error {
+	return r.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := r.MarkActionDone(ctx, tx, ownerID, id, done); err != nil {
+			return err
+		}
+		if !done {
+			return nil
+		}
+		return r.ClearLegacyNextActionWhenSettled(ctx, tx, ownerID, id)
+	})
+}
+
 // -- notes --
 
 func (r *Repo) ListNotes(ctx context.Context, appID, ownerID int64) ([]*Note, error) {

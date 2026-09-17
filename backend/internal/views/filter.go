@@ -34,6 +34,7 @@ type FieldInfo struct {
 
 // CoreFields enumerates filterable/sortable built-in fields.
 var CoreFields = map[string]FieldInfo{
+	"id":              {Type: TypeNumber, SQL: "a.id"},
 	"company_name":    {Type: TypeText, SQL: "a.company_name"},
 	"position":        {Type: TypeText, SQL: "a.position"},
 	"job_url":         {Type: TypeURL, SQL: "a.job_url"},
@@ -59,7 +60,29 @@ var CoreFields = map[string]FieldInfo{
 	"updated_at":         {Type: TypeDate, SQL: "a.updated_at"},
 	"next_action":        {Type: TypeText, SQL: "a.next_action"},
 	"next_action_due_at": {Type: TypeDate, SQL: "a.next_action_due_at"},
+	// archived 是可见性旗标而不是状态（方案 §2.2）：归档过的岗位必须能被单独筛出来，
+	// 而不是用「已结束状态」冒充——归档一个进行中的岗位后，它就该出现在「已归档」里，
+	// 并从未归档视图消失。表达式是 boolean，与 TypeCheckbox 的 `= $n` 编译方式一致。
+	"archived": {Type: TypeCheckbox, SQL: "(a.archived_at IS NOT NULL)"},
+	// 「统一待办」口径（方案 §5.3）——与 home/repo.go 的统一清单**同一定义**：
+	// 未完成的 actions 行是唯一真相；只有该岗位一条 action 都没有时，历史的
+	// next_action 才作为派生待办参与（同一个 NOT EXISTS 守卫，否则已完成的待办
+	// 会以「无法操作的旧记录」永远复活）。
+	// 侧栏「待跟进」靠它判断「有没有下一步安排」，而不是读岗位行上的镜像：
+	// 完成最后一个待办时镜像会被清空、reopen 不会复活，镜像还会因为 best-effort
+	// 同步失败而过期——只看镜像会把「已排了未来一步」的岗位算成待跟进。
+	"open_todo_count": {Type: TypeNumber, SQL: "(SELECT count(*) FROM actions ac WHERE ac.application_id = a.id AND ac.owner_id = a.owner_id AND ac.done_at IS NULL) + (CASE WHEN trim(a.next_action) <> '' AND NOT EXISTS (SELECT 1 FROM actions acx WHERE acx.application_id = a.id AND acx.owner_id = a.owner_id) THEN 1 ELSE 0 END)"},
+	// 最早到期的那条未完成待办，折算成**用户时区**的日历日：date-only due_date
+	// 本来就是一个日历日；due_ts 是瞬时，按用户时区折日（与 reminders / home 的
+	// `due_date::timestamp AT TIME ZONE tz` 同一套口径，只是倒过来取日期）。
+	// 没有任何未完成待办（或没有任何到期日）时为 NULL。
+	"next_open_todo_due": {Type: TypeDate, SQL: "COALESCE((SELECT min(CASE WHEN ac.due_ts IS NOT NULL THEN (ac.due_ts AT TIME ZONE " + userDayTZ + ")::date ELSE ac.due_date END) FROM actions ac WHERE ac.application_id = a.id AND ac.owner_id = a.owner_id AND ac.done_at IS NULL), CASE WHEN trim(a.next_action) <> '' AND NOT EXISTS (SELECT 1 FROM actions acx WHERE acx.application_id = a.id AND acx.owner_id = a.owner_id) THEN a.next_action_due_at ELSE NULL END)"},
 }
+
+// userDayTZ is the owner's IANA timezone as a SQL expression, with the same
+// fallbacks as timeutil.SafeLocation (” / 'Local' → Europe/Dublin) so a zone
+// Go accepts cannot make `AT TIME ZONE` blow up at query time.
+const userDayTZ = "COALESCE(NULLIF(NULLIF(trim((SELECT u.timezone FROM users u WHERE u.id = a.owner_id)), ''), 'Local'), 'Europe/Dublin')"
 
 // FilterNode is one node of the filter tree: either a group with children or a
 // condition {field, op, value}.
@@ -254,6 +277,24 @@ func (r *Resolver) compileLeaf(c FilterNode, args []any, base int) (string, []an
 			idx := nextIdx()
 			args = addArg(num)
 			return fmt.Sprintf("%s = $%d", fi.SQL, idx), args, nil
+		case "in":
+			// 供「本周面试」这类由前端算出 id 集合的视图使用。空集合必须匹配
+			// 不到任何行（而不是编译成 `IN ()` 让整条 SQL 语法报错）。
+			arr, _ := c.Value.([]any)
+			if len(arr) == 0 {
+				return "FALSE", args, nil
+			}
+			ph := make([]string, 0, len(arr))
+			for _, v := range arr {
+				n, err := toFloat(v)
+				if err != nil {
+					return "", nil, fmt.Errorf("字段 %s 需要数值", c.Field)
+				}
+				idx := nextIdx()
+				args = addArg(n)
+				ph = append(ph, fmt.Sprintf("$%d", idx))
+			}
+			return fmt.Sprintf("%s IN (%s)", fi.SQL, strings.Join(ph, ",")), args, nil
 		case "gt":
 			idx := nextIdx()
 			args = addArg(num)

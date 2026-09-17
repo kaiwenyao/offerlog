@@ -47,6 +47,26 @@ type CreateInput struct {
 	Substatus string
 }
 
+// NullableInt64 / NullableString tell an absent PATCH field (Set=false) apart
+// from an explicit JSON null (Set=true, Value=nil). Clearing matters for the
+// salary snapshot: 薪资填错了必须能删掉，而不是只能改成另一个数。
+type NullableInt64 struct {
+	Value *int64
+	Set   bool
+}
+
+type NullableString struct {
+	Value *string
+	Set   bool
+}
+
+// NullableTime is the same idea for day / timestamp fields (deadline):
+// Set=true with Value=nil clears the day instead of silently keeping it.
+type NullableTime struct {
+	Value *time.Time
+	Set   bool
+}
+
 type UpdateInput struct {
 	CompanyID       *int64
 	CompanyName     *string
@@ -57,12 +77,16 @@ type UpdateInput struct {
 	Channel         *string
 	Priority        *string
 	Tags            []string
-	Deadline        *time.Time
+	Deadline        NullableTime
 	Notes           *string
 	NextAction      *string
 	NextActionDueAt *time.Time
 	CustomValues    map[string]any
-	Version         int
+	// 薪资快照（方案 §5：详情可直接补齐薪资）；Set 区分「没传」与「清空」。
+	SalaryMin      NullableInt64
+	SalaryMax      NullableInt64
+	SalaryCurrency NullableString
+	Version        int
 }
 
 type Service struct {
@@ -83,6 +107,21 @@ func (s *Service) WithActivities(acts *actrepo.Repo) *Service {
 }
 
 func (s *Service) Repo() *repository.Repo { return s.repo }
+
+// validateSalary guards the snapshot after a PATCH applied its changes: a
+// negative bound or a min above max would make the salary column lie.
+func validateSalary(min, max *int64) error {
+	if min != nil && *min < 0 {
+		return &domain.ValidationError{Code: "bad_salary_min", Message: "薪资下限不能为负数"}
+	}
+	if max != nil && *max < 0 {
+		return &domain.ValidationError{Code: "bad_salary_max", Message: "薪资上限不能为负数"}
+	}
+	if min != nil && max != nil && *min > *max {
+		return &domain.ValidationError{Code: "bad_salary_range", Message: "薪资下限不能高于上限"}
+	}
+	return nil
+}
 
 func normalizeCreate(in *CreateInput) error {
 	in.CompanyName = strings.TrimSpace(in.CompanyName)
@@ -247,14 +286,30 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, in *UpdateInput
 		setStr(&row.Location, in.Location)
 		setStr(&row.RemotePolicy, in.RemotePolicy)
 		setStr(&row.Channel, in.Channel)
+		// 薪资快照：Set 为 true 才改，Value 为 nil 表示清空（填错了要能删掉）。
+		if in.SalaryMin.Set {
+			row.SalaryMin = in.SalaryMin.Value
+		}
+		if in.SalaryMax.Set {
+			row.SalaryMax = in.SalaryMax.Value
+		}
+		if in.SalaryCurrency.Set {
+			row.SalaryCurrency = ""
+			if in.SalaryCurrency.Value != nil {
+				row.SalaryCurrency = strings.TrimSpace(*in.SalaryCurrency.Value)
+			}
+		}
+		if err := validateSalary(row.SalaryMin, row.SalaryMax); err != nil {
+			return err
+		}
 		if in.Priority != nil {
 			row.Priority = *in.Priority
 		}
 		if in.Tags != nil {
 			row.Tags = in.Tags
 		}
-		if in.Deadline != nil {
-			row.Deadline = in.Deadline
+		if in.Deadline.Set {
+			row.Deadline = in.Deadline.Value
 		}
 		if in.Notes != nil {
 			row.Notes = *in.Notes

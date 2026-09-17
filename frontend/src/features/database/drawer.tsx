@@ -8,6 +8,7 @@ import { CompanyMark, Icon } from '../../components/Icon'
 import { ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
 import { FilesTab, OverviewTab } from './tabs'
 import { TimelineTab } from './timeline'
+import { ApplicationEditForm } from './forms'
 
 type DetailTab = 'overview' | 'files' | 'timeline'
 
@@ -27,6 +28,9 @@ export function AppDetailContent({
   const qc = useQueryClient()
   // 时间线是记录进度的主面板（迁移 00006），所以抽屉默认落在这一页。
   const [tab, setTab] = useState<DetailTab>('timeline')
+  // 基础信息（公司/岗位/城市/JD 链接/薪资/渠道/截止日期）的编辑入口：创建弹窗
+  // 只要求公司和岗位，其余必须能在这里补齐。
+  const [editing, setEditing] = useState(false)
 
   const appQ = useQuery({ queryKey: ['app', appId], queryFn: () => api.get<AppRow>(`/api/v1/applications/${appId}`) })
   const eventsQ = useQuery({
@@ -113,6 +117,9 @@ export function AppDetailContent({
       <span style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
         {/* 顶部显示具体进度（方案 §5），子状态为空时退回大阶段标签。 */}
         <StatusChip status={app.status} substatus={app.substatus} />
+        <IconButton label="编辑基础信息" size="sm" variant="ghost" onClick={() => setEditing(true)}>
+          <Icon name="edit" size={16} />
+        </IconButton>
         {!embedded && (
           <>
             <Link to={`/apps/${app.id}`} aria-label="完整详情" title="完整详情" style={{ display: 'inline-flex' }}>
@@ -121,6 +128,7 @@ export function AppDetailContent({
             <RowMenu
               appId={app.id}
               app={app}
+              onEdit={() => setEditing(true)}
               onChanged={() => {
                 qc.invalidateQueries()
                 onClose()
@@ -150,6 +158,20 @@ export function AppDetailContent({
           </span>
         )}
       </div>
+
+      {editing && (
+        <ApplicationEditForm
+          app={app}
+          onClose={() => setEditing(false)}
+          onDone={() => {
+            setEditing(false)
+            // 基础信息会同时影响详情、列表与看板行的展示，整组失效。
+            qc.invalidateQueries({ queryKey: ['app', appId] })
+            qc.invalidateQueries({ queryKey: ['apps'] })
+            qc.invalidateQueries({ queryKey: ['views'] })
+          }}
+        />
+      )}
 
       {app.reason && (
         <Card padding="10px 12px" variant="outline" style={{ fontSize: 13 }}>
@@ -235,7 +257,17 @@ export function Drawer({ appId, onClose }: { appId: number; onClose: () => void 
  * Archive / unarchive / soft-delete / restore. Trash and archive are
  * visibility flags rather than statuses (plan §2.2).
  */
-function RowMenu({ appId, app, onChanged }: { appId: number; app: AppRow; onChanged: () => void }) {
+function RowMenu({
+  appId,
+  app,
+  onEdit,
+  onChanged,
+}: {
+  appId: number
+  app: AppRow
+  onEdit: () => void
+  onChanged: () => void
+}) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [err, setErr] = useState('')
@@ -264,6 +296,9 @@ function RowMenu({ appId, app, onChanged }: { appId: number; app: AppRow; onChan
             style={{ position: 'absolute', right: 0, top: '100%', zIndex: 56, minWidth: 170 }}
           >
             {err && <ErrorText>{err}</ErrorText>}
+            <button className="menu-item" onClick={onEdit}>
+              <Icon name="edit" size={15} /> 编辑基础信息
+            </button>
             {!app.archived ? (
               <button
                 className="menu-item"

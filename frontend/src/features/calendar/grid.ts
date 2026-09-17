@@ -81,6 +81,24 @@ export function weekColumns(events: CalendarEvent[], weekStartKey: string, zone?
   })
 }
 
+/** 月视图单元格里直接可见的日程条数——再多就折进「+N」。 */
+export const MONTH_CELL_LIMIT = 3
+
+/**
+ * 拆分一天的全部日程：可见的前 N 条 + 折起来的剩余。
+ *
+ * 折起来的部分必须能展开（单元格里的「+N」是可点的）：只藏起来不给入口的话，
+ * 用户只能在月视图之外重新定位到那一天，才看得到第 4 条以后的日程。
+ * 顺序保持月视图的排序（按时间），展开面板与网格里看到的完全一致。
+ */
+export function splitMonthCell(
+  events: CalendarEvent[],
+  limit: number = MONTH_CELL_LIMIT,
+): { shown: CalendarEvent[]; hidden: CalendarEvent[] } {
+  const n = Math.max(0, limit)
+  return { shown: events.slice(0, n), hidden: events.slice(n) }
+}
+
 /** 6-week month grid starting at the Monday on/before monthKey's 1st. */
 export function monthGrid(events: CalendarEvent[], monthKey: string, zone?: string): DayCell[][] {
   const firstKey = monthKeyOf(monthKey)
@@ -108,7 +126,6 @@ export interface AgendaGroup {
   title: string
   items: CalendarEvent[]
 }
-
 /**
  * Group events into agenda buckets — 已逾期 / 今天 / 未来 7 天 / 之后 — all in
  * the active zone. Every event whose calendar day is before today belongs to
