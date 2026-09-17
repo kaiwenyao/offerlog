@@ -72,6 +72,7 @@ function action(over: Partial<ActionItem> = {}): ActionItem {
     due_ts: null,
     done_at: null,
     remind_me: true,
+    remind_at: null,
     priority: 'high',
     created_at: '2026-09-19T02:00:00.000Z',
     ...over,
@@ -163,10 +164,42 @@ describe('buildActionPatch', () => {
   it('回填整体覆盖的字段（改标题不该清掉精确截止时间 / 提醒 / 已完成事实）', () => {
     const a = action({ due_ts: '2026-10-01T02:00:00.000Z', done_at: '2026-09-30T02:00:00.000Z' })
     const body = buildActionPatch(a, { title: '改个标题', due_date: '2026-10-01' })
+    // 截止日没动 → 精确时间原样保留。
     expect(body.due_ts).toBe('2026-10-01T02:00:00.000Z')
     expect(body.done_at).toBe('2026-09-30T02:00:00.000Z')
     expect(body.remind_me).toBe(true)
     expect(body.priority).toBe('high')
+  })
+
+  it('remind_at 原样回填（整体覆盖，漏了就会被写成 NULL）', () => {
+    const a = action({ remind_at: '2026-09-30T22:00:00.000Z' })
+    expect(buildActionPatch(a, { title: 'x', due_date: '2026-10-01' }).remind_at).toBe('2026-09-30T22:00:00.000Z')
+  })
+
+  // 老实例的待办普遍带着迁移 00002 回填的 due_ts（它优先于 due_date 被所有读取端
+  // 使用：详情、日历、首页、提醒）。只改 due_date 而把旧 due_ts 送回去 = 改了没反应。
+  describe('改了截止日就必须让日历日成为唯一真相', () => {
+    it('日期变了 → 清掉 due_ts（否则显示 / 日历 / 提醒纹丝不动）', () => {
+      const a = action({ due_ts: '2026-10-01T02:00:00.000Z', due_date: '2026-10-01' })
+      const body = buildActionPatch(a, { title: '准备二面', due_date: '2026-10-09' })
+      expect(body.due_date).toBe('2026-10-09')
+      expect(body.due_ts).toBeNull()
+    })
+
+    it('日期清空 → due_ts 也清掉（没有截止就是真的没有）', () => {
+      const a = action({ due_ts: '2026-10-01T02:00:00.000Z', due_date: '2026-10-01' })
+      const body = buildActionPatch(a, { title: '准备二面', due_date: '' })
+      expect(body.due_date).toBeNull()
+      expect(body.due_ts).toBeNull()
+    })
+
+    it('日期没变 → due_ts 保留（改标题不该降级成只有日历日）', () => {
+      const a = action({ due_ts: '2026-10-01T02:00:00.000Z', due_date: '2026-10-01' })
+      expect(buildActionPatch(a, { title: '改标题', due_date: '2026-10-01' }).due_ts).toBe('2026-10-01T02:00:00.000Z')
+      // 只有 due_ts、没有日历日的待办（同日再次保存）也不该被顺手清掉。
+      const tsOnly = action({ due_ts: '2026-10-01T02:00:00.000Z', due_date: null })
+      expect(buildActionPatch(tsOnly, { title: '改标题', due_date: '' }).due_ts).toBe('2026-10-01T02:00:00.000Z')
+    })
   })
 
   it('截止日留空 = 没有截止日期；格式非法直接拒绝', () => {

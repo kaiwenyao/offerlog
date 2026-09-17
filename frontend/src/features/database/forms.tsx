@@ -760,17 +760,27 @@ export function ActionEditForm({
   const mut = useMutation({
     mutationFn: async (body: Record<string, unknown>) => {
       const r = await api.patch<unknown>(`/api/v1/actions/${action.id}`, body)
-      // 岗位行上的 next_action 只是这条待办的镜像（§5.3），标题改了就一起跟上，
-      // 否则表格「下一步」列会一直显示旧文案。尽力而为，失败不影响待办本身。
-      try {
-        const fresh = await api.get<AppRow>(`/api/v1/applications/${appId}`)
-        await api.patch(`/api/v1/applications/${appId}`, {
-          version: fresh.version,
-          next_action: String(body.title ?? ''),
-          next_action_due_at: (body.due_date as string | null) ?? null,
-        })
-      } catch {
-        /* 待办的真相在 actions 表里，镜像同步失败不回滚 */
+      // 岗位行上的 next_action 只是这条待办的镜像（§5.3），标题改了要一起跟上，
+      // 否则表格「下一步」列会一直显示旧文案。但镜像同步有两个前提：
+      //   1. 这条待办仍未完成——后端在最后一个未完成待办被完成时会刻意清空镜像
+      //      （ClearLegacyNextActionWhenSettled）；编辑一条已完成的待办又把它写回去，
+      //      正好撤销了那次清理；
+      //   2. 这条确实是当前被镜像的那条（岗位行的 next_action 就是它原来的标题）
+      //      ——否则编辑三条里的第二条也会把「下一步」列改成它。
+      // 尽力而为：待办的真相在 actions 表里，镜像同步失败不回滚。
+      if (action.done_at == null) {
+        try {
+          const fresh = await api.get<AppRow>(`/api/v1/applications/${appId}`)
+          if ((fresh.next_action ?? '').trim() === (action.title ?? '').trim()) {
+            await api.patch(`/api/v1/applications/${appId}`, {
+              version: fresh.version,
+              next_action: String(body.title ?? ''),
+              next_action_due_at: (body.due_date as string | null) ?? null,
+            })
+          }
+        } catch {
+          /* 镜像同步是尽力而为 */
+        }
       }
       return r
     },

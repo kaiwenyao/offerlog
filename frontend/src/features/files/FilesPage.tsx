@@ -20,16 +20,19 @@ export function FilesPage() {
   const [viewing, setViewing] = useState<FileItem | null>(null)
   // 删除的是存储里的原件，且按钮就挨着「预览」「下载」——先过确认弹窗。
   const [pendingDel, setPendingDel] = useState<FileItem | null>(null)
+  // 删除失败要显示在弹窗里，否则错误文案会被 backdrop 盖住，看起来「点了没反应」。
+  const [delErr, setDelErr] = useState('')
 
   const q = useQuery({ queryKey: ['files'], queryFn: () => api.get<{ items: FileItem[] }>('/api/v1/files') })
 
   const del = useMutation({
     mutationFn: (id: string) => api.del(`/api/v1/files/${id}`),
     onSuccess: () => {
+      setDelErr('')
       setPendingDel(null)
       qc.invalidateQueries({ queryKey: ['files'] })
     },
-    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
+    onError: (e: unknown) => setDelErr(e instanceof ApiError ? e.message : '删除失败'),
   })
 
   const recat = useUpdateCategory(setErr)
@@ -182,7 +185,7 @@ export function FilesPage() {
                             </LinkButton>
                           </>
                         )}
-                        <Button variant="ghost" size="sm" onClick={() => setPendingDel(f)}>
+                        <Button variant="ghost" size="sm" onClick={() => { setDelErr(''); setPendingDel(f) }}>
                           删除
                         </Button>
                       </span>
@@ -200,6 +203,7 @@ export function FilesPage() {
         <ConfirmDialog
           title="删除这个文件？"
           pending={del.isPending}
+          error={delErr}
           onClose={() => setPendingDel(null)}
           onConfirm={() => del.mutate(pendingDel.id)}
         >

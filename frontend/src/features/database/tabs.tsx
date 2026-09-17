@@ -127,10 +127,16 @@ export function OverviewTab({
   const [delAction, setDelAction] = useState<ActionItem | null>(null)
   const [delNote, setDelNote] = useState<Note | null>(null)
   const [actionErr, setActionErr] = useState('')
-  const [noteErr, setNoteErr] = useState('')
+  // 删除失败的文案必须显示在确认弹窗内部：失败时弹窗还开着（pending 回到 false），
+  // 而 actionErr 渲染在抽屉顶部、被 backdrop 盖住——用户只看到「点了确认没反应」。
+  // 所以删除错误单走一个状态，并由 ConfirmDialog 的 error 插槽渲染。
+  const [delErr, setDelErr] = useState('')
 
   // 一轮活动的增删改都要连岗位快照、时间线与日历一起刷新：改了面试时间而首页
   // 「即将到来的面试」和日历还按旧时间显示，正是这次要修的东西。
+  // ['home'] / ['notifications'] 也必须失效：前者是今日待办里那份「即将到来的
+  // 面试 / OA」（staleTime 内会一直显示旧时间），后者是铃铛（取消面试后端已经
+  // 清了提醒，但通知中心不清就最多 60s 后才对得上）。
   const refreshActivity = () => {
     qc.invalidateQueries({ queryKey: ['interviews', app.id] })
     qc.invalidateQueries({ queryKey: ['assessments', app.id] })
@@ -139,6 +145,8 @@ export function OverviewTab({
     qc.invalidateQueries({ queryKey: ['events', app.id] })
     qc.invalidateQueries({ queryKey: ['calendar'] })
     qc.invalidateQueries({ queryKey: ['apps'] })
+    qc.invalidateQueries({ queryKey: ['home'] })
+    qc.invalidateQueries({ queryKey: ['notifications'] })
     refetchAll()
   }
 
@@ -184,6 +192,9 @@ export function OverviewTab({
     qc.invalidateQueries({ queryKey: ['actions'] })
     // completing/postponing moves the item between calendar buckets
     qc.invalidateQueries({ queryKey: ['calendar'] })
+    // 今天完成 / 延期一条待办会改首页的统一待办计数与清单（还有过期提醒）。
+    qc.invalidateQueries({ queryKey: ['home'] })
+    qc.invalidateQueries({ queryKey: ['notifications'] })
     refetchAll()
   }
   const doneMut = useMutation({
@@ -205,41 +216,41 @@ export function OverviewTab({
   const delActionMut = useMutation({
     mutationFn: (id: number) => api.del(`/api/v1/actions/${id}`),
     onSuccess: () => {
-      setActionErr('')
+      setDelErr('')
       setDelAction(null)
       refreshActivity()
     },
-    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '删除待办失败，请重试'),
+    onError: (e: unknown) => setDelErr(e instanceof ApiError ? e.message : '删除待办失败，请重试'),
   })
   // 删除备注：行内的「删除」按钮走 DELETE /notes/:note_id。
   const delNoteMut = useMutation({
     mutationFn: (id: number) => api.del(`/api/v1/applications/${app.id}/notes/${id}`),
     onSuccess: () => {
-      setNoteErr('')
+      setDelErr('')
       setDelNote(null)
       qc.invalidateQueries({ queryKey: ['notes', app.id] })
       refetchAll()
     },
-    onError: (e: unknown) => setNoteErr(e instanceof ApiError ? e.message : '删除备注失败，请重试'),
+    onError: (e: unknown) => setDelErr(e instanceof ApiError ? e.message : '删除备注失败，请重试'),
   })
   // 删除面试 / OA 轮次：DELETE 会让日历、首页「即将到来的面试 / OA」和提醒一起消失。
   const delInterviewMut = useMutation({
     mutationFn: (id: number) => api.del(`/api/v1/applications/${app.id}/interviews/${id}`),
     onSuccess: () => {
-      setActionErr('')
+      setDelErr('')
       setDelInterview(null)
       refreshActivity()
     },
-    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '删除面试失败，请重试'),
+    onError: (e: unknown) => setDelErr(e instanceof ApiError ? e.message : '删除面试失败，请重试'),
   })
   const delAssessmentMut = useMutation({
     mutationFn: (id: number) => api.del(`/api/v1/applications/${app.id}/assessments/${id}`),
     onSuccess: () => {
-      setActionErr('')
+      setDelErr('')
       setDelAssessment(null)
       refreshActivity()
     },
-    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '删除测评失败，请重试'),
+    onError: (e: unknown) => setDelErr(e instanceof ApiError ? e.message : '删除测评失败，请重试'),
   })
   // 取消 / 恢复面试：改期或对方取消后，错的日程不该继续占着日历和每天的提醒。
   const cancelInterviewMut = useMutation({
@@ -251,6 +262,24 @@ export function OverviewTab({
     },
     onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '取消面试失败，请重试'),
   })
+
+  // 打开删除确认前先清掉上一次的失败文案，否则会带着旧错误重新弹出来。
+  const askDeleteAction = (a: ActionItem) => {
+    setDelErr('')
+    setDelAction(a)
+  }
+  const askDeleteNote = (n: Note) => {
+    setDelErr('')
+    setDelNote(n)
+  }
+  const askDeleteInterview = (i: Interview) => {
+    setDelErr('')
+    setDelInterview(i)
+  }
+  const askDeleteAssessment = (a: AssessmentRound) => {
+    setDelErr('')
+    setDelAssessment(a)
+  }
 
   const facts: Array<[string, string]> = [
     // §5：详情也直接显示具体进度，而不是笼统的大阶段名。
@@ -320,7 +349,7 @@ export function OverviewTab({
                   <Button variant="ghost" size="sm" onClick={() => setEditAction(a)}>
                     编辑
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={() => setDelAction(a)}>
+                  <Button variant="ghost" size="sm" onClick={() => askDeleteAction(a)}>
                     删除
                   </Button>
                   <Button variant="secondary" size="sm" disabled={doneMut.isPending} onClick={() => doneMut.mutate({ id: a.id, done: true })}>
@@ -448,7 +477,7 @@ export function OverviewTab({
               >
                 {i.progress === 'completed' ? '撤销完成' : '标记完成'}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => setDelInterview(i)}>
+              <Button variant="ghost" size="sm" onClick={() => askDeleteInterview(i)}>
                 删除
               </Button>
             </div>
@@ -527,7 +556,7 @@ export function OverviewTab({
               >
                 {a.progress === 'completed' ? '撤回完成' : '标记已完成'}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => setDelAssessment(a)}>
+              <Button variant="ghost" size="sm" onClick={() => askDeleteAssessment(a)}>
                 删除
               </Button>
             </div>
@@ -547,11 +576,6 @@ export function OverviewTab({
             </Button>
           </span>
         </div>
-        {noteErr && (
-          <div style={{ padding: '6px 16px' }}>
-            <ErrorText>{noteErr}</ErrorText>
-          </div>
-        )}
         {notes.length === 0 ? (
           <div style={{ padding: '12px 16px', fontSize: 13, color: 'var(--text-muted)' }}>
             记录沟通要点、联系方式等
@@ -571,7 +595,7 @@ export function OverviewTab({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setDelNote(n)}
+                onClick={() => askDeleteNote(n)}
                 title="删除这条备注"
               >
                 删除
@@ -697,6 +721,7 @@ export function OverviewTab({
         <ConfirmDialog
           title="删除这轮面试？"
           pending={delInterviewMut.isPending}
+          error={delErr}
           onClose={() => setDelInterview(null)}
           onConfirm={() => delInterviewMut.mutate(delInterview.id)}
         >
@@ -711,6 +736,7 @@ export function OverviewTab({
         <ConfirmDialog
           title="删除这轮 OA / 测评？"
           pending={delAssessmentMut.isPending}
+          error={delErr}
           onClose={() => setDelAssessment(null)}
           onConfirm={() => delAssessmentMut.mutate(delAssessment.id)}
         >
@@ -723,6 +749,7 @@ export function OverviewTab({
         <ConfirmDialog
           title="删除这条待办？"
           pending={delActionMut.isPending}
+          error={delErr}
           onClose={() => setDelAction(null)}
           onConfirm={() => delActionMut.mutate(delAction.id)}
         >
@@ -733,6 +760,7 @@ export function OverviewTab({
         <ConfirmDialog
           title="删除这条备注？"
           pending={delNoteMut.isPending}
+          error={delErr}
           onClose={() => setDelNote(null)}
           onConfirm={() => delNoteMut.mutate(delNote.id)}
         >
@@ -965,14 +993,17 @@ function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
   const [viewing, setViewing] = useState<FileItem | null>(null)
   // 删除的是简历原件，而「删除」就挨着「预览」「下载」——先过确认弹窗。
   const [pendingDel, setPendingDel] = useState<FileItem | null>(null)
+  // 删除失败要显示在弹窗里（而不是被 backdrop 盖住的列表上方）。
+  const [delErr, setDelErr] = useState('')
   const del = useMutation({
     mutationFn: (id: string) => api.del(`/api/v1/files/${id}`),
     onSuccess: () => {
       setErr('')
+      setDelErr('')
       setPendingDel(null)
       qc.invalidateQueries({ queryKey: ['files'] })
     },
-    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
+    onError: (e: unknown) => setDelErr(e instanceof ApiError ? e.message : '删除失败'),
   })
   const recat = useUpdateCategory(setErr)
   return (
@@ -1034,7 +1065,7 @@ function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
                 </LinkButton>
               </>
             )}
-            <Button variant="ghost" size="sm" onClick={() => setPendingDel(f)} title="删除文件并移除关联">
+            <Button variant="ghost" size="sm" onClick={() => { setDelErr(''); setPendingDel(f) }} title="删除文件并移除关联">
               删除
             </Button>
           </div>
@@ -1045,6 +1076,7 @@ function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
         <ConfirmDialog
           title="删除这个附件？"
           pending={del.isPending}
+          error={delErr}
           onClose={() => setPendingDel(null)}
           onConfirm={() => del.mutate(pendingDel.id)}
         >

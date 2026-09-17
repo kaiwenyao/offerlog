@@ -707,11 +707,13 @@ func (h *Handler) updateAssessment(c *gin.Context) {
 		return
 	}
 	a.ID, a.ApplicationID, a.OwnerID = aid, appID, user.ID
+	var fresh *actrepo.AssessmentRound
 	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
 		existing, err := h.repo.GetAssessmentForUpdate(ctx, tx, appID, user.ID, aid)
 		if err != nil {
 			return err
 		}
+		fresh = existing
 		if req.Progress == "" {
 			a.Progress = existing.Progress
 		}
@@ -763,6 +765,16 @@ func (h *Handler) updateAssessment(c *gin.Context) {
 		writeAssessmentErr(c, err)
 		return
 	}
+	// 改期必须清掉旧的「OA 明天截止」：幂等键 assessment_due:<id>:<day> 只按日期
+	// 去重，截止时间一变（日期或时刻），旧通知就被钉死在那里，还会连带把新的一轮
+	// 提醒静音。清掉释放 key，生成器下一轮按新时间重新提醒（与面试改期同一套
+	// 生命周期）。尽力而为，不让提醒清理失败掉已经成功的事务。
+	if h.nots != nil && dueAtChanged(fresh, a.DueAt) {
+		if err := h.nots.ClearAssessmentReminders(c.Request.Context(), user.ID, aid); err != nil {
+			observability.L(c.Request.Context()).Warn("clear assessment reminders on reschedule",
+				"assessment_id", aid, "error", err)
+		}
+	}
 	c.JSON(http.StatusOK, assessmentToDTO(a))
 }
 
@@ -785,6 +797,14 @@ func (h *Handler) deleteAssessment(c *gin.Context) {
 	if err := h.repo.DeleteAssessment(c.Request.Context(), h.repo.Pool(), appID, user.ID, aid); err != nil {
 		writeAssessmentErr(c, err)
 		return
+	}
+	// 删掉的轮次不该再留着「OA 明天截止」：通知中心里那条会指向一个已经不存在的
+	// 轮次，点进去无从下手。尽力而为（与面试删除同一套）。
+	if h.nots != nil {
+		if err := h.nots.ClearAssessmentReminders(c.Request.Context(), user.ID, aid); err != nil {
+			observability.L(c.Request.Context()).Warn("clear assessment reminders on delete",
+				"assessment_id", aid, "error", err)
+		}
 	}
 	httpx.Ok(c)
 }
@@ -969,6 +989,18 @@ func scheduledAtChanged(existing *actrepo.Interview, next *time.Time) bool {
 		return existing.ScheduledAt != nil || next != nil
 	}
 	return !existing.ScheduledAt.Equal(*next)
+}
+
+// dueAtChanged reports whether an OA round's deadline actually moved (a nil on
+// either side counts as a change). Same shape as scheduledAtChanged.
+func dueAtChanged(existing *actrepo.AssessmentRound, next *time.Time) bool {
+	if existing == nil {
+		return true
+	}
+	if existing.DueAt == nil || next == nil {
+		return existing.DueAt != nil || next != nil
+	}
+	return !existing.DueAt.Equal(*next)
 }
 
 // cancelInterview marks an interview cancelled (改期/取消). The row is kept
@@ -1176,7 +1208,10 @@ func (h *Handler) updateAction(c *gin.Context) {
 func (h *Handler) deleteAction(c *gin.Context) {
 	user := httpx.UserFrom(c)
 	aid, _ := httpx.PathID(c, "action_id")
-	if err := h.repo.DeleteAction(c.Request.Context(), user.ID, aid); err != nil {
+	// 删待办要连同岗位行上的 next_action 镜像一起收尾：那条镜像只是历史遗留副本，
+	// 删掉最后一条待办后它会以 action_id=null 的形式复活到今日待办里（完不成、
+	// 也删不掉）。
+	if err := h.repo.DeleteActionAndSettle(c.Request.Context(), user.ID, aid); err != nil {
 		httpx.WriteErr(c, err)
 		return
 	}

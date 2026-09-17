@@ -138,20 +138,32 @@ export function actionEditFields(a: ActionItem): ActionEditFields {
  * 表单值 + 现有待办 → PATCH /actions/:id 请求体。
  *
  * 后端这里是整体覆盖（没有合并逻辑），所以 due_ts / done_at / remind_me /
- * remind_at / priority 必须原样回填：一次「改标题」不该顺手清掉精确截止时间
- * 或把已完成的待办变回未完成。
+ * remind_at / priority 必须原样回填：一次「改标题」不该顺手清掉精确截止时间、
+ * 提醒时间或把已完成的待办变回未完成。
+ *
+ * due_ts 是例外，它必须跟着用户改的日期走：所有读取端都是 due_ts 优先
+ * （详情 tabs.tsx 的 shown、日历的 ORDER BY COALESCE(due_ts,…)、首页的
+ * CASE WHEN due_ts IS NOT NULL、以及提醒生成器）。只改 due_date 却把旧的 due_ts
+ * 原样送回去，对任何带 due_ts 的待办都是「改了没反应」——显示、日历、提醒全部
+ * 纹丝不动，正是这个 PR 要消灭的那类 bug。而迁移 00002 把老的
+ * applications.next_action_due_ts 回填进了 actions.due_ts，所以老实例的待办普遍
+ * 带着它（新装实例没有，本地测不出来）。
+ * 所以：用户动了截止日 → due_ts 置 null，让日历日成为唯一真相；没动就原样保留。
  */
 export function buildActionPatch(a: ActionItem, f: ActionEditFields): Record<string, unknown> {
   const title = f.title.trim()
   if (title === '') throw new Error('请填写待办内容')
   const due = f.due_date.trim()
   if (due !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw new Error('截止日期格式需为 YYYY-MM-DD')
+  const dueChanged = due !== (a.due_date ?? '').trim()
   return {
     title,
     due_date: due === '' ? null : due,
-    due_ts: a.due_ts,
+    due_ts: dueChanged ? null : a.due_ts,
     done_at: a.done_at,
     remind_me: a.remind_me,
+    // 现在没有生成器读它，但 updateAction 是整体覆盖：不回填就会把它写成 NULL。
+    remind_at: a.remind_at,
     priority: a.priority,
   }
 }

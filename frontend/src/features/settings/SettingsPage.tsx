@@ -408,6 +408,8 @@ function PropertiesPanel() {
   const [err, setErr] = useState('')
   // 删自定义属性会连带它的历史值（每条记录的 JSONB 里的那个键），先过确认弹窗。
   const [pendingDel, setPendingDel] = useState<import('../../lib/types').PropertyDef | null>(null)
+  // 失败文案要显示在弹窗里（setErr 渲染在页面上方，会被 backdrop 盖住）。
+  const [delErr, setDelErr] = useState('')
 
   const q = useQuery({
     queryKey: ['properties'],
@@ -430,10 +432,11 @@ function PropertiesPanel() {
     mutationFn: (id: number) => api.del(`/api/v1/properties/${id}`),
     onSuccess: () => {
       setPendingDel(null)
+      setDelErr('')
       setErr('')
       qc.invalidateQueries({ queryKey: ['properties'] })
     },
-    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
+    onError: (e: unknown) => setDelErr(e instanceof ApiError ? e.message : '删除失败'),
   })
 
   const props = q.data?.items ?? []
@@ -466,7 +469,14 @@ function PropertiesPanel() {
                   {p.key} · {p.data_type}
                 </Num>
               </span>
-              <Button variant="ghost" size="sm" onClick={() => setPendingDel(p)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setDelErr('')
+                  setPendingDel(p)
+                }}
+              >
                 删除
               </Button>
             </div>
@@ -477,6 +487,7 @@ function PropertiesPanel() {
         <ConfirmDialog
           title="删除这个自定义属性？"
           pending={remove.isPending}
+          error={delErr}
           onClose={() => setPendingDel(null)}
           onConfirm={() => remove.mutate(pendingDel.id)}
         >

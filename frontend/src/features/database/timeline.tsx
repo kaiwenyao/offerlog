@@ -89,6 +89,8 @@ export function TimelineTab({
   const [err, setErr] = useState('')
   // 移除事件会连带重算岗位状态（阶段由时间线推导），所以先过确认弹窗。
   const [pendingRemove, setPendingRemove] = useState<Milestone | null>(null)
+  // 失败文案要显示在弹窗里（setErr 渲染在时间线顶部，会被 backdrop 盖住）。
+  const [removeErr, setRemoveErr] = useState('')
   // 系统信息（录入时间等数据库时间）默认隐藏，点击逐条展开。
   const [sysInfo, setSysInfo] = useState<Set<number>>(new Set())
   const toggleSys = (id: number) =>
@@ -127,10 +129,11 @@ export function TimelineTab({
     mutationFn: (id: number) => api.del(`/api/v1/applications/${appId}/milestones/${id}`),
     onSuccess: () => {
       setErr('')
+      setRemoveErr('')
       setPendingRemove(null)
       afterMilestoneChanged()
     },
-    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
+    onError: (e: unknown) => setRemoveErr(e instanceof ApiError ? e.message : '删除失败'),
   })
   const afterMilestoneSaved = () => {
     afterMilestoneChanged()
@@ -226,7 +229,10 @@ export function TimelineTab({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setPendingRemove(m)}
+                      onClick={() => {
+                        setRemoveErr('')
+                        setPendingRemove(m)
+                      }}
                     >
                       <Icon name="trash" size={13} /> 移除
                     </Button>
@@ -338,6 +344,7 @@ export function TimelineTab({
           title="移除这个事件？"
           confirmLabel="移除"
           pending={milestoneMut.isPending}
+          error={removeErr}
           onClose={() => setPendingRemove(null)}
           onConfirm={() => milestoneMut.mutate(pendingRemove.id)}
         >

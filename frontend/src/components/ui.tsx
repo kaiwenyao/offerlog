@@ -55,6 +55,9 @@ export function Modal({
  * 会连带什么），而不是一句「确定删除？」——所以正文由调用方传入。
  *
  * 确认按钮在 `pending` 期间禁用，避免连点发出两次删除。
+ *
+ * `error` 必须显示在**弹窗内**：删除失败时弹窗还开着（pending 回到 false），而
+ * 页面顶部的错误文案在 backdrop 后面——用户只会看到「点了确认没反应」。
  */
 export function ConfirmDialog({
   title,
@@ -62,6 +65,7 @@ export function ConfirmDialog({
   confirmLabel = '删除',
   danger = true,
   pending = false,
+  error,
   onConfirm,
   onClose,
 }: {
@@ -71,6 +75,8 @@ export function ConfirmDialog({
   /** 破坏性操作默认用警示色；「确实要继续」类确认可关掉。 */
   danger?: boolean
   pending?: boolean
+  /** 失败原因：在弹窗内显示，否则会被 backdrop 盖住而看起来「没反应」。 */
+  error?: string
   onConfirm: () => void
   onClose: () => void
 }) {
@@ -97,6 +103,11 @@ export function ConfirmDialog({
       }
     >
       <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-muted)' }}>{children}</div>
+      {error && (
+        <div style={{ marginTop: 10 }}>
+          <ErrorText>{error}</ErrorText>
+        </div>
+      )}
     </Dialog>
   )
 }

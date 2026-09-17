@@ -62,6 +62,8 @@ export function TodayPage() {
       due_date: r.due_day,
       done_at: null,
       remind_me: false,
+      // 首页摘要没有提醒时间：这里只是渲染用的行，从不回写 PATCH。
+      remind_at: null,
       priority: 'medium',
       created_at: '',
       company_name: r.company_name,

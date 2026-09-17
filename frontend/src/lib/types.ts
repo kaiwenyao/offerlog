@@ -168,6 +168,8 @@ export interface ActionItem {
   due_ts: string | null
   done_at: string | null
   remind_me: boolean
+  /** precise instant (TIMESTAMPTZ column) — PATCH 是整体覆盖，必须原样回填 */
+  remind_at: string | null
   priority: string
   created_at: string
 }
