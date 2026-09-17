@@ -12,6 +12,7 @@ import {
   WEEK_INTERVIEWS_VIEW,
   boardBuckets,
   buildFilters,
+  isShortcutView,
   shortcutConditions,
   statusesForView,
   trashQueryPath,
@@ -32,6 +33,14 @@ describe('shortcut views are wired to the sidebar ids', () => {
     const builtinIds = new Set(BUILTIN.map((v) => v.id))
     for (const v of SHORTCUT_VIEWS) expect(builtinIds.has(v.id)).toBe(false)
   })
+
+  it('isShortcutView distinguishes filtered shortcuts from the built-in lists', () => {
+    // 用于决定空列表时要不要给「＋ 新增岗位」：快捷视图都有筛选，新建的岗位
+    // 不会出现在里面。
+    for (const v of SHORTCUT_VIEWS) expect(isShortcutView(v.id)).toBe(true)
+    for (const v of BUILTIN) expect(isShortcutView(v.id)).toBe(false)
+    expect(isShortcutView(0)).toBe(false)
+  })
 })
 
 describe('本周面试', () => {
@@ -51,17 +60,25 @@ describe('本周面试', () => {
 })
 
 describe('待跟进', () => {
-  it('is 进行中 + 未归档 + (没有下一步 或 下一步已到期)', () => {
+  it('is 进行中 + 未归档 + (没有任何未完成待办 或 最早的未完成待办已到期)', () => {
     const conds = shortcutConditions(FOLLOW_UP_VIEW, ctx)!
     expect(conds[0]).toMatchObject({ op: 'or' })
     expect(conds[1]).toEqual({ field: 'archived', op: 'eq', value: false })
     expect(conds[2]).toEqual({
       op: 'or',
       conditions: [
-        { field: 'next_action', op: 'is_empty' },
-        { field: 'next_action_due_at', op: 'lte', value: '2026-09-17' },
+        { field: 'open_todo_count', op: 'eq', value: 0 },
+        { field: 'next_open_todo_due', op: 'lte', value: '2026-09-17' },
       ],
     })
+  })
+
+  it('derives 「有没有下一步」 from the authoritative todo fields, never the next_action mirror', () => {
+    // 回归（PR #42 review P2）：镜像会在「完成最后一个待办」时被清空、在 reopen 时
+    // 不复活、也会因 best-effort 同步失败而过期。只看镜像会把「已排了未来一步」的
+    // 岗位算成待跟进，或让已完成的待办看起来像安排。
+    const json = JSON.stringify(shortcutConditions(FOLLOW_UP_VIEW, ctx))
+    expect(json).not.toContain('next_action')
   })
 
   it('anchors the overdue comparison on the given today (user zone), not a fixed date', () => {
@@ -70,7 +87,7 @@ describe('待跟进', () => {
     expect(group.conditions[1].value).toBe('2026-01-02')
   })
 
-  it('never uses is_not_empty on the DATE column (it compiles to `<> \'\'` and Postgres rejects it)', () => {
+  it('never uses is_not_empty on a DATE field (it compiles to `<> \'\'` and Postgres rejects it)', () => {
     const json = JSON.stringify(shortcutConditions(FOLLOW_UP_VIEW, ctx))
     expect(json).not.toContain('is_not_empty')
   })

@@ -130,6 +130,7 @@ func TestFollowUpFilterMatchesMissingOrOverdueNextAction(t *testing.T) {
 	}
 	overdue := today.AddDate(0, 0, -1)
 	future := today.AddDate(0, 0, 3)
+	overdueKey, futureKey := overdue.Format("2006-01-02"), future.Format("2006-01-02")
 
 	mk := func(company string) int64 {
 		app := mustCreate(t, svc, owner, company, "R")
@@ -148,36 +149,79 @@ func TestFollowUpFilterMatchesMissingOrOverdueNextAction(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 完成 / 撤销走真实端点：镜像的清空与「不复活」都是它决定的。
+	srv := newActivityServer(t, db, owner)
+	defer srv.Close()
 
-	noPlan := mk("没安排下一步") // 命中：缺 next_action
+	noPlan := mk("没安排下一步") // 命中：没有任何未完成待办
 	tooLate := mk("逾期")    // 命中：有安排但已逾期
 	onTrack := mk("还早")    // 不命中：安排在未来
 	setNext(noPlan, "", nil)
 	setNext(tooLate, "回访 HR", &overdue)
 	setNext(onTrack, "回访 HR", &future)
 
+	// 真实的未完成待办（actions 行，而不是镜像）：
+	// - 逾期的那条必须进待跟进（只看镜像时它会漏掉：镜像可能是空的）；
+	// - 未来的那条不进。
+	realOverdue := mk("有逾期待办")
+	insertAction(t, db, realOverdue, owner, "今天必须做", ptr(overdueKey))
+	realFuture := mk("有未来待办")
+	insertAction(t, db, realFuture, owner, "下周再说", ptr(futureKey))
+
+	// PR #42 review P2 场景一：未来才到期的待办被「完成 → 撤销」后，岗位行镜像已
+	// 被清空（reopen 故意不复活它），而 actions 里仍有一条未来的未完成待办。
+	// 按镜像判断会把它当成「没有下一步安排」而误入待跟进。
+	reopened := mk("完成又撤销")
+	reopenedAction := insertAction(t, db, reopened, owner, "未来再跟进", ptr(futureKey))
+	postActionDone(t, srv.URL, reopenedAction, true)
+	postActionDone(t, srv.URL, reopenedAction, false)
+
+	// PR #42 review P2 场景二：镜像还停在一条已完成的旧待办上（且已逾期），但同时
+	// 还有一条未来的未完成待办。按镜像的 due 判断会误入待跟进。
+	stale := mk("镜像指向已完成")
+	staleDone := insertAction(t, db, stale, owner, "已完成的旧待办", ptr(overdueKey))
+	insertAction(t, db, stale, owner, "未来的一步", ptr(futureKey))
+	setNext(stale, "已完成的旧待办", &overdue)
+	postActionDone(t, srv.URL, staleDone, true)
+
 	// 非进行中的岗位（待投递）也有「没下一步」，但不该出现在待跟进里。
 	draft := mustCreate(t, svc, owner, "待投递草稿", "R")
 
-	// 归档过的进行中岗位同样不该出现在待跟进里。
+	// 归档过的进行中岗位同样不该出现在待跟进里（即使它有逾期待办）。
 	archived := mk("已归档进行中")
 	setNext(archived, "", nil)
+	insertAction(t, db, archived, owner, "归档前的逾期事", ptr(overdueKey))
 	if err := svc.Archive(ctx, owner, archived, true); err != nil {
 		t.Fatal(err)
 	}
 
 	ids := queryAppIDs(t, db, owner, followUpFilter(todayKey))
-	if !containsID(ids, noPlan) || !containsID(ids, tooLate) {
-		t.Fatalf("待跟进应包含「没安排下一步」和「已逾期」的进行中岗位, got %v", ids)
+	for _, want := range []struct {
+		name string
+		id   int64
+	}{
+		{"没安排下一步", noPlan},
+		{"逾期的镜像待办", tooLate},
+		{"逾期的真实待办", realOverdue},
+	} {
+		if !containsID(ids, want.id) {
+			t.Fatalf("待跟进应包含「%s」, got %v", want.name, ids)
+		}
 	}
-	if containsID(ids, onTrack) {
-		t.Fatalf("待跟进不应包含下一步还在未来的岗位, got %v", ids)
-	}
-	if containsID(ids, draft.ID) {
-		t.Fatalf("待跟进不应包含未投递的草稿, got %v", ids)
-	}
-	if containsID(ids, archived) {
-		t.Fatalf("待跟进不应包含已归档的岗位, got %v", ids)
+	for _, unwanted := range []struct {
+		name string
+		id   int64
+	}{
+		{"下一步还在未来（镜像）", onTrack},
+		{"未来的真实待办", realFuture},
+		{"完成又撤销的未来待办", reopened},
+		{"镜像停在已完成旧待办但另有未来待办", stale},
+		{"未投递的草稿", draft.ID},
+		{"已归档的岗位", archived},
+	} {
+		if containsID(ids, unwanted.id) {
+			t.Fatalf("待跟进不应包含「%s」, got %v", unwanted.name, ids)
+		}
 	}
 }
 
@@ -189,8 +233,8 @@ func followUpFilter(todayKey string) []views.FilterNode {
 			{Field: "archived", Op: "eq", Value: false},
 			// 只用 lte：DATE 列上的 is_not_empty 会拼出 `<> ''`，PostgreSQL 直接报错。
 			{Op: "or", Conditions: []views.FilterNode{
-				{Field: "next_action", Op: "is_empty"},
-				{Field: "next_action_due_at", Op: "lte", Value: todayKey},
+				{Field: "open_todo_count", Op: "eq", Value: float64(0)},
+				{Field: "next_open_todo_due", Op: "lte", Value: todayKey},
 			}},
 		},
 	}}

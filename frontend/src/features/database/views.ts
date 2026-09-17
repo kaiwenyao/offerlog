@@ -81,6 +81,11 @@ export const SHORTCUT_VIEWS: SavedView[] = [
   shortcut(ARCHIVED_VIEW, '已归档', 'table'),
 ]
 
+/** 当前视图是否侧栏快捷视图（它们都是有筛选的视图，不是全量列表）。 */
+export function isShortcutView(viewId: number): boolean {
+  return SHORTCUT_VIEWS.some((v) => v.id === viewId)
+}
+
 /** 上下文：快捷视图里唯一不能写死的两部分——今天（按用户时区）与本周面试岗位。 */
 export interface FilterContext {
   /** 用户时区的今天 YYYY-MM-DD；「待跟进」的逾期判断按日比较。 */
@@ -104,7 +109,14 @@ export function shortcutConditions(viewId: number, ctx: FilterContext): FilterNo
         { field: 'archived', op: 'eq', value: false },
       ]
     case FOLLOW_UP_VIEW:
-      // 进行中、没归档，且「该动了」：没安排下一步，或安排的日期已到期 / 逾期。
+      // 进行中、没归档，且「该动了」：没有任何未完成待办（= 没有下一步安排），
+      // 或者最早到期的那条未完成待办已经到期/逾期。
+      //
+      // 这里必须看 actions 表（唯一真相），而不是岗位行上的 next_action 镜像：
+      // 完成最后一个待办时镜像会被清空，撤销（reopen）又不会把它复活，镜像还会因为
+      // best-effort 同步失败而过期。只看镜像会出现「明明排了未来一步却被算成待跟进」
+      // 「已完成的待办让岗位看起来有安排」这类名字与结果不符的错位。
+      // 后端 open_todo_count / next_open_todo_due 与首页统一待办同一定义。
       // 日期比较只用 lte：NULL 的 due 在 SQL 里是 NULL（不命中），刚好由第一个分支
       // 兼底——不用 is_not_empty（它对 DATE 列会拼出 `<> ''`，PostgreSQL 直接报错）。
       return [
@@ -113,8 +125,8 @@ export function shortcutConditions(viewId: number, ctx: FilterContext): FilterNo
         {
           op: 'or',
           conditions: [
-            { field: 'next_action', op: 'is_empty' },
-            { field: 'next_action_due_at', op: 'lte', value: ctx.today },
+            { field: 'open_todo_count', op: 'eq', value: 0 },
+            { field: 'next_open_todo_due', op: 'lte', value: ctx.today },
           ],
         },
       ]

@@ -25,6 +25,7 @@ import {
 } from './columns'
 import { createTextMeasurer } from './measure'
 import {
+  ARCHIVED_VIEW,
   BUILTIN,
   SHORTCUT_VIEWS,
   WEEK_INTERVIEWS_VIEW,
@@ -34,6 +35,7 @@ import {
   DB_SORT_STORAGE_KEY,
   loadDbSort,
   sortDirLabel,
+  isShortcutView,
   trashQueryPath,
   type BoardBucket,
   type FilterContext,
@@ -210,6 +212,9 @@ export function DatabasePage() {
     return [...ids]
   }, [weekQ.data])
   const weekReady = !needsWeek || weekQ.isSuccess
+  // 前置的周窗口查询失败（重试也失败）时必须显式报错：否则 weekReady 永远为 false，
+  // 岗位查询一直不发出，页面就停在转圈上，连重试入口都没有。
+  const weekFailed = needsWeek && weekQ.isError
 
   const appsQ = useQuery({
     queryKey: [
@@ -293,6 +298,22 @@ export function DatabasePage() {
   }
 
   const isFilterOn = (cond: FilterNode) => extraFilters.some((f) => JSON.stringify(f) === JSON.stringify(cond))
+
+  // 空列表的说法必须对得上当前视图：在「本周面试」上说「还没有岗位记录」、或在
+  // 回收站里让人「＋ 新增岗位」都是答非所问，而「名字与结果一致」正是这次修的东西。
+  const emptyMessage =
+    search || extraFilters.length
+      ? '没有符合条件的记录'
+      : trashMode
+        ? '回收站是空的'
+        : viewId === WEEK_INTERVIEWS_VIEW
+          ? '本周还没有面试日程'
+          : viewId === ARCHIVED_VIEW
+            ? '还没有归档的岗位'
+            : '还没有岗位记录'
+  // 已筛选的视图（回收站 / 快捷视图）里「＋ 新增岗位」帮不上忙：新建的岗位既不在
+  // 回收站里，也不会带着归档旗标出现，点了只会让空列表看起来像没生效。
+  const offerCreateInEmptyState = !trashMode && !isShortcutView(viewId)
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -432,7 +453,14 @@ export function DatabasePage() {
         </Card>
       )}
 
-      {appsQ.isLoading || !weekReady ? (
+      {weekFailed ? (
+        <Card padding="18px">
+          <ErrorText>「本周面试」需要先取到本周的日程，加载失败</ErrorText>
+          <Button variant="secondary" size="sm" onClick={() => weekQ.refetch()} style={{ marginTop: 10 }}>
+            重试
+          </Button>
+        </Card>
+      ) : appsQ.isLoading || !weekReady ? (
         <PageSpinner />
       ) : appsQ.isError ? (
         <EmptyHint>
@@ -440,7 +468,7 @@ export function DatabasePage() {
         </EmptyHint>
       ) : rows.length === 0 ? (
         <EmptyHint>
-          <p style={{ margin: 0 }}>{search || extraFilters.length ? '没有符合条件的记录' : '还没有岗位记录'}</p>
+          <p style={{ margin: 0 }}>{emptyMessage}</p>
           {search || extraFilters.length ? (
             <Button
               variant="secondary"
@@ -452,11 +480,11 @@ export function DatabasePage() {
             >
               清除筛选
             </Button>
-          ) : (
+          ) : offerCreateInEmptyState ? (
             <Button variant="primary" size="sm" onClick={() => setShowCreate(true)}>
               ＋ 新增岗位
             </Button>
-          )}
+          ) : null}
         </EmptyHint>
       ) : layout === 'board' ? (
         <BoardView groups={boardGroups} onOpen={setSelApp} />
