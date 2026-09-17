@@ -1178,7 +1178,7 @@ func (h *Handler) markDone(c *gin.Context) {
 	if req.Done != nil {
 		done = *req.Done
 	}
-	if err := h.repo.MarkActionDone(c.Request.Context(), h.repo.Pool(), user.ID, aid, done); err != nil {
+	if err := h.repo.MarkActionDoneAndSettle(c.Request.Context(), user.ID, aid, done); err != nil {
 		writeActionErr(c, err)
 		return
 	}

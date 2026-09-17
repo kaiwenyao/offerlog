@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, ApiError, fmtDate, fmtDay, localDateTimeToInstant, toDayString } from '../../lib/api'
+import { api, ApiError, dayToInstant, fmtDate, fmtDay, localDateTimeToInstant, toDayString } from '../../lib/api'
 import { effectiveZone } from '../../lib/tz'
-import type { AppRow, SavedView } from '../../lib/types'
+import type { AppRow, CalendarEvent, SavedView } from '../../lib/types'
+import { addDaysToKey, mondayKeyOf } from '../calendar/grid'
 import { comboLabel, FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
 import { Button, Card, Input, Select, Tabs, Tag } from '../../ds'
 import { CompanyMark } from '../../components/Icon'
@@ -25,13 +26,17 @@ import {
 import { createTextMeasurer } from './measure'
 import {
   BUILTIN,
+  SHORTCUT_VIEWS,
+  WEEK_INTERVIEWS_VIEW,
   boardBuckets,
   buildFilters,
   DB_SORT_FIELDS,
   DB_SORT_STORAGE_KEY,
   loadDbSort,
   sortDirLabel,
+  trashQueryPath,
   type BoardBucket,
+  type FilterContext,
   type FilterNode,
   type Layout,
   type SortClause,
@@ -168,20 +173,73 @@ export function DatabasePage() {
   }, [sort])
 
   const viewsQ = useQuery({ queryKey: ['views'], queryFn: () => api.get<{ items: SavedView[] }>('/api/v1/views') })
-  const allViews = useMemo(() => [...BUILTIN, ...(viewsQ.data?.items ?? [])], [viewsQ.data])
+  const allViews = useMemo(
+    () => [...BUILTIN, ...SHORTCUT_VIEWS, ...(viewsQ.data?.items ?? [])],
+    [viewsQ.data],
+  )
+
+  // 「本周面试」的筛选靠本周有面试日程的岗位 id 集合，而那套 id 只能从日历接口按
+  // 周窗口拿到。窗口与日历页同一口径：用户时区的周一 00:00 → 下周一 00:00（
+  // dayToInstant 按用户区本地午夜换算，绝不用浏览器时区）。
+  const zone = effectiveZone()
+  const today = toDayString(new Date().toISOString(), zone) ?? ''
+  const weekStart = mondayKeyOf(today)
+  const weekWindow = useMemo(() => {
+    const instantOf = (key: string): string => {
+      const ms = dayToInstant(key, zone)
+      return new Date(ms ?? Date.parse(`${key}T00:00:00Z`)).toISOString()
+    }
+    return { from: instantOf(weekStart), to: instantOf(addDaysToKey(weekStart, 7)) }
+  }, [weekStart, zone])
+  const needsWeek = viewId === WEEK_INTERVIEWS_VIEW && !trashMode
+  const weekQ = useQuery({
+    queryKey: ['calendar', 'week', weekWindow.from, weekWindow.to],
+    queryFn: () =>
+      api.get<{ items: CalendarEvent[] }>(
+        `/api/v1/calendar?from=${encodeURIComponent(weekWindow.from)}&to=${encodeURIComponent(weekWindow.to)}`,
+      ),
+    enabled: needsWeek,
+    staleTime: 30_000,
+  })
+  // 已取消的面试不算「本周面试」。
+  const weekInterviewIds = useMemo(() => {
+    const ids = new Set<number>()
+    for (const e of weekQ.data?.items ?? []) {
+      if (e.kind === 'interview' && !e.cancelled) ids.add(e.application_id)
+    }
+    return [...ids]
+  }, [weekQ.data])
+  const weekReady = !needsWeek || weekQ.isSuccess
 
   const appsQ = useQuery({
-    queryKey: ['apps', 'db', viewId, search, page, JSON.stringify(extraFilters), trashMode, sort],
+    queryKey: [
+      'apps',
+      'db',
+      viewId,
+      search,
+      page,
+      JSON.stringify(extraFilters),
+      trashMode,
+      sort,
+      today,
+      weekReady ? weekInterviewIds.join(',') : '',
+    ],
+    // 本周面试的岗位集合没取到之前不发查询：否则会先拿空集合查出 0 条，
+    // 用户看到一闪而过的「没有符合条件的记录」。
+    enabled: weekReady,
     queryFn: async () => {
       if (trashMode) {
-        return api.get<{ items: AppRow[]; total: number }>('/api/v1/applications?trash=1&page=1&page_size=60&include=stage_history')
+        // 回收站同样分页：写死 page=1 时「下一页」只改页码不换数据，
+        // 第 60 条之后的删除记录无法翻到、也无法恢复。
+        return api.get<{ items: AppRow[]; total: number }>(trashQueryPath(page, PAGE_SIZE))
       }
       const view = allViews.find((v) => v.id === viewId)
+      const ctx: FilterContext = { today, weekInterviewIds }
       return api.post<{ items: AppRow[]; total: number }>('/api/v1/views/query', {
         page,
         page_size: PAGE_SIZE,
         sort: [{ field: sort.field, dir: sort.dir }],
-        filters: buildFilters(view, search, extraFilters),
+        filters: buildFilters(view, search, extraFilters, ctx),
         include: ['stage_history'],
       })
     },
@@ -270,7 +328,15 @@ export function DatabasePage() {
             {f.label}
           </Tag>
         ))}
-        <Tag selected={trashMode} onClick={() => setTrashMode((v) => !v)}>
+        <Tag
+          selected={trashMode}
+          onClick={() => {
+            // 进/出回收站都回到第 1 页：两个集合的行序无关，沿用旧页码只会
+            // 落到一个空页上，看起来像「回收站是空的」。
+            setTrashMode((v) => !v)
+            setPage(1)
+          }}
+        >
           回收站
         </Tag>
 
@@ -366,7 +432,7 @@ export function DatabasePage() {
         </Card>
       )}
 
-      {appsQ.isLoading ? (
+      {appsQ.isLoading || !weekReady ? (
         <PageSpinner />
       ) : appsQ.isError ? (
         <EmptyHint>
@@ -1005,7 +1071,7 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
         )}
       </div>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 'var(--space-4)' }}>
-        保存后仍可继续编辑完整信息、上传附件，并在「时间线」里添加事件记录进度。
+        保存后可在详情页点「编辑基础信息」补齐城市、JD 链接、薪资、渠道、截止日期等，并可上传附件、在「时间线」里添加事件记录进度。
       </p>
     </Modal>
   )

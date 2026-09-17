@@ -352,6 +352,42 @@ type patchReq struct {
 	NextAction      *string         `json:"next_action"`
 	NextActionDueAt *string         `json:"next_action_due_at"` // YYYY-MM-DD
 	CustomValues    json.RawMessage `json:"custom_values"`
+	// 薪资快照用 RawMessage：必须区分「没传」（保留原值）与显式 null（清空）。
+	SalaryMin      json.RawMessage `json:"salary_min"`
+	SalaryMax      json.RawMessage `json:"salary_max"`
+	SalaryCurrency json.RawMessage `json:"salary_currency"`
+}
+
+// nullableInt64 decodes a PATCH field that may be absent (leave as-is), null or
+// an empty string (clear), or a number (set).
+func nullableInt64(raw json.RawMessage) (appservice.NullableInt64, error) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" {
+		return appservice.NullableInt64{}, nil
+	}
+	if s == "null" || s == `""` {
+		return appservice.NullableInt64{Set: true}, nil
+	}
+	var v int64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return appservice.NullableInt64{}, err
+	}
+	return appservice.NullableInt64{Value: &v, Set: true}, nil
+}
+
+func nullableString(raw json.RawMessage) (appservice.NullableString, error) {
+	s := strings.TrimSpace(string(raw))
+	if s == "" {
+		return appservice.NullableString{}, nil
+	}
+	if s == "null" {
+		return appservice.NullableString{Set: true}, nil
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return appservice.NullableString{}, err
+	}
+	return appservice.NullableString{Value: &v, Set: true}, nil
 }
 
 func (h *Handler) patch(c *gin.Context) {
@@ -377,13 +413,15 @@ func (h *Handler) patch(c *gin.Context) {
 	if req.Tags != nil {
 		in.Tags = req.Tags
 	}
+	// 截止日期也走 nullable 语义：传空字符串 = 清除，传日期 = 设置；
+	// 不传则保留原值（原来的 *time.Time 无法区分「清空」与「没传」）。
 	deadline, err := parseDayPtr(req.Deadline)
 	if err != nil {
 		httpx.WriteErr(c, httpx.BadRequest("bad_deadline", err.Error()))
 		return
 	}
 	if req.Deadline != nil {
-		in.Deadline = deadline
+		in.Deadline = appservice.NullableTime{Value: deadline, Set: true}
 	}
 	naDue, err := parseDayPtr(req.NextActionDueAt)
 	if err != nil {
@@ -397,6 +435,19 @@ func (h *Handler) patch(c *gin.Context) {
 		in.Notes = req.Notes
 	}
 	in.NextAction = req.NextAction
+	// 薪资：Set 为 true 才改动，Value 为 nil 表示清空。
+	if in.SalaryMin, err = nullableInt64(req.SalaryMin); err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_salary_min", "薪资下限需为整数"))
+		return
+	}
+	if in.SalaryMax, err = nullableInt64(req.SalaryMax); err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_salary_max", "薪资上限需为整数"))
+		return
+	}
+	if in.SalaryCurrency, err = nullableString(req.SalaryCurrency); err != nil {
+		httpx.WriteErr(c, httpx.BadRequest("bad_salary_currency", "薪资币种需为字符串"))
+		return
+	}
 	if len(req.CustomValues) > 0 && string(req.CustomValues) != "null" {
 		var cv map[string]any
 		if err := json.Unmarshal(req.CustomValues, &cv); err != nil {

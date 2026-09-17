@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
 import { toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
 import type { AppRow, Milestone } from '../../lib/types'
-import { ENDED, NEXT_STEP_SUGGESTION, statusMeta } from '../../lib/status'
+import { ENDED, NEXT_STEP_SUGGESTION, PRIORITIES, REMOTE_OPTIONS, CHANNEL_OPTIONS, SALARY_CURRENCIES, statusMeta } from '../../lib/status'
 import {
   isDefaultLabel,
   MILESTONE_GROUP_LABEL,
@@ -14,6 +14,7 @@ import {
 } from '../../lib/milestones'
 import { Button, Checkbox, Input, Select, Textarea } from '../../ds'
 import { ErrorText, Modal, Spinner } from '../../components/ui'
+import { buildApplicationPatch, editFieldsFromApp, type ApplicationEditFields } from './edit'
 
 /** Shared with the progress dialog's inline scheduler — keep one list. */
 export const ROUNDS = ['一面', '二面', '三面', '终面', '技术面', 'HR 面', '其他']
@@ -424,6 +425,151 @@ export function MilestoneForm({
           rows={2}
           placeholder={isEnding ? '为什么结束？会显示在岗位详情的「原因」里' : '细节、结果、要点…'}
         />
+      </div>
+    </Modal>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 编辑岗位的基础信息（创建时只要求公司和岗位，其余这里补齐）。
+ *
+ * 这是详情页「编辑」入口的表单：公司/岗位/城市/JD 链接填错要能改，薪资、渠道、
+ * 截止日期要能补。走 PATCH /applications/:id，携带 version 走乐观锁；薪资传 null
+ * 表示清空（后端用 nullable 语义区分「没传」与「清空」）。
+ */
+export function ApplicationEditForm({
+  app,
+  onClose,
+  onDone,
+}: {
+  app: AppRow
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [fields, setFields] = useState<ApplicationEditFields>(() => editFieldsFromApp(app))
+  const [err, setErr] = useState('')
+
+  const set = <K extends keyof ApplicationEditFields>(key: K, value: ApplicationEditFields[K]) =>
+    setFields((f) => ({ ...f, [key]: value }))
+
+  const canSave = fields.company_name.trim() !== '' && fields.position.trim() !== ''
+
+  const mut = useMutation({
+    mutationFn: (body: Record<string, unknown>) => api.patch(`/api/v1/applications/${app.id}`, body),
+    onSuccess: onDone,
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+  })
+
+  return (
+    <Modal
+      title="编辑岗位信息"
+      onClose={onClose}
+      width={560}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!canSave || mut.isPending}
+            onClick={() => {
+              setErr('')
+              try {
+                mut.mutate(buildApplicationPatch(app, fields))
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : '保存失败')
+              }
+            }}
+          >
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
+      }
+    >
+      {err && <ErrorText>{err}</ErrorText>}
+      <div className="field-grid">
+        <Input label="公司 *" value={fields.company_name} onChange={(e) => set('company_name', e.target.value)} />
+        <Input label="岗位 *" value={fields.position} onChange={(e) => set('position', e.target.value)} />
+        <Input
+          label="城市"
+          value={fields.location}
+          onChange={(e) => set('location', e.target.value)}
+          placeholder="例如：上海 / Berlin"
+        />
+        <div>
+          <Select
+            label="工作方式"
+            value={fields.remote_policy}
+            onChange={(e) => set('remote_policy', e.target.value)}
+            options={REMOTE_OPTIONS.map((v) => ({ value: v, label: v || '未填' }))}
+          />
+        </div>
+        <div className="full">
+          <Input
+            label="JD 链接"
+            value={fields.job_url}
+            onChange={(e) => set('job_url', e.target.value)}
+            placeholder="https://…"
+          />
+        </div>
+        <div>
+          <Select
+            label="渠道"
+            value={fields.channel}
+            onChange={(e) => set('channel', e.target.value)}
+            options={[{ value: '', label: '未填' }, ...CHANNEL_OPTIONS.map((v) => ({ value: v, label: v }))]}
+          />
+        </div>
+        <Input
+          label="截止日期"
+          type="date"
+          value={fields.deadline}
+          onChange={(e) => set('deadline', e.target.value)}
+          hint="留空表示没有截止日期"
+        />
+        <div>
+          <Select
+            label="优先级"
+            value={fields.priority}
+            onChange={(e) => set('priority', e.target.value)}
+            options={Object.entries(PRIORITIES).map(([value, p]) => ({ value, label: p.label }))}
+          />
+        </div>
+        <div>
+          <Select
+            label="币种"
+            value={fields.salary_currency}
+            onChange={(e) => set('salary_currency', e.target.value)}
+            options={[{ value: '', label: '未填' }, ...SALARY_CURRENCIES.map((v) => ({ value: v, label: v }))]}
+          />
+        </div>
+        <Input
+          label="薪资下限"
+          inputMode="numeric"
+          value={fields.salary_min}
+          onChange={(e) => set('salary_min', e.target.value)}
+          placeholder="月薪，如 25000"
+        />
+        <Input
+          label="薪资上限"
+          inputMode="numeric"
+          value={fields.salary_max}
+          onChange={(e) => set('salary_max', e.target.value)}
+          placeholder="月薪，如 35000"
+        />
+        <div className="full">
+          <Textarea
+            label="备注"
+            rows={3}
+            value={fields.notes}
+            onChange={(e) => set('notes', e.target.value)}
+            placeholder="岗位细节、条件、联系人…"
+          />
+        </div>
       </div>
     </Modal>
   )

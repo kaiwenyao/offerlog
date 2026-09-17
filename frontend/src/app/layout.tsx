@@ -7,6 +7,7 @@ import { Icon, SealMark, type IconName } from '../components/Icon'
 import { BlueprintCorners, Button } from '../ds'
 import { NotificationsBell, useUnreadCount } from '../features/notifications/Bell'
 import { CommandPalette } from '../features/search/CommandPalette'
+import { ARCHIVED_VIEW, FOLLOW_UP_VIEW, WEEK_INTERVIEWS_VIEW } from '../features/database/views'
 
 interface NavEntry {
   to: string
@@ -34,9 +35,10 @@ const BOTTOM_NAV = NAV.filter((n) => n.to !== '/notifications' && n.to !== '/ana
 
 /** Saved views mirror the canvas's 已保存视图 list; each seeds the database page. */
 const SAVED_VIEWS: Array<{ label: string; dot: string; view: number; layout: string }> = [
-  { label: '本周面试', dot: 'var(--accent)', view: -3, layout: 'board' },
-  { label: '待跟进', dot: 'var(--warning)', view: -1, layout: 'list' },
-  { label: '已归档', dot: 'var(--neutral-400)', view: -5, layout: 'table' },
+  // id 与 views.ts 的快捷视图（-101/-102/-103）一一对应，语义见 shortcutConditions。
+  { label: '本周面试', dot: 'var(--accent)', view: WEEK_INTERVIEWS_VIEW, layout: 'board' },
+  { label: '待跟进', dot: 'var(--warning)', view: FOLLOW_UP_VIEW, layout: 'list' },
+  { label: '已归档', dot: 'var(--neutral-400)', view: ARCHIVED_VIEW, layout: 'table' },
 ]
 
 const PAGE_META: Record<string, { eyebrow: string; title: string }> = {

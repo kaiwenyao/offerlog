@@ -3,7 +3,8 @@ import type { SavedView } from '../../lib/types'
 export interface FilterCond {
   field: string
   op: string
-  value: unknown
+  // 可选：is_empty / is_not_empty 这类条件不带值（后端 FilterNode 也是 omitempty）。
+  value?: unknown
 }
 
 export interface FilterGroup {
@@ -16,12 +17,29 @@ export type FilterNode = FilterCond | FilterGroup
 
 export type Layout = 'table' | 'board' | 'list'
 
+/**
+ * 侧栏快捷视图的 id（同样用负数，和内置视图同一个命名空间）。
+ *
+ * 这三个名字必须与结果一致（bug 原文）：之前「本周面试」实际查的是全部进行中
+ * 岗位、「待跟进」就是全部机会、「已归档」筛的是已结束状态，于是归档一个进行中
+ * 的岗位后反倒在「已归档」里找不到。
+ */
+export const WEEK_INTERVIEWS_VIEW = -101
+export const FOLLOW_UP_VIEW = -102
+export const ARCHIVED_VIEW = -103
+
+/** 进行中的岗位（已投递 → 面试之间）：只有还没结束的岗位才谈得上「待跟进」。 */
+export const IN_PROGRESS_STATUSES = ['applied', 'screening', 'assessment', 'interviewing']
+
 /** Status sets backing the built-in views (ids are negative by convention). */
 export const BUILTIN_STATUSES: Record<number, string[]> = {
   [-2]: ['saved', 'preparing'],
-  [-3]: ['applied', 'screening', 'assessment', 'interviewing'],
+  [-3]: IN_PROGRESS_STATUSES,
   [-4]: ['offer', 'accepted'],
   [-5]: ['accepted', 'rejected', 'withdrawn', 'closed'],
+  // 待跟进只可能是进行中的岗位，看板切到它时不该空出「Offer / 结果」整列。
+  // 本周面试 / 已归档的岗位可能处在任何阶段，所以不限定看板列。
+  [FOLLOW_UP_VIEW]: IN_PROGRESS_STATUSES,
 }
 
 function statusClause(statuses: string[]): FilterGroup {
@@ -50,8 +68,77 @@ export const BUILTIN: SavedView[] = [
   builtin(-5, '已结束', 'board'),
 ]
 
+function shortcut(id: number, name: string, layout: Layout): SavedView {
+  // 快捷视图的条件由 shortcutConditions() 按上下文（今天 / 本周面试岗位）现算，
+  // 所以 filter_ast 留空，避免出现「一半写死、一半现算」的两套真相。
+  return { ...builtin(id, name, layout), filter_ast: null }
+}
+
+/** 侧栏「已保存视图」列表，与 layout.tsx 的导航项一一对应。 */
+export const SHORTCUT_VIEWS: SavedView[] = [
+  shortcut(WEEK_INTERVIEWS_VIEW, '本周面试', 'board'),
+  shortcut(FOLLOW_UP_VIEW, '待跟进', 'list'),
+  shortcut(ARCHIVED_VIEW, '已归档', 'table'),
+]
+
+/** 上下文：快捷视图里唯一不能写死的两部分——今天（按用户时区）与本周面试岗位。 */
+export interface FilterContext {
+  /** 用户时区的今天 YYYY-MM-DD；「待跟进」的逾期判断按日比较。 */
+  today: string
+  /** 本周（用户时区）有面试日程的岗位 id；undefined = 还没取到。 */
+  weekInterviewIds?: number[]
+}
+
+/**
+ * 侧栏快捷视图的筛选条件；非快捷视图返回 null。
+ *
+ * 纯函数：把「名字 → 筛选条件」的映射摆在一处，单测可以按住语义不再漂移。
+ */
+export function shortcutConditions(viewId: number, ctx: FilterContext): FilterNode[] | null {
+  switch (viewId) {
+    case WEEK_INTERVIEWS_VIEW:
+      // 本周有面试日程的岗位：id 集合由前端按用户时区的周窗口（周一到下周一）
+      // 从 /api/v1/calendar 取到，再交给 /views/query 过滤；空集合匹配不到任何行。
+      return [
+        { field: 'id', op: 'in', value: [...(ctx.weekInterviewIds ?? [])] },
+        { field: 'archived', op: 'eq', value: false },
+      ]
+    case FOLLOW_UP_VIEW:
+      // 进行中、没归档，且「该动了」：没安排下一步，或安排的日期已到期 / 逾期。
+      // 日期比较只用 lte：NULL 的 due 在 SQL 里是 NULL（不命中），刚好由第一个分支
+      // 兼底——不用 is_not_empty（它对 DATE 列会拼出 `<> ''`，PostgreSQL 直接报错）。
+      return [
+        statusClause(IN_PROGRESS_STATUSES),
+        { field: 'archived', op: 'eq', value: false },
+        {
+          op: 'or',
+          conditions: [
+            { field: 'next_action', op: 'is_empty' },
+            { field: 'next_action_due_at', op: 'lte', value: ctx.today },
+          ],
+        },
+      ]
+    case ARCHIVED_VIEW:
+      // 归档是可见性旗标（archived_at 非空），不是「已结束状态」。
+      return [{ field: 'archived', op: 'eq', value: true }]
+    default:
+      return null
+  }
+}
+
 export function statusesForView(viewId: number): string[] {
   return BUILTIN_STATUSES[viewId] ?? []
+}
+
+/**
+ * 回收站列表的请求路径。
+ *
+ * 回收站也必须带当前 page：写死 page=1 时点「下一页」只改页码不换数据，第 60 条
+ * 之后的删除记录永远翻不到，自然也没法恢复（后端 list 本就支持 trash=1&page）。
+ */
+export function trashQueryPath(page: number, pageSize: number): string {
+  const p = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
+  return `/api/v1/applications?trash=1&page=${p}&page_size=${pageSize}&include=stage_history`
 }
 
 /**
@@ -75,9 +162,13 @@ export function buildFilters(
   view: SavedView | undefined,
   search: string,
   extra: FilterNode[],
+  ctx: FilterContext,
 ): FilterNode[] {
   const conds: FilterNode[] = []
-  if (view?.filter_ast) {
+  const shortcut = view ? shortcutConditions(view.id, ctx) : null
+  if (shortcut) {
+    conds.push(...shortcut)
+  } else if (view?.filter_ast) {
     const ast = view.filter_ast as FilterGroup
     if (view.id >= 0 && Array.isArray(ast.conditions)) conds.push(...ast.conditions)
     else if (view.id < 0) conds.push(ast)

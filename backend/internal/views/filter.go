@@ -34,6 +34,7 @@ type FieldInfo struct {
 
 // CoreFields enumerates filterable/sortable built-in fields.
 var CoreFields = map[string]FieldInfo{
+	"id":              {Type: TypeNumber, SQL: "a.id"},
 	"company_name":    {Type: TypeText, SQL: "a.company_name"},
 	"position":        {Type: TypeText, SQL: "a.position"},
 	"job_url":         {Type: TypeURL, SQL: "a.job_url"},
@@ -59,6 +60,10 @@ var CoreFields = map[string]FieldInfo{
 	"updated_at":         {Type: TypeDate, SQL: "a.updated_at"},
 	"next_action":        {Type: TypeText, SQL: "a.next_action"},
 	"next_action_due_at": {Type: TypeDate, SQL: "a.next_action_due_at"},
+	// archived 是可见性旗标而不是状态（方案 §2.2）：归档过的岗位必须能被单独筛出来，
+	// 而不是用「已结束状态」冒充——归档一个进行中的岗位后，它就该出现在「已归档」里，
+	// 并从未归档视图消失。表达式是 boolean，与 TypeCheckbox 的 `= $n` 编译方式一致。
+	"archived": {Type: TypeCheckbox, SQL: "(a.archived_at IS NOT NULL)"},
 }
 
 // FilterNode is one node of the filter tree: either a group with children or a
@@ -254,6 +259,24 @@ func (r *Resolver) compileLeaf(c FilterNode, args []any, base int) (string, []an
 			idx := nextIdx()
 			args = addArg(num)
 			return fmt.Sprintf("%s = $%d", fi.SQL, idx), args, nil
+		case "in":
+			// 供「本周面试」这类由前端算出 id 集合的视图使用。空集合必须匹配
+			// 不到任何行（而不是编译成 `IN ()` 让整条 SQL 语法报错）。
+			arr, _ := c.Value.([]any)
+			if len(arr) == 0 {
+				return "FALSE", args, nil
+			}
+			ph := make([]string, 0, len(arr))
+			for _, v := range arr {
+				n, err := toFloat(v)
+				if err != nil {
+					return "", nil, fmt.Errorf("字段 %s 需要数值", c.Field)
+				}
+				idx := nextIdx()
+				args = addArg(n)
+				ph = append(ph, fmt.Sprintf("$%d", idx))
+			}
+			return fmt.Sprintf("%s IN (%s)", fi.SQL, strings.Join(ph, ",")), args, nil
 		case "gt":
 			idx := nextIdx()
 			args = addArg(num)

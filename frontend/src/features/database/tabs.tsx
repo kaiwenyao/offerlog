@@ -152,6 +152,11 @@ export function OverviewTab({
   const actions = actionsQ.data?.items ?? []
   const openActions = actions.filter((a) => !a.done_at)
   const recentDone = actions.filter((a) => a.done_at).slice(0, 3)
+  // 岗位行上的 next_action 只是历史镜像（独立待办才是唯一真相，§5.3）。只有
+  // 「一条待办都没有」时才把它当迁移遗留展示；只要有待办记录（包括已完成的），
+  // 它就不再是一件事——否则完成最后一个待办后，详情会出现「待办 (0)」下面还
+  // 挂着一条不可操作的旧记录。后端在最后一个未完成待办完成时也会清掉这个镜像。
+  const legacyNextAction = actions.length === 0 ? app.next_action : ''
 
   const invalidateAfterAction = () => {
     qc.invalidateQueries({ queryKey: ['actions'] })
@@ -222,7 +227,7 @@ export function OverviewTab({
             </Button>
           </span>
         </div>
-        {openActions.length === 0 && !app.next_action ? (
+        {openActions.length === 0 && !legacyNextAction ? (
           <div style={{ padding: '12px 16px', fontSize: 13, color: 'var(--text-muted)' }}>
             {NEXT_STEP_SUGGESTION[app.status] ?? '添加一个待办，会出现在首页与统一清单中'}
           </div>
@@ -258,10 +263,10 @@ export function OverviewTab({
               )
             })}
             {/* legacy next_action without a standalone action still surfaces */}
-            {openActions.length === 0 && app.next_action && (
+            {openActions.length === 0 && legacyNextAction && (
               <div className="panel-row">
                 <span className="grow">
-                  <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{app.next_action}</span>
+                  <span style={{ display: 'block', fontSize: 13, fontWeight: 500 }}>{legacyNextAction}</span>
                   <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>
                     {app.next_action_due_at ? `截止 ${fmtDay(app.next_action_due_at)}` : ''} · 旧记录（迁移后并入统一待办）
                   </span>

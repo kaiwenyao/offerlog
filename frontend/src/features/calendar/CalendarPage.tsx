@@ -5,7 +5,7 @@ import { api, dayToInstant, fmtDateTime } from '../../lib/api'
 import type { CalendarEvent } from '../../lib/types'
 import { effectiveZone } from '../../lib/tz'
 import { Button, Card, PanelTitle, Tabs } from '../../ds'
-import { Dot, EmptyHint, ErrorText, Num, PageSpinner } from '../../components/ui'
+import { Dot, EmptyHint, ErrorText, Modal, Num, PageSpinner } from '../../components/ui'
 import {
   addDaysToKey,
   agenda,
@@ -14,6 +14,7 @@ import {
   monthGrid,
   monthKeyOf,
   mondayKeyOf,
+  splitMonthCell,
   todayKeyInZone,
   weekColumns,
   WEEKDAYS,
@@ -77,6 +78,8 @@ export function CalendarPage() {
   // weeks; month view by month keys; agenda by the current week.
   const [weekKey, setWeekKey] = useState(() => mondayKeyOf(todayKeyInZone(zone)))
   const [monthKey, setMonthKey] = useState(() => monthKeyOf(todayKeyInZone(zone)))
+  // 月视图折叠的日程：点「+N 展开」把它单独摊开，不用切视图再重新定位到那天。
+  const [expandedDay, setExpandedDay] = useState<{ key: string; events: CalendarEvent[] } | null>(null)
 
   // Fetch window (instants) computed from the anchor keys. The boundary keys
   // are user-zone calendar days; their instants are the user's local midnights
@@ -192,11 +195,82 @@ export function CalendarPage() {
       ) : view === 'week' ? (
         <WeekView days={days} onOpen={(id) => nav(`/apps/${id}`)} />
       ) : view === 'month' ? (
-        <MonthView weeks={weeks} onOpen={(id) => nav(`/apps/${id}`)} />
+        <MonthView weeks={weeks} onOpen={(id) => nav(`/apps/${id}`)} onShowDay={setExpandedDay} />
       ) : (
         <AgendaView groups={agendaGroups} onOpen={(id) => nav(`/apps/${id}`)} />
       )}
+
+      {expandedDay && (
+        <DayEventsModal
+          dayKey={expandedDay.key}
+          events={expandedDay.events}
+          zone={zone}
+          onOpen={(id) => {
+            setExpandedDay(null)
+            nav(`/apps/${id}`)
+          }}
+          onClose={() => setExpandedDay(null)}
+        />
+      )}
     </section>
+  )
+}
+
+/**
+ * 月视图「+N」的展开面板：列出这一天被折叠掉的全部日程。
+ * 每行与网格里的日程条同构（公司/岗位 · 类型 · 时间），点开就进岗位详情。
+ */
+function DayEventsModal({
+  dayKey,
+  events,
+  zone,
+  onOpen,
+  onClose,
+}: {
+  dayKey: string
+  events: CalendarEvent[]
+  zone?: string
+  onOpen: (id: number) => void
+  onClose: () => void
+}) {
+  const { hidden } = splitMonthCell(events)
+  const weekday = WEEKDAYS[weekdayIdxOf(dayKey)]
+  return (
+    <Modal
+      title={`${dayKey.slice(0, 4)}-${dayKey.slice(5, 7)}-${dayKey.slice(8, 10)} ${weekday} · ${events.length} 项日程`}
+      onClose={onClose}
+      width={520}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        {events.map((e) => (
+          <button
+            key={`${e.kind}-${e.id}`}
+            className="panel-row"
+            onClick={() => onOpen(e.application_id)}
+            title="打开岗位详情"
+          >
+            <Dot color={toneOf(e)} />
+            <span className="grow" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <span style={{ fontSize: 14, fontWeight: 500 }}>
+                {e.company_name || e.title}
+                {e.position ? (
+                  <span style={{ color: 'var(--text-muted)', fontSize: 12, fontWeight: 400 }}> · {e.position}</span>
+                ) : null}
+              </span>
+              <span className="ellipsis" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {kindLabel(e)} · {evTime(e)}
+                {e.location ? ` · ${e.location}` : ''}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+      {hidden.length === 0 && (
+        <p style={{ margin: '10px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
+          这一天没有折叠的日程（网格里已全部显示）。
+        </p>
+      )}
+    </Modal>
   )
 }
 
@@ -296,7 +370,16 @@ function WeekView({ days, onOpen }: { days: ReturnType<typeof weekColumns>; onOp
   )
 }
 
-function MonthView({ weeks, onOpen }: { weeks: ReturnType<typeof monthGrid>; onOpen: (id: number) => void }) {
+function MonthView({
+  weeks,
+  onOpen,
+  onShowDay,
+}: {
+  weeks: ReturnType<typeof monthGrid>
+  onOpen: (id: number) => void
+  /** 展平折叠的日程：月视图同日超过 3 项时「+N」可点，弹出当日全部日程。 */
+  onShowDay: (cell: { key: string; events: CalendarEvent[] }) => void
+}) {
   return (
     <div className="mesh" style={{ gridTemplateColumns: 'repeat(7,minmax(0,1fr))' }}>
       {WEEKDAYS.map((d) => (
@@ -332,11 +415,25 @@ function MonthView({ weeks, onOpen }: { weeks: ReturnType<typeof monthGrid>; onO
             >
               {keyDayNum(cell.key)}
             </span>
-            {cell.events.slice(0, 3).map((e) => (
+            {splitMonthCell(cell.events).shown.map((e) => (
               <EventChip key={`${e.kind}-${e.id}`} event={e} onOpen={onOpen} compact />
             ))}
-            {cell.events.length > 3 && (
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>+{cell.events.length - 3}</span>
+            {splitMonthCell(cell.events).hidden.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onShowDay({ key: cell.key, events: cell.events })}
+                title={`展开这一天的全部 ${cell.events.length} 项日程`}
+                style={{
+                  all: 'unset',
+                  cursor: 'pointer',
+                  fontSize: 10,
+                  color: 'var(--accent-700)',
+                  padding: '1px 2px',
+                  alignSelf: 'flex-start',
+                }}
+              >
+                +{splitMonthCell(cell.events).hidden.length} 展开
+              </button>
             )}
           </div>
         )),

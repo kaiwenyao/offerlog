@@ -26,7 +26,7 @@ import {
 } from '../src/lib/api'
 import { defaultSubmittedIso } from '../src/lib/tz'
 import { buildWeek } from '../src/features/today/week'
-import { agenda, agendaWindowKeys, mondayKeyOf, weekColumns } from '../src/features/calendar/grid'
+import { agenda, agendaWindowKeys, mondayKeyOf, splitMonthCell, weekColumns } from '../src/features/calendar/grid'
 import { mergeTimeline } from '../src/features/database/timeline'
 import { applicationSearchQuery, moveHighlight, paletteRows } from '../src/features/search/paletteNav'
 import {
@@ -254,10 +254,12 @@ describe('filter tree helpers (used by saved views)', () => {
 
 describe('database search filter (topbar 搜索 → /views/query)', () => {
   const noView = undefined
+  // 快捷视图之外的筛选与上下文无关；给一个固定的「今天」保证断言稳定。
+  const ctx = { today: '2026-09-17' }
   it('matches company / position / notes — one term in a single or-group', () => {
     // 搜索“字节”必须能命中公司名，而不是只匹配岗位名（否则搜公司永远 0 条）。
     // 三个字段同一个 or 组，顶层仍然是一个条件，与视图自身的筛选 AND 组合。
-    expect(buildFilters(noView, '字节', [])).toEqual([
+    expect(buildFilters(noView, '字节', [], ctx)).toEqual([
       {
         op: 'or',
         conditions: [
@@ -269,8 +271,8 @@ describe('database search filter (topbar 搜索 → /views/query)', () => {
     ])
   })
   it('trims whitespace and drops blank searches entirely', () => {
-    expect(buildFilters(noView, '   ', [])).toEqual([])
-    expect(buildFilters(noView, '  字节  ', [])).toEqual([
+    expect(buildFilters(noView, '   ', [], ctx)).toEqual([])
+    expect(buildFilters(noView, '  字节  ', [], ctx)).toEqual([
       {
         op: 'or',
         conditions: [
@@ -283,14 +285,14 @@ describe('database search filter (topbar 搜索 → /views/query)', () => {
   })
   it('keeps the builtin view filter and appends the search group after it', () => {
     const view = BUILTIN.find((v) => v.id === -3)!
-    const filters = buildFilters(view, '字节', [])
+    const filters = buildFilters(view, '字节', [], ctx)
     expect(filters).toHaveLength(2)
     expect(filters[0]).toEqual(view.filter_ast)
     expect(filters[1]).toMatchObject({ op: 'or' })
   })
   it('multi-word queries AND one or-group per word (same semantics as the ⌘K endpoint)', () => {
     // 「字节 后端」：两个词都要命中，而不是拿整句做子串匹配搜出 0 条。
-    const filters = buildFilters(undefined, '字节 后端', [])
+    const filters = buildFilters(undefined, '字节 后端', [], ctx)
     expect(filters).toHaveLength(2)
     expect(filters[0]).toEqual({
       op: 'or',
@@ -309,10 +311,10 @@ describe('database search filter (topbar 搜索 → /views/query)', () => {
       ],
     })
     // 全角空格也是分隔符
-    expect(buildFilters(undefined, '字节　后端', [])).toHaveLength(2)
+    expect(buildFilters(undefined, '字节　后端', [], ctx)).toHaveLength(2)
   })
   it('caps pathological queries at SEARCH_TERM_LIMIT or-groups', () => {
-    const filters = buildFilters(undefined, 'a b c d e f g', [])
+    const filters = buildFilters(undefined, 'a b c d e f g', [], ctx)
     expect(filters).toHaveLength(5)
     expect(filters.map((f) => (f as { conditions: Array<{ value: string }> }).conditions[0].value)).toEqual([
       'a', 'b', 'c', 'd', 'e',
@@ -320,7 +322,7 @@ describe('database search filter (topbar 搜索 → /views/query)', () => {
   })
   it('appends ad-hoc quick-filter chips after the search group', () => {
     const chip = { field: 'priority', op: 'eq', value: 'high' } as const
-    expect(buildFilters(noView, '字节', [chip])).toEqual([
+    expect(buildFilters(noView, '字节', [chip], ctx)).toEqual([
       { op: 'or', conditions: [{ field: 'company_name', op: 'contains', value: '字节' }, { field: 'position', op: 'contains', value: '字节' }, { field: 'notes', op: 'contains', value: '字节' }] },
       chip,
     ])
@@ -569,6 +571,45 @@ describe('calendar agenda window', () => {
     expect(toKey).toBe('2026-10-07') // +30d
     // an action overdue 10 days (2026-08-30) falls inside [fromKey, toKey)
     expect('2026-08-30' >= fromKey && '2026-08-30' < toKey).toBe(true)
+  })
+})
+
+// 月视图同日超过 3 项时折进「+N」：折叠的内容必须能展开，否则用户只能切到别的
+// 视图再重新定位到那一天，才看得到第 4 条以后的日程。
+describe('month cell overflow (月视图 +N)', () => {
+  const ev = (id: number): CalendarEvent => ({ ...baseEv, id, start: `2026-09-07T0${id}:00:00Z` })
+
+  it('shows up to three and folds the rest', () => {
+    const seven = [1, 2, 3, 4, 5, 6, 7].map(ev)
+    const { shown, hidden } = splitMonthCell(seven)
+    expect(shown.map((e) => e.id)).toEqual([1, 2, 3])
+    expect(hidden.map((e) => e.id)).toEqual([4, 5, 6, 7])
+    // 展开面板要能看到全部，而且是同一个顺序（不是重新排序过的另一批）。
+    expect([...shown, ...hidden].map((e) => e.id)).toEqual(seven.map((e) => e.id))
+  })
+
+  it('folds nothing when the day fits (0–3 events)', () => {
+    for (const n of [0, 1, 2, 3]) {
+      const { shown, hidden } = splitMonthCell([1, 2, 3].slice(0, n).map(ev))
+      expect(shown).toHaveLength(n)
+      expect(hidden).toHaveLength(0)
+    }
+  })
+
+  it('exactly four events yields one folded item (the first day that shows +N)', () => {
+    const { shown, hidden } = splitMonthCell([1, 2, 3, 4].map(ev))
+    expect(shown).toHaveLength(3)
+    expect(hidden).toHaveLength(1)
+  })
+
+  it('honours a custom limit and never drops events', () => {
+    const { shown, hidden } = splitMonthCell([1, 2, 3, 4, 5].map(ev), 1)
+    expect(shown.map((e) => e.id)).toEqual([1])
+    expect(hidden.map((e) => e.id)).toEqual([2, 3, 4, 5])
+    // 负数 / 0 这类坏 limit 也不能丢事件，只是全部折起来。
+    const { shown: none, hidden: all } = splitMonthCell([1, 2].map(ev), 0)
+    expect(none).toHaveLength(0)
+    expect(all).toHaveLength(2)
   })
 })
 
