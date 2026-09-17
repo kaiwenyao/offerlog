@@ -164,7 +164,14 @@ async function addEvent(page, kind, opts = {}) {
     orderTxt.indexOf('09/05') < orderTxt.indexOf('09/20'));
 
   // 9. 移除最后一个事件 → 状态退回上一格（不会停在一个已不存在的阶段里）。
+  //    移除是破坏性的（事件删了会连带重算岗位状态），所以现在会先弹二次确认：
+  //    点完「移除」还要在弹窗里再确认一次，否则事件仍在、状态不变。
   await page.locator('.drawer button:has-text("移除")').last().click();
+  await page.waitForSelector('.modal >> text=移除这个事件？');
+  const removeWarns = (await page.locator('.modal').innerText()) || '';
+  console.log('9a destructive 移除 asks for confirmation first:', removeWarns.includes('无法恢复'));
+  console.log('9a it says the 岗位状态 will be recomputed:', removeWarns.includes('重新推导'));
+  await page.click('.modal button:has-text("移除")');
   await page.waitForTimeout(1500);
   const afterRemove = (await page.locator('.drawer .status-chip').textContent()).replace(/\s+/g, ' ');
   console.log('9 removing the last event rolls the status back:', afterRemove);

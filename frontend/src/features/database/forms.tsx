@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
 import { toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
-import type { AppRow, Milestone } from '../../lib/types'
+import type { ActionItem, AppRow, AssessmentRound, Interview, Milestone, Note } from '../../lib/types'
 import { ENDED, NEXT_STEP_SUGGESTION, PRIORITIES, REMOTE_OPTIONS, CHANNEL_OPTIONS, SALARY_CURRENCIES, statusMeta } from '../../lib/status'
 import {
   isDefaultLabel,
@@ -15,6 +15,18 @@ import {
 import { Button, Checkbox, Input, Select, Textarea } from '../../ds'
 import { ErrorText, Modal, Spinner } from '../../components/ui'
 import { buildApplicationPatch, editFieldsFromApp, type ApplicationEditFields } from './edit'
+import {
+  actionEditFields,
+  assessmentEditFields,
+  buildActionPatch,
+  buildAssessmentPatch,
+  buildInterviewPatch,
+  buildNotePatch,
+  interviewEditFields,
+  type ActionEditFields,
+  type AssessmentEditFields,
+  type InterviewEditFields,
+} from './activityEdit'
 
 /** Shared with the progress dialog's inline scheduler — keep one list. */
 export const ROUNDS = ['一面', '二面', '三面', '终面', '技术面', 'HR 面', '其他']
@@ -571,6 +583,301 @@ export function ApplicationEditForm({
           />
         </div>
       </div>
+    </Modal>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 编辑一轮面试（轮次 / 形式 / 时间）。
+ *
+ * 「面试时间填错一位」以前无解——只能再排一轮，错的那轮永远留在日历、首页
+ * 「即将到来的面试」和每天的提醒里。这里接 PATCH /interviews/:id：时间留空即
+ * 回到「时间未定」（后端对 scheduled_at 不做合并，空值就是清空）。
+ */
+export function InterviewEditForm({
+  appId,
+  interview,
+  onClose,
+  onDone,
+}: {
+  appId: number
+  interview: Interview
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [fields, setFields] = useState<InterviewEditFields>(() => interviewEditFields(interview))
+  const [err, setErr] = useState('')
+
+  const set = <K extends keyof InterviewEditFields>(key: K, value: InterviewEditFields[K]) =>
+    setFields((f) => ({ ...f, [key]: value }))
+
+  const mut = useMutation({
+    mutationFn: (body: Record<string, unknown>) => api.patch(`/api/v1/applications/${appId}/interviews/${interview.id}`, body),
+    onSuccess: onDone,
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+  })
+
+  return (
+    <Modal
+      title="编辑面试"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={mut.isPending}
+            onClick={() => {
+              setErr('')
+              try {
+                mut.mutate(buildInterviewPatch(interview, fields))
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : '保存失败')
+              }
+            }}
+          >
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
+      }
+    >
+      {err && <ErrorText>{err}</ErrorText>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <Select label="轮次" options={ROUNDS} value={fields.round_name} onChange={(e) => set('round_name', e.target.value)} />
+        <Select label="形式" options={FORMATS} value={fields.format} onChange={(e) => set('format', e.target.value)} />
+        <Input
+          label="时间"
+          type="datetime-local"
+          value={fields.scheduled}
+          onChange={(e) => set('scheduled', e.target.value)}
+          hint="留空表示时间未定；改期后原来那天的提醒会一起撤销"
+        />
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * 编辑一轮 OA / 测评（名称 / 截止时间 / 测试链接）。
+ *
+ * 截止时间填错同理：改不了的话，日历和「OA 截止」提醒会一直按错的日子响。
+ * 留空是**清空**截止时间（请求显式带 clear_due_at）。
+ */
+export function AssessmentEditForm({
+  appId,
+  assessment,
+  onClose,
+  onDone,
+}: {
+  appId: number
+  assessment: AssessmentRound
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [fields, setFields] = useState<AssessmentEditFields>(() => assessmentEditFields(assessment))
+  const [err, setErr] = useState('')
+
+  const set = <K extends keyof AssessmentEditFields>(key: K, value: AssessmentEditFields[K]) =>
+    setFields((f) => ({ ...f, [key]: value }))
+
+  const mut = useMutation({
+    mutationFn: (body: Record<string, unknown>) => api.patch(`/api/v1/applications/${appId}/assessments/${assessment.id}`, body),
+    onSuccess: onDone,
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+  })
+
+  return (
+    <Modal
+      title="编辑 OA / 测评"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={mut.isPending}
+            onClick={() => {
+              setErr('')
+              try {
+                mut.mutate(buildAssessmentPatch(assessment, fields))
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : '保存失败')
+              }
+            }}
+          >
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
+      }
+    >
+      {err && <ErrorText>{err}</ErrorText>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <Input label="名称" value={fields.name} onChange={(e) => set('name', e.target.value)} />
+        <Input
+          label="截止时间"
+          type="datetime-local"
+          value={fields.due}
+          onChange={(e) => set('due', e.target.value)}
+          hint="留空表示没有截止时间（会清掉原来的）"
+        />
+        <Input label="测试链接" value={fields.link} onChange={(e) => set('link', e.target.value)} placeholder="https://…" />
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * 编辑一条待办（标题 / 截止日）。
+ *
+ * 待办写错字以前只能「完成」掉（污染统计）或一天天点「延期」。due_date 是
+ * 日历日 YYYY-MM-DD（DATE 列），不做任何时区换算；留空表示没有截止日期。
+ */
+export function ActionEditForm({
+  appId,
+  action,
+  onClose,
+  onDone,
+}: {
+  appId: number
+  action: ActionItem
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [fields, setFields] = useState<ActionEditFields>(() => actionEditFields(action))
+  const [err, setErr] = useState('')
+
+  const set = <K extends keyof ActionEditFields>(key: K, value: ActionEditFields[K]) =>
+    setFields((f) => ({ ...f, [key]: value }))
+
+  const mut = useMutation({
+    mutationFn: async (body: Record<string, unknown>) => {
+      const r = await api.patch<unknown>(`/api/v1/actions/${action.id}`, body)
+      // 岗位行上的 next_action 只是这条待办的镜像（§5.3），标题改了要一起跟上，
+      // 否则表格「下一步」列会一直显示旧文案。但镜像同步有两个前提：
+      //   1. 这条待办仍未完成——后端在最后一个未完成待办被完成时会刻意清空镜像
+      //      （ClearLegacyNextActionWhenSettled）；编辑一条已完成的待办又把它写回去，
+      //      正好撤销了那次清理；
+      //   2. 这条确实是当前被镜像的那条（岗位行的 next_action 就是它原来的标题）
+      //      ——否则编辑三条里的第二条也会把「下一步」列改成它。
+      // 尽力而为：待办的真相在 actions 表里，镜像同步失败不回滚。
+      if (action.done_at == null) {
+        try {
+          const fresh = await api.get<AppRow>(`/api/v1/applications/${appId}`)
+          if ((fresh.next_action ?? '').trim() === (action.title ?? '').trim()) {
+            await api.patch(`/api/v1/applications/${appId}`, {
+              version: fresh.version,
+              next_action: String(body.title ?? ''),
+              next_action_due_at: (body.due_date as string | null) ?? null,
+            })
+          }
+        } catch {
+          /* 镜像同步是尽力而为 */
+        }
+      }
+      return r
+    },
+    onSuccess: onDone,
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+  })
+
+  return (
+    <Modal
+      title="编辑待办"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={mut.isPending}
+            onClick={() => {
+              setErr('')
+              try {
+                mut.mutate(buildActionPatch(action, fields))
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : '保存失败')
+              }
+            }}
+          >
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
+      }
+    >
+      {err && <ErrorText>{err}</ErrorText>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <Input label="待办内容" value={fields.title} onChange={(e) => set('title', e.target.value)} placeholder="例如：准备二面" />
+        <Input
+          label="截止日期"
+          type="date"
+          value={fields.due_date}
+          onChange={(e) => set('due_date', e.target.value)}
+          hint="留空表示没有截止日期"
+        />
+      </div>
+    </Modal>
+  )
+}
+
+/** 编辑一条备注（只改正文）——以前只能删了重写。 */
+export function NoteEditForm({
+  appId,
+  note,
+  onClose,
+  onDone,
+}: {
+  appId: number
+  note: Note
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [content, setContent] = useState(note.content_md ?? '')
+  const [err, setErr] = useState('')
+  const mut = useMutation({
+    mutationFn: (body: { content_md: string }) => api.patch(`/api/v1/applications/${appId}/notes/${note.id}`, body),
+    onSuccess: onDone,
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+  })
+  return (
+    <Modal
+      title="编辑备注"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={mut.isPending}
+            onClick={() => {
+              setErr('')
+              try {
+                mut.mutate(buildNotePatch(content))
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : '保存失败')
+              }
+            }}
+          >
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
+      }
+    >
+      {err && <ErrorText>{err}</ErrorText>}
+      <Textarea rows={6} value={content} onChange={(e) => setContent(e.target.value)} placeholder="沟通要点、联系人、后续计划…" />
     </Modal>
   )
 }

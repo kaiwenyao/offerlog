@@ -727,6 +727,11 @@ func (s *Service) List(ctx context.Context, ownerID int64, o repository.ListOpti
 
 // Bulk applies shared batch operations (tags/priority/archive) to the given
 // rows, skipping records that do not belong to the owner.
+//
+// 回收站里（软删）的行也会被跳过：勾选列在回收站里已经隐藏，但请求可能来自旧
+// 页面 / 脚本，而已删除记录被打上标签只会“静默成功”——列表上看不到任何变化。
+// 这里不能改成给 GetForUpdate 加 deleted_at 过滤：同一个方法也是 Restore 的
+// 入口，那样一改就再也恢复不了删除的记录。
 func (s *Service) Bulk(ctx context.Context, ownerID int64, ids []int64, addTags []string, priority *string, archive *bool) (int64, error) {
 	updated := int64(0)
 	err := s.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -737,6 +742,9 @@ func (s *Service) Bulk(ctx context.Context, ownerID int64, ids []int64, addTags 
 			}
 			if err != nil {
 				return err
+			}
+			if row.DeletedAt != nil {
+				continue // 已在回收站：不在可见列表里，不应被批量操作命中
 			}
 			if len(addTags) > 0 {
 				have := map[string]bool{}

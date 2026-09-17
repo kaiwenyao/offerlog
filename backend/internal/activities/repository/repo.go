@@ -401,9 +401,58 @@ func (r *Repo) UpdateAction(ctx context.Context, q database.Querier, a *Action) 
 	return nil
 }
 
-func (r *Repo) DeleteAction(ctx context.Context, ownerID, id int64) error {
-	_, err := r.db.Pool().Exec(ctx, `DELETE FROM actions WHERE id=$1 AND owner_id=$2`, id, ownerID)
+// DeleteAction removes the action row through the caller's Querier.
+func (r *Repo) DeleteAction(ctx context.Context, q database.Querier, ownerID, id int64) error {
+	_, err := q.Exec(ctx, `DELETE FROM actions WHERE id=$1 AND owner_id=$2`, id, ownerID)
 	return err
+}
+
+// ClearLegacyNextActionForApp removes an application's legacy next_action mirror
+// (and its due columns) once that application has no action row left at all.
+//
+// 与 ClearLegacyNextActionWhenSettled 的分工：那条挂在「完成」路径上（靠 action
+// 反查岗位，且只看未完成的待办）；这条挂在「删除」路径上——行删了就查不到它属于
+// 哪个岗位，所以由调用方先取 application_id 再传进来。
+//
+// 为什么删掉最后一条待办**必须**清镜像：首页统一待办的 derived 分支有一个守卫
+// ——「有 next_action 且该岗位一条 action 行都没有」（home/repo.go）。删掉唯一的
+// action 行，守卫就失效，那条早被独立待办取代的旧 mirror 会以 action_id=null 的
+// 形式复活到今日待办清单和侧栏计数里，而且只有「查看」——完不成、也删不掉。
+func (r *Repo) ClearLegacyNextActionForApp(ctx context.Context, q database.Querier, ownerID, appID int64) error {
+	_, err := q.Exec(ctx, `UPDATE applications ap SET next_action='', next_action_due_at=NULL,
+		next_action_due_ts=NULL, version=version+1, updated_at=now()
+		WHERE ap.owner_id=$1 AND ap.id=$2
+		  AND NOT EXISTS (SELECT 1 FROM actions x WHERE x.application_id=ap.id AND x.owner_id=$1)`,
+		ownerID, appID)
+	return err
+}
+
+// DeleteActionAndSettle deletes an action and retires the application's legacy
+// next_action mirror when this was its last action row.
+//
+// 两条语句必须在同一个事务里：只删行不清镜像正好会留下被复活的幽灵待办，
+// 而只清镜像不删行则是另一头的不一致——半个操作就是它本来要防的自相矛盾。
+// 删除本身幂等：行已不存在（或不属于本人）时静默当成删掉。
+func (r *Repo) DeleteActionAndSettle(ctx context.Context, ownerID, id int64) error {
+	return r.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var appID int64
+		err := tx.QueryRow(ctx, `SELECT application_id FROM actions WHERE id=$1 AND owner_id=$2`,
+			id, ownerID).Scan(&appID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := r.DeleteAction(ctx, tx, ownerID, id); err != nil {
+			return err
+		}
+		if appID == 0 {
+			// 跨岗位待办（application_id IS NULL）没有镜像可清。
+			return nil
+		}
+		return r.ClearLegacyNextActionForApp(ctx, tx, ownerID, appID)
+	})
 }
 
 func (r *Repo) MarkActionDone(ctx context.Context, q database.Querier, ownerID, id int64, done bool) error {
@@ -557,6 +606,35 @@ func (r *Repo) GetScheduleLink(ctx context.Context, interviewID, ownerID int64) 
 		return nil, nil
 	}
 	return &s, err
+}
+
+// ListScheduleLinks returns the scheduling metadata for a set of interviews, keyed
+// by interview id (interviews without a link are simply absent).
+//
+// 列表接口需要这个：cancelled 存在 schedule_links 里，一次一条地查是 N+1，而
+// 前端要据此显示「已取消」并提供「恢复面试」——不带上就等于取消后无法撤销。
+func (r *Repo) ListScheduleLinks(ctx context.Context, ownerID int64, interviewIDs []int64) (map[int64]*ScheduleLink, error) {
+	out := map[int64]*ScheduleLink{}
+	if len(interviewIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.Pool().Query(ctx, `SELECT id, interview_id, owner_id, meeting_url, location,
+		contact_name, contact_email, notes, cancelled, cancelled_reason, original_timezone
+		FROM schedule_links WHERE owner_id=$1 AND interview_id = ANY($2)`, ownerID, interviewIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s ScheduleLink
+		if err := rows.Scan(&s.ID, &s.InterviewID, &s.OwnerID, &s.MeetingURL, &s.Location, &s.ContactName,
+			&s.ContactEmail, &s.Notes, &s.Cancelled, &s.CancelledReason, &s.OriginalTimezone); err != nil {
+			return nil, err
+		}
+		copy := s
+		out[s.InterviewID] = &copy
+	}
+	return out, rows.Err()
 }
 
 // UpsertScheduleLink creates-or-updates scheduling metadata.
