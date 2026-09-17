@@ -52,8 +52,14 @@ describe('column geometry', () => {
   it('hides the trash 操作 column outside the recycle bin', () => {
     expect(visibleColumnKeys(false)).not.toContain('actions')
     expect(visibleColumnKeys(true)).toContain('actions')
+  })
+
+  // 回收站里不给勾选：批量打标签会真的命中已删除记录（后端按 id 取行），而列表上
+  // 看不到任何变化，看起来就像「点了没反应」。
+  it('hides the checkbox column inside the recycle bin', () => {
     expect(visibleColumnKeys(false)).toContain('select')
-    expect(visibleColumnKeys(true)[0]).toBe('select')
+    expect(visibleColumnKeys(true)).not.toContain('select')
+    expect(visibleColumnKeys(true)[0]).not.toBe('select')
   })
 
   it('clamps widths into the column range and rejects NaN', () => {

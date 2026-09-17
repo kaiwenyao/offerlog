@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
 import type { Me, Preferences } from '../../lib/types'
 import { Button, Card, Input, PanelTitle, Select, Switch } from '../../ds'
-import { ErrorText, Num, Spinner } from '../../components/ui'
+import { ErrorText, ConfirmDialog, Num, Spinner } from '../../components/ui'
 
 const PROPERTY_TYPES = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'url', 'image']
 
@@ -406,6 +406,8 @@ function PropertiesPanel() {
   const [key, setKey] = useState('')
   const [dataType, setDataType] = useState('text')
   const [err, setErr] = useState('')
+  // 删自定义属性会连带它的历史值（每条记录的 JSONB 里的那个键），先过确认弹窗。
+  const [pendingDel, setPendingDel] = useState<import('../../lib/types').PropertyDef | null>(null)
 
   const q = useQuery({
     queryKey: ['properties'],
@@ -426,7 +428,12 @@ function PropertiesPanel() {
 
   const remove = useMutation({
     mutationFn: (id: number) => api.del(`/api/v1/properties/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['properties'] }),
+    onSuccess: () => {
+      setPendingDel(null)
+      setErr('')
+      qc.invalidateQueries({ queryKey: ['properties'] })
+    },
+    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
   })
 
   const props = q.data?.items ?? []
@@ -459,12 +466,23 @@ function PropertiesPanel() {
                   {p.key} · {p.data_type}
                 </Num>
               </span>
-              <Button variant="ghost" size="sm" onClick={() => remove.mutate(p.id)}>
+              <Button variant="ghost" size="sm" onClick={() => setPendingDel(p)}>
                 删除
               </Button>
             </div>
           ))}
         </div>
+      )}
+      {pendingDel && (
+        <ConfirmDialog
+          title="删除这个自定义属性？"
+          pending={remove.isPending}
+          onClose={() => setPendingDel(null)}
+          onConfirm={() => remove.mutate(pendingDel.id)}
+        >
+          将永久删除属性「{pendingDel.name}」（{pendingDel.key}），已填在岗位上的历史值会一并消失且无法恢复。
+          只是不再使用时，建议保留字段免得丢掉旧数据。
+        </ConfirmDialog>
       )}
     </Card>
   )

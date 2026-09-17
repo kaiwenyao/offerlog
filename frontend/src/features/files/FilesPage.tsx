@@ -5,7 +5,7 @@ import { FILE_CATEGORIES } from '../../lib/files'
 import type { FileItem } from '../../lib/types'
 import { Button, Card, LinkButton, Tag } from '../../ds'
 import { Icon } from '../../components/Icon'
-import { EmptyHint, ErrorText, Num, PageSpinner, Spinner } from '../../components/ui'
+import { EmptyHint, ErrorText, ConfirmDialog, Num, PageSpinner, Spinner } from '../../components/ui'
 import { FileTile } from '../database/tabs'
 import { CategorySelect, FileViewerModal, useDropUpload, useUpdateCategory } from './shared'
 
@@ -18,12 +18,17 @@ export function FilesPage() {
   const [filter, setFilter] = useState('all')
   const [uploadCat, setUploadCat] = useState('other')
   const [viewing, setViewing] = useState<FileItem | null>(null)
+  // 删除的是存储里的原件，且按钮就挨着「预览」「下载」——先过确认弹窗。
+  const [pendingDel, setPendingDel] = useState<FileItem | null>(null)
 
   const q = useQuery({ queryKey: ['files'], queryFn: () => api.get<{ items: FileItem[] }>('/api/v1/files') })
 
   const del = useMutation({
     mutationFn: (id: string) => api.del(`/api/v1/files/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['files'] }),
+    onSuccess: () => {
+      setPendingDel(null)
+      qc.invalidateQueries({ queryKey: ['files'] })
+    },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
   })
 
@@ -177,7 +182,7 @@ export function FilesPage() {
                             </LinkButton>
                           </>
                         )}
-                        <Button variant="ghost" size="sm" disabled={del.isPending} onClick={() => del.mutate(f.id)}>
+                        <Button variant="ghost" size="sm" onClick={() => setPendingDel(f)}>
                           删除
                         </Button>
                       </span>
@@ -191,6 +196,17 @@ export function FilesPage() {
       )}
 
       {viewing && <FileViewerModal file={viewing} onClose={() => setViewing(null)} />}
+      {pendingDel && (
+        <ConfirmDialog
+          title="删除这个文件？"
+          pending={del.isPending}
+          onClose={() => setPendingDel(null)}
+          onConfirm={() => del.mutate(pendingDel.id)}
+        >
+          将永久删除「{pendingDel.name}」（{fmtBytes(pendingDel.size_bytes)}），文件原件同时从存储中移除，无法恢复。
+          若只是传错了版本，请直接上传新的。
+        </ConfirmDialog>
+      )}
     </section>
   )
 }

@@ -13,6 +13,7 @@ import {
   boardBuckets,
   buildFilters,
   isShortcutView,
+  pruneSelection,
   shortcutConditions,
   statusesForView,
   trashQueryPath,
@@ -150,5 +151,32 @@ describe('trashQueryPath', () => {
     expect(trashQueryPath(0, 60)).toContain('page=1')
     expect(trashQueryPath(-3, 60)).toContain('page=1')
     expect(trashQueryPath(Number.NaN, 60)).toContain('page=1')
+  })
+})
+
+// 批量选择的残留：第 1 页勾 10 条 → 翻到第 2 页，顶部还写着「已选 10 条」，
+// 点「应用」改的是屏幕上看不见的行（回收站里更是真的改了已删除记录，而列表上
+// 什么变化都看不到）。pruneSelection 把选择集收敛到当前查询结果上。
+describe('pruneSelection', () => {
+  const page1 = [{ id: 1 }, { id: 2 }, { id: 3 }]
+  const page2 = [{ id: 4 }, { id: 5 }]
+
+  it('keeps only ids present in the current result set', () => {
+    const selected = new Set([1, 2, 4])
+    expect([...pruneSelection(selected, page1)].sort()).toEqual([1, 2])
+    expect([...pruneSelection(selected, page2)]).toEqual([4])
+  })
+
+  it('empties the selection after paging away (no invisible rows get bulk-applied)', () => {
+    const selected = new Set([1, 2, 3])
+    expect(pruneSelection(selected, page2).size).toBe(0)
+    expect(pruneSelection(selected, []).size).toBe(0)
+  })
+
+  it('returns a fresh set and never mutates the input', () => {
+    const selected = new Set([1, 9])
+    const out = pruneSelection(selected, page1)
+    expect(out).not.toBe(selected)
+    expect([...selected]).toEqual([1, 9])
   })
 })

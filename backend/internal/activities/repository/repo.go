@@ -559,6 +559,35 @@ func (r *Repo) GetScheduleLink(ctx context.Context, interviewID, ownerID int64) 
 	return &s, err
 }
 
+// ListScheduleLinks returns the scheduling metadata for a set of interviews, keyed
+// by interview id (interviews without a link are simply absent).
+//
+// 列表接口需要这个：cancelled 存在 schedule_links 里，一次一条地查是 N+1，而
+// 前端要据此显示「已取消」并提供「恢复面试」——不带上就等于取消后无法撤销。
+func (r *Repo) ListScheduleLinks(ctx context.Context, ownerID int64, interviewIDs []int64) (map[int64]*ScheduleLink, error) {
+	out := map[int64]*ScheduleLink{}
+	if len(interviewIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.Pool().Query(ctx, `SELECT id, interview_id, owner_id, meeting_url, location,
+		contact_name, contact_email, notes, cancelled, cancelled_reason, original_timezone
+		FROM schedule_links WHERE owner_id=$1 AND interview_id = ANY($2)`, ownerID, interviewIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s ScheduleLink
+		if err := rows.Scan(&s.ID, &s.InterviewID, &s.OwnerID, &s.MeetingURL, &s.Location, &s.ContactName,
+			&s.ContactEmail, &s.Notes, &s.Cancelled, &s.CancelledReason, &s.OriginalTimezone); err != nil {
+			return nil, err
+		}
+		copy := s
+		out[s.InterviewID] = &copy
+	}
+	return out, rows.Err()
+}
+
 // UpsertScheduleLink creates-or-updates scheduling metadata.
 func (r *Repo) UpsertScheduleLink(ctx context.Context, q database.Querier, s *ScheduleLink) error {
 	// Owner-safe upsert: first try an owner-scoped UPDATE of the existing row;

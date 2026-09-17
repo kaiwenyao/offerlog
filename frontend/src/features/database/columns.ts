@@ -75,9 +75,20 @@ export function columnByKey(key: DbColumnKey): DbColumn {
   return col
 }
 
-/** 勾选列永远在；回收站操作列只在回收站模式下出现。 */
+/**
+ * 当前可见的列。
+ *
+ * - 回收站操作列（恢复）只在回收站模式下出现；
+ * - 勾选列则相反：**回收站里不给勾选**。批量操作会真的作用到已删除的记录上
+ *   （后端 GetForUpdate 按 id 取行），而列表上看不到任何变化——看起来就像
+ *   「点了没反应」。
+ */
 export function visibleColumnKeys(trashMode: boolean): DbColumnKey[] {
-  return DB_COLUMNS.filter((c) => c.key !== 'actions' || trashMode).map((c) => c.key)
+  return DB_COLUMNS.filter((c) => {
+    if (c.key === 'actions') return trashMode
+    if (c.key === 'select') return !trashMode
+    return true
+  }).map((c) => c.key)
 }
 
 export function clampColWidth(col: DbColumn, width: number): number {

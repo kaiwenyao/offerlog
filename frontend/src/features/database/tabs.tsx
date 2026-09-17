@@ -7,9 +7,9 @@ import type { ActionItem, AppRow, AssessmentRound, FileItem, Interview, Note } f
 import { comboLabel, NEXT_STEP_SUGGESTION } from '../../lib/status'
 import { Button, Card, Eyebrow, LinkButton, PanelTitle } from '../../ds'
 import { Icon } from '../../components/Icon'
-import { ErrorText, Num, Spinner } from '../../components/ui'
+import { ErrorText, ConfirmDialog, Num, Spinner } from '../../components/ui'
 import { CategorySelect, FileViewerModal, useDropUpload, useUpdateCategory } from '../files/shared'
-import { ActionForm, AssessmentForm, InterviewForm, NoteForm } from './forms'
+import { ActionEditForm, ActionForm, AssessmentEditForm, AssessmentForm, InterviewEditForm, InterviewForm, NoteEditForm, NoteForm } from './forms'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
 
@@ -117,8 +117,30 @@ export function OverviewTab({
   const [showAction, setShowAction] = useState(false)
   const [showNote, setShowNote] = useState(false)
   const [showAssessment, setShowAssessment] = useState(false)
+  // 编辑 / 删除的目标行：以前这些实体只能新增，填错了无从修正。
+  const [editInterview, setEditInterview] = useState<Interview | null>(null)
+  const [editAssessment, setEditAssessment] = useState<AssessmentRound | null>(null)
+  const [editAction, setEditAction] = useState<ActionItem | null>(null)
+  const [editNote, setEditNote] = useState<Note | null>(null)
+  const [delInterview, setDelInterview] = useState<Interview | null>(null)
+  const [delAssessment, setDelAssessment] = useState<AssessmentRound | null>(null)
+  const [delAction, setDelAction] = useState<ActionItem | null>(null)
+  const [delNote, setDelNote] = useState<Note | null>(null)
   const [actionErr, setActionErr] = useState('')
   const [noteErr, setNoteErr] = useState('')
+
+  // 一轮活动的增删改都要连岗位快照、时间线与日历一起刷新：改了面试时间而首页
+  // 「即将到来的面试」和日历还按旧时间显示，正是这次要修的东西。
+  const refreshActivity = () => {
+    qc.invalidateQueries({ queryKey: ['interviews', app.id] })
+    qc.invalidateQueries({ queryKey: ['assessments', app.id] })
+    qc.invalidateQueries({ queryKey: ['actions'] })
+    qc.invalidateQueries({ queryKey: ['app', app.id] })
+    qc.invalidateQueries({ queryKey: ['events', app.id] })
+    qc.invalidateQueries({ queryKey: ['calendar'] })
+    qc.invalidateQueries({ queryKey: ['apps'] })
+    refetchAll()
+  }
 
   // 活动进度快捷操作（方案 §3.3/§5）：只改轮次自身的完成事实，绝不自动改大阶段，
   // 也不把「完成」当成「通过」。
@@ -180,15 +202,54 @@ export function OverviewTab({
     },
     onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '延期失败，请重试'),
   })
+  const delActionMut = useMutation({
+    mutationFn: (id: number) => api.del(`/api/v1/actions/${id}`),
+    onSuccess: () => {
+      setActionErr('')
+      setDelAction(null)
+      refreshActivity()
+    },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '删除待办失败，请重试'),
+  })
   // 删除备注：行内的「删除」按钮走 DELETE /notes/:note_id。
   const delNoteMut = useMutation({
     mutationFn: (id: number) => api.del(`/api/v1/applications/${app.id}/notes/${id}`),
     onSuccess: () => {
       setNoteErr('')
+      setDelNote(null)
       qc.invalidateQueries({ queryKey: ['notes', app.id] })
       refetchAll()
     },
     onError: (e: unknown) => setNoteErr(e instanceof ApiError ? e.message : '删除备注失败，请重试'),
+  })
+  // 删除面试 / OA 轮次：DELETE 会让日历、首页「即将到来的面试 / OA」和提醒一起消失。
+  const delInterviewMut = useMutation({
+    mutationFn: (id: number) => api.del(`/api/v1/applications/${app.id}/interviews/${id}`),
+    onSuccess: () => {
+      setActionErr('')
+      setDelInterview(null)
+      refreshActivity()
+    },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '删除面试失败，请重试'),
+  })
+  const delAssessmentMut = useMutation({
+    mutationFn: (id: number) => api.del(`/api/v1/applications/${app.id}/assessments/${id}`),
+    onSuccess: () => {
+      setActionErr('')
+      setDelAssessment(null)
+      refreshActivity()
+    },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '删除测评失败，请重试'),
+  })
+  // 取消 / 恢复面试：改期或对方取消后，错的日程不该继续占着日历和每天的提醒。
+  const cancelInterviewMut = useMutation({
+    mutationFn: ({ id, cancel }: { id: number; cancel: boolean }) =>
+      api.post(`/api/v1/applications/${app.id}/interviews/${id}/${cancel ? 'cancel' : 'uncancel'}`),
+    onSuccess: () => {
+      setActionErr('')
+      refreshActivity()
+    },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '取消面试失败，请重试'),
   })
 
   const facts: Array<[string, string]> = [
@@ -256,6 +317,12 @@ export function OverviewTab({
                       延期
                     </Button>
                   )}
+                  <Button variant="ghost" size="sm" onClick={() => setEditAction(a)}>
+                    编辑
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setDelAction(a)}>
+                    删除
+                  </Button>
                   <Button variant="secondary" size="sm" disabled={doneMut.isPending} onClick={() => doneMut.mutate({ id: a.id, done: true })}>
                     完成
                   </Button>
@@ -280,6 +347,9 @@ export function OverviewTab({
                     <span className="grow" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                       ✓ {a.title}
                     </span>
+                    <Button variant="ghost" size="sm" onClick={() => setEditAction(a)}>
+                      编辑
+                    </Button>
                     <Button variant="ghost" size="sm" disabled={doneMut.isPending} onClick={() => doneMut.mutate({ id: a.id, done: false })}>
                       撤销
                     </Button>
@@ -309,9 +379,23 @@ export function OverviewTab({
                 <span style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>
                   {i.round_name || '面试'}
                   {i.format ? ` · ${i.format}` : ''}
+                  {i.schedule?.cancelled && (
+                    <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border)', padding: '1px 6px' }}>
+                      已取消
+                    </span>
+                  )}
                 </span>
-                <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                <span
+                  style={{
+                    display: 'block',
+                    fontSize: 12,
+                    color: 'var(--text-muted)',
+                    marginTop: 2,
+                    textDecoration: i.schedule?.cancelled ? 'line-through' : undefined,
+                  }}
+                >
                   {i.scheduled_at ? fmtDateTime(i.scheduled_at) : '时间未定'}
+                  {i.schedule?.cancelled_reason ? ` · ${i.schedule.cancelled_reason}` : ''}
                 </span>
                 {i.feedback && (
                   <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>反馈：{i.feedback}</span>
@@ -337,6 +421,19 @@ export function OverviewTab({
               >
                 {activityProgressLabel(i.progress, i.result, !!i.scheduled_at)}
               </span>
+              {/* 改期 / 取消 / 删除：填错的时间必须能改，否则它会一直留在日历、
+                  首页「即将到来的面试」和每天的提醒里。 */}
+              <Button variant="ghost" size="sm" onClick={() => setEditInterview(i)}>
+                编辑
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={cancelInterviewMut.isPending}
+                onClick={() => cancelInterviewMut.mutate({ id: i.id, cancel: !i.schedule?.cancelled })}
+              >
+                {i.schedule?.cancelled ? '恢复面试' : '取消面试'}
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -350,6 +447,9 @@ export function OverviewTab({
                 }
               >
                 {i.progress === 'completed' ? '撤销完成' : '标记完成'}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setDelInterview(i)}>
+                删除
               </Button>
             </div>
           ))
@@ -410,6 +510,9 @@ export function OverviewTab({
               >
                 {a.result === 'passed' ? '已通过' : a.result === 'failed' ? '未通过' : a.progress === 'completed' ? '已完成·等结果' : '准备中'}
               </span>
+              <Button variant="ghost" size="sm" onClick={() => setEditAssessment(a)}>
+                编辑
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -423,6 +526,9 @@ export function OverviewTab({
                 }
               >
                 {a.progress === 'completed' ? '撤回完成' : '标记已完成'}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setDelAssessment(a)}>
+                删除
               </Button>
             </div>
           ))
@@ -459,11 +565,13 @@ export function OverviewTab({
                   {fmtDateTime(n.created_at)}
                 </span>
               </span>
+              <Button variant="ghost" size="sm" onClick={() => setEditNote(n)} title="编辑这条备注">
+                编辑
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={delNoteMut.isPending}
-                onClick={() => delNoteMut.mutate(n.id)}
+                onClick={() => setDelNote(n)}
                 title="删除这条备注"
               >
                 删除
@@ -536,6 +644,100 @@ export function OverviewTab({
             setShowNote(false)
           }}
         />
+      )}
+
+      {editInterview && (
+        <InterviewEditForm
+          appId={app.id}
+          interview={editInterview}
+          onClose={() => setEditInterview(null)}
+          onDone={() => {
+            setEditInterview(null)
+            refreshActivity()
+          }}
+        />
+      )}
+      {editAssessment && (
+        <AssessmentEditForm
+          appId={app.id}
+          assessment={editAssessment}
+          onClose={() => setEditAssessment(null)}
+          onDone={() => {
+            setEditAssessment(null)
+            refreshActivity()
+          }}
+        />
+      )}
+      {editAction && (
+        <ActionEditForm
+          appId={app.id}
+          action={editAction}
+          onClose={() => setEditAction(null)}
+          onDone={() => {
+            setEditAction(null)
+            refreshActivity()
+          }}
+        />
+      )}
+      {editNote && (
+        <NoteEditForm
+          appId={app.id}
+          note={editNote}
+          onClose={() => setEditNote(null)}
+          onDone={() => {
+            setEditNote(null)
+            qc.invalidateQueries({ queryKey: ['notes', app.id] })
+            refetchAll()
+          }}
+        />
+      )}
+
+      {/* 删除是硬删、不可撤销：一律先过确认弹窗。 */}
+      {delInterview && (
+        <ConfirmDialog
+          title="删除这轮面试？"
+          pending={delInterviewMut.isPending}
+          onClose={() => setDelInterview(null)}
+          onConfirm={() => delInterviewMut.mutate(delInterview.id)}
+        >
+          将永久删除「{delInterview.round_name || '面试'}」
+          {delInterview.scheduled_at ? `（${fmtDateTime(delInterview.scheduled_at)}）` : ''}
+          。它会从面试日历、首页「即将到来的面试」和提醒里一并消失，且无法恢复。
+          <br />
+          对方只是改期 / 取消了，请改用「编辑」改时间或「取消面试」——不用删掉这一轮。
+        </ConfirmDialog>
+      )}
+      {delAssessment && (
+        <ConfirmDialog
+          title="删除这轮 OA / 测评？"
+          pending={delAssessmentMut.isPending}
+          onClose={() => setDelAssessment(null)}
+          onConfirm={() => delAssessmentMut.mutate(delAssessment.id)}
+        >
+          将永久删除「{delAssessment.name || 'OA'}」
+          {delAssessment.due_at ? `（截止 ${fmtDateTime(delAssessment.due_at)}）` : ''}，无法恢复。
+          截止时间写错了请用「编辑」改。
+        </ConfirmDialog>
+      )}
+      {delAction && (
+        <ConfirmDialog
+          title="删除这条待办？"
+          pending={delActionMut.isPending}
+          onClose={() => setDelAction(null)}
+          onConfirm={() => delActionMut.mutate(delAction.id)}
+        >
+          将永久删除「{delAction.title}」，无法恢复。写错了请用「编辑」改——直接删掉不会影响已完成统计。
+        </ConfirmDialog>
+      )}
+      {delNote && (
+        <ConfirmDialog
+          title="删除这条备注？"
+          pending={delNoteMut.isPending}
+          onClose={() => setDelNote(null)}
+          onConfirm={() => delNoteMut.mutate(delNote.id)}
+        >
+          备注删除后无法恢复。只想改内容的话，点「编辑」即可。
+        </ConfirmDialog>
       )}
     </div>
   )
@@ -761,10 +963,13 @@ function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
   const qc = useQueryClient()
   const [err, setErr] = useState('')
   const [viewing, setViewing] = useState<FileItem | null>(null)
+  // 删除的是简历原件，而「删除」就挨着「预览」「下载」——先过确认弹窗。
+  const [pendingDel, setPendingDel] = useState<FileItem | null>(null)
   const del = useMutation({
     mutationFn: (id: string) => api.del(`/api/v1/files/${id}`),
     onSuccess: () => {
       setErr('')
+      setPendingDel(null)
       qc.invalidateQueries({ queryKey: ['files'] })
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
@@ -829,13 +1034,24 @@ function FileGroup({ title, items }: { title: string; items: FileItem[] }) {
                 </LinkButton>
               </>
             )}
-            <Button variant="ghost" size="sm" disabled={del.isPending} onClick={() => del.mutate(f.id)} title="删除文件并移除关联">
+            <Button variant="ghost" size="sm" onClick={() => setPendingDel(f)} title="删除文件并移除关联">
               删除
             </Button>
           </div>
         ))}
       </Card>
       {viewing && <FileViewerModal file={viewing} onClose={() => setViewing(null)} />}
+      {pendingDel && (
+        <ConfirmDialog
+          title="删除这个附件？"
+          pending={del.isPending}
+          onClose={() => setPendingDel(null)}
+          onConfirm={() => del.mutate(pendingDel.id)}
+        >
+          将永久删除「{pendingDel.name}」（{fmtBytes(pendingDel.size_bytes)}），文件原件同时从存储中移除，无法恢复。
+          若只是想换一份新的，请直接上传新文件。
+        </ConfirmDialog>
+      )}
     </>
   )
 }

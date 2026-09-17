@@ -178,9 +178,21 @@ func (h *Handler) listInterviews(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
+	// 带上日程元数据：cancelled 存在 schedule_links 里，不带的话前端既看不到
+	// 「已取消」，也无法提供「恢复面试」——取消一次就再也取消不回来了。
+	// 一次批量查回来，不要逐条 N+1。
+	ids := make([]int64, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.ID)
+	}
+	links, err := h.repo.ListScheduleLinks(c.Request.Context(), user.ID, ids)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
 	out := make([]interviewDTO, 0, len(items))
 	for _, it := range items {
-		out = append(out, interviewToDTO(it, nil))
+		out = append(out, interviewToDTO(it, links[it.ID]))
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})
 }
@@ -557,6 +569,10 @@ type assessmentDTO struct {
 	Link             string     `json:"link"`
 	Notes            string     `json:"notes"`
 	CreatedAt        time.Time  `json:"created_at"`
+	// ClearDueAt 显式要求清空截止时间。PATCH 的合并语义里「没传」与「传 null」
+	// 无法区分，两者都会保留现有值；用户把截止时间删掉时必须走这个旗标，
+	// 否则界面上看是清空了，刷新后旧值又回来了。
+	ClearDueAt bool `json:"clear_due_at"`
 }
 
 func assessmentToDTO(a *actrepo.AssessmentRound) assessmentDTO {
@@ -717,6 +733,12 @@ func (h *Handler) updateAssessment(c *gin.Context) {
 		}
 		if req.DueAt == nil {
 			a.DueAt = existing.DueAt
+		}
+		// 但「清空截止时间」是一个真实的用户意图（截止时间填错了、改到别处了），
+		// 合并语义会把它吃掉——所以用显式旗标放行，与 milestone 的
+		// clear_occurred_at 同一套做法。
+		if req.ClearDueAt {
+			a.DueAt = nil
 		}
 		if req.CompletedAt == nil {
 			a.CompletedAt = existing.CompletedAt
