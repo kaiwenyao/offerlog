@@ -573,6 +573,12 @@ type assessmentDTO struct {
 	// 无法区分，两者都会保留现有值；用户把截止时间删掉时必须走这个旗标，
 	// 否则界面上看是清空了，刷新后旧值又回来了。
 	ClearDueAt bool `json:"clear_due_at"`
+	// ClearPlannedAt / ClearInvitedAt 同理，属于「计划开做」与「收到邀请」两种时间：
+	// planned_at 是首页「即将到来的面试 / OA」与日历（kind='assessment'）的时间源，
+	// 用户把它清空（改期到别处 / 还没排）必须真的清掉，否则旧时刻会一直挂在
+	// 首页和日历上（与 clear_due_at 同一套做法）。
+	ClearPlannedAt bool `json:"clear_planned_at"`
+	ClearInvitedAt bool `json:"clear_invited_at"`
 }
 
 func assessmentToDTO(a *actrepo.AssessmentRound) assessmentDTO {
@@ -741,6 +747,15 @@ func (h *Handler) updateAssessment(c *gin.Context) {
 		// clear_occurred_at 同一套做法。
 		if req.ClearDueAt {
 			a.DueAt = nil
+		}
+		// 「计划开做」与「收到邀请」同样是可清的用户意图：planned_at 清空后首页
+		// 的「即将到来的 OA」和日历事件就不该再出现，否则改到别处 / 还没排的
+		// 轮次会永远占着旧的那一格。
+		if req.ClearPlannedAt {
+			a.PlannedAt = nil
+		}
+		if req.ClearInvitedAt {
+			a.InvitedAt = nil
 		}
 		if req.CompletedAt == nil {
 			a.CompletedAt = existing.CompletedAt

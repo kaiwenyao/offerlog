@@ -663,10 +663,15 @@ export function InterviewEditForm({
 }
 
 /**
- * 编辑一轮 OA / 测评（名称 / 截止时间 / 测试链接）。
+ * 编辑一轮 OA / 测评（名称 / 收到邀请 / 计划开做 / 截止时间 / 测试链接）。
  *
+ * 四种时间里有两格是「看着像装饰、其实是数据源」的：
+ *   - planned_at（计划开做）是首页「即将到来的面试 / OA」的时间源与过滤条件、
+ *     日历上 kind='assessment' 事件的时刻、本周工序条 OA chip 落在哪一天；
+ *   - invited_at（收到邀请）只是事实记录，但它和 planned 一样是「填错一位就
+ *     永远改不了」的字段。
  * 截止时间填错同理：改不了的话，日历和「OA 截止」提醒会一直按错的日子响。
- * 留空是**清空**截止时间（请求显式带 clear_due_at）。
+ * 三格留空都是**清空**（请求显式带对应的 clear_* 旗标，后端合并语义不会吃掉）。
  */
 export function AssessmentEditForm({
   appId,
@@ -721,6 +726,20 @@ export function AssessmentEditForm({
       {err && <ErrorText>{err}</ErrorText>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
         <Input label="名称" value={fields.name} onChange={(e) => set('name', e.target.value)} />
+        <Input
+          label="收到邀请"
+          type="datetime-local"
+          value={fields.invited}
+          onChange={(e) => set('invited', e.target.value)}
+          hint="留空表示没有记录（会清掉原来的）"
+        />
+        <Input
+          label="计划开做"
+          type="datetime-local"
+          value={fields.planned}
+          onChange={(e) => set('planned', e.target.value)}
+          hint="首页「即将到来的 OA」与日历按这个时间排（留空会清掉）"
+        />
         <Input
           label="截止时间"
           type="datetime-local"

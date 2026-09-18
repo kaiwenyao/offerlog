@@ -78,6 +78,10 @@ export function buildInterviewPatch(it: Interview, f: InterviewEditFields): Reco
 
 export interface AssessmentEditFields {
   name: string
+  /** datetime-local 的挂墙时间；'' = 清空 */
+  invited: string
+  /** datetime-local 的挂墙时间；'' = 清空 */
+  planned: string
   /** datetime-local 的挂墙时间；'' = 清空截止时间 */
   due: string
   link: string
@@ -86,6 +90,8 @@ export interface AssessmentEditFields {
 export function assessmentEditFields(a: AssessmentRound): AssessmentEditFields {
   return {
     name: a.name ?? '',
+    invited: a.invited_at ? toLocalDateTimeInput(a.invited_at) : '',
+    planned: a.planned_at ? toLocalDateTimeInput(a.planned_at) : '',
     due: a.due_at ? toLocalDateTimeInput(a.due_at) : '',
     link: a.link ?? '',
   }
@@ -94,25 +100,35 @@ export function assessmentEditFields(a: AssessmentRound): AssessmentEditFields {
 /**
  * 表单值 + 现有轮次 → PATCH /assessments/:id 请求体。
  *
- * due_at 被清空时必须显式带 `clear_due_at`：后端把「没传」与「传 null」都当成
- * 「保留原值」，不然用户清掉截止时间后刷新一看它还在。
+ * 四种时间（invited/planned/due/completed）后端都是合并语义：没传或传 null 都
+ * 当成「保留原值」。所以清空必须显式带 `clear_*` 旗标，否则用户清掉后刷新一看
+ * 旧值还在。
+ *
+ * planned_at 尤其重要：它才是首页「即将到来的面试 / OA」与日历（kind='assessment'）
+ * 的时间源，due_at 只负责 assessment_due 那条截止线。只能改 due_at 的话，
+ * 「计划开做」填错一位就仍然只能删了重建。
  */
 export function buildAssessmentPatch(a: AssessmentRound, f: AssessmentEditFields): Record<string, unknown> {
   const name = f.name.trim()
   if (name === '') throw new Error('请填写名称')
-  let dueAt: string | null = null
-  if (f.due) {
-    const { iso } = toInstantInUserZone(f.due)
-    if (iso == null) throw new Error('时间格式不正确')
-    dueAt = iso
+  const at = (v: string, label: string): string | null => {
+    if (!v) return null
+    const { iso } = toInstantInUserZone(v)
+    if (iso == null) throw new Error(`${label}格式不正确`)
+    return iso
   }
+  const invitedAt = at(f.invited, '收到邀请时间')
+  const plannedAt = at(f.planned, '计划开做时间')
+  const dueAt = at(f.due, '截止时间')
   return {
     kind: a.kind,
     name,
     progress: a.progress ?? '',
     result: a.result,
-    invited_at: a.invited_at,
-    planned_at: a.planned_at,
+    invited_at: invitedAt,
+    clear_invited_at: invitedAt == null,
+    planned_at: plannedAt,
+    clear_planned_at: plannedAt == null,
     due_at: dueAt,
     clear_due_at: dueAt == null,
     completed_at: a.completed_at,

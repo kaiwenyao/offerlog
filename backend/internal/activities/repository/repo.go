@@ -254,11 +254,24 @@ func (r *Repo) DeleteAssessment(ctx context.Context, q database.Querier, appID, 
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
-	// A deleted round must not dangle as an application's focus: later
-	// transitions derive the substatus from the focused round and would fail.
+	// 删除被关注的轮次要做两件收尾，缺一不可：
+	//
+	//  1. focus 必须清掉：悬挂引用会让下一次同阶段流转派生子状态时踩到不存在的轮次
+	//     (GetAssessment 直接 pgx.ErrNoRows)。
+	//  2. 由这一轮派生的 substatus 也必须清掉：否则岗位会永远显示「已完成 OA ·
+	//     等结果」——详情头部芯片、数据库「状态」列、看板卡片全错，顶部「OA 后等
+	//     结果」快捷筛选还会把它捞出来，而这个岗位一轮测评都没有了。取消路径当年
+	//     按 PR #23 review 修过（见 SyncFromActivity 注释），删除路径漏了；这个 PR
+	//     第一次让删除可达，所以这个洞现在才会被用户看见。
+	//
+	// 守卫 status=$4（该轮次所属阶段）照 SyncFromActivity 的先例：岗位已经推进到
+	// 别的阶段时，substatus 可能是那一阶段派生的，不能因为删掉一个老轮次就清掉。
+	// focus 的清理不受这个守卫限制（悬挂引用在哪个阶段都不能留）。
 	_, err = q.Exec(ctx, `UPDATE applications SET focus_activity_kind=NULL, focus_activity_id=NULL,
+		substatus = CASE WHEN status=$4 THEN '' ELSE substatus END,
 		version=version+1, updated_at=now()
-		WHERE owner_id=$1 AND focus_activity_kind=$2 AND focus_activity_id=$3`, ownerID, "assessment", id)
+		WHERE owner_id=$1 AND focus_activity_kind=$2 AND focus_activity_id=$3`,
+		ownerID, "assessment", id, "assessment")
 	return err
 }
 
@@ -314,10 +327,14 @@ func (r *Repo) DeleteInterview(ctx context.Context, q database.Querier, appID, o
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
-	// Same dangling-focus cleanup as DeleteAssessment.
+	// Same dangling-focus + derived-substatus cleanup as DeleteAssessment:
+	// 删掉面试轮次后岗位不能继续显示由它派生的「已完成 · 等反馈」
+	// （守卫同为 status = 该轮次所属阶段，即 interviewing）。
 	_, err = q.Exec(ctx, `UPDATE applications SET focus_activity_kind=NULL, focus_activity_id=NULL,
+		substatus = CASE WHEN status=$4 THEN '' ELSE substatus END,
 		version=version+1, updated_at=now()
-		WHERE owner_id=$1 AND focus_activity_kind=$2 AND focus_activity_id=$3`, ownerID, "interview", id)
+		WHERE owner_id=$1 AND focus_activity_kind=$2 AND focus_activity_id=$3`,
+		ownerID, "interview", id, "interviewing")
 	return err
 }
 
@@ -435,7 +452,11 @@ func (r *Repo) ClearLegacyNextActionForApp(ctx context.Context, q database.Queri
 // 删除本身幂等：行已不存在（或不属于本人）时静默当成删掉。
 func (r *Repo) DeleteActionAndSettle(ctx context.Context, ownerID, id int64) error {
 	return r.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		var appID int64
+		// application_id 是可空列（00001_init.sql）：跨岗位待办没有岗位归属。
+		// 必须扫进 *int64 —— 扫进 int64 时 pgx 对 NULL 直接报
+		// `cannot scan NULL into *int64`，删除会 500 且行还在，下面那条
+		// 「没有镜像可清」的分支永远走不到（死分支）。
+		var appID *int64
 		err := tx.QueryRow(ctx, `SELECT application_id FROM actions WHERE id=$1 AND owner_id=$2`,
 			id, ownerID).Scan(&appID)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -447,11 +468,11 @@ func (r *Repo) DeleteActionAndSettle(ctx context.Context, ownerID, id int64) err
 		if err := r.DeleteAction(ctx, tx, ownerID, id); err != nil {
 			return err
 		}
-		if appID == 0 {
+		if appID == nil {
 			// 跨岗位待办（application_id IS NULL）没有镜像可清。
 			return nil
 		}
-		return r.ClearLegacyNextActionForApp(ctx, tx, ownerID, appID)
+		return r.ClearLegacyNextActionForApp(ctx, tx, ownerID, *appID)
 	})
 }
 

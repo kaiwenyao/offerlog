@@ -126,31 +126,92 @@ describe('buildInterviewPatch', () => {
 })
 
 describe('buildAssessmentPatch', () => {
-  it('回填后端不合并的字段（改了截止时间不该清掉链接 / 备注 / 类型 / 进度）', () => {
-    const body = buildAssessmentPatch(assessment(), { name: 'OA 二轮', due: '2026-10-02T18:00', link: 'https://oa.test/2' })
+  it('回填后端不合并的字段（改了截止时间不该清掉链接 / 备注 / 类型 / 进度 / 计划开做）', () => {
+    const body = buildAssessmentPatch(assessment(), {
+      name: 'OA 二轮',
+      invited: '2026-09-20T02:00',
+      planned: '2026-09-21T02:00',
+      due: '2026-10-02T18:00',
+      link: 'https://oa.test/2',
+    })
     expect(body.name).toBe('OA 二轮')
     expect(body.kind).toBe('take_home')
     expect(body.progress).toBe('preparing')
     expect(body.result).toBe('unknown')
     expect(body.invited_at).toBe('2026-09-20T02:00:00.000Z')
+    expect(body.clear_invited_at).toBe(false)
     expect(body.planned_at).toBe('2026-09-21T02:00:00.000Z')
+    expect(body.clear_planned_at).toBe(false)
     expect(body.notes).toBe('限时 90 分钟')
     expect(body.due_at).toBe('2026-10-02T18:00:00.000Z')
     expect(body.clear_due_at).toBe(false)
   })
 
+  it('「计划开做」真的发出去 —— 它才是首页「即将到来的 OA」与日历的时间源', () => {
+    const body = buildAssessmentPatch(assessment(), {
+      name: 'OA 2',
+      invited: '2026-09-20T02:00',
+      planned: '2026-10-05T09:30',
+      due: '2026-09-28T09:00',
+      link: '',
+    })
+    expect(body.planned_at).toBe('2026-10-05T09:30:00.000Z')
+    expect(body.clear_planned_at).toBe(false)
+    // 只改计划时间不该动到截止时间那条线。
+    expect(body.due_at).toBe('2026-09-28T09:00:00.000Z')
+    expect(body.clear_due_at).toBe(false)
+  })
+
   it('清空截止时间要带 clear_due_at，否则后端会把旧值合并回来', () => {
-    const body = buildAssessmentPatch(assessment(), { name: 'OA 2', due: '', link: '' })
+    const body = buildAssessmentPatch(assessment(), { name: 'OA 2', invited: '', planned: '', due: '', link: '' })
     expect(body.due_at).toBeNull()
     expect(body.clear_due_at).toBe(true)
   })
 
-  it('名称必填；assessmentEditFields 预填名称与截止时间', () => {
-    expect(() => buildAssessmentPatch(assessment(), { name: ' ', due: '', link: '' })).toThrow('名称')
+  it('清空「计划开做」/「收到邀请」同样要带显式旗标，否则旧值会留在首页和日历上', () => {
+    const body = buildAssessmentPatch(assessment(), {
+      name: 'OA 2',
+      invited: '',
+      planned: '',
+      due: '2026-09-28T09:00',
+      link: '',
+    })
+    expect(body.planned_at).toBeNull()
+    expect(body.clear_planned_at).toBe(true)
+    expect(body.invited_at).toBeNull()
+    expect(body.clear_invited_at).toBe(true)
+    // 清这两个不该顺带清掉截止时间。
+    expect(body.due_at).toBe('2026-09-28T09:00:00.000Z')
+    expect(body.clear_due_at).toBe(false)
+  })
+
+  it('名称必填；格式错误的时间要被拒绝（不能默默发一个空值清掉原时间）', () => {
+    const valid = { name: 'OA 2', invited: '', planned: '', due: '', link: '' }
+    expect(() => buildAssessmentPatch(assessment(), { ...valid, name: ' ' })).toThrow('名称')
+    expect(() => buildAssessmentPatch(assessment(), { ...valid, planned: '不是时间' })).toThrow('计划开做')
+  })
+
+  it('assessmentEditFields 预填四种时间里用户能编辑的三个（不是留空格）', () => {
     const f = assessmentEditFields(assessment())
     expect(f.name).toBe('OA 2')
+    expect(f.invited).toBe('2026-09-20T02:00')
+    expect(f.planned).toBe('2026-09-21T02:00')
     expect(f.due).toBe('2026-09-28T09:00')
-    expect(assessmentEditFields(assessment({ due_at: null })).due).toBe('')
+    const empty = assessmentEditFields(assessment({ invited_at: null, planned_at: null, due_at: null }))
+    expect(empty.invited).toBe('')
+    expect(empty.planned).toBe('')
+    expect(empty.due).toBe('')
+  })
+
+  it('往返一致：不改动任何时间时，回填的请求体保留原时刻（不会被写成 null）', () => {
+    const a = assessment()
+    const body = buildAssessmentPatch(a, assessmentEditFields(a))
+    expect(body.invited_at).toBe(a.invited_at)
+    expect(body.planned_at).toBe(a.planned_at)
+    expect(body.due_at).toBe(a.due_at)
+    expect(body.clear_invited_at).toBe(false)
+    expect(body.clear_planned_at).toBe(false)
+    expect(body.clear_due_at).toBe(false)
   })
 })
 
