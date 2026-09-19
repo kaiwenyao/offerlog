@@ -68,19 +68,21 @@ type NullableTime struct {
 }
 
 type UpdateInput struct {
-	CompanyID       *int64
-	CompanyName     *string
-	Position        *string
-	JobURL          *string
-	Location        *string
-	RemotePolicy    *string
-	Channel         *string
-	Priority        *string
-	Tags            []string
-	Deadline        NullableTime
-	Notes           *string
-	NextAction      *string
-	NextActionDueAt *time.Time
+	CompanyID    *int64
+	CompanyName  *string
+	Position     *string
+	JobURL       *string
+	Location     *string
+	RemotePolicy *string
+	Channel      *string
+	Priority     *string
+	Tags         []string
+	Deadline     NullableTime
+	Notes        *string
+	NextAction   *string
+	// Set 区分「没传」与「清空」：待办编辑里清掉截止日，镜像也要跟着清，
+	// 否则岗位行的「截止」列会永远停在那个已经不存在的日期上（红色逾期）。
+	NextActionDueAt NullableTime
 	CustomValues    map[string]any
 	// 薪资快照（方案 §5：详情可直接补齐薪资）；Set 区分「没传」与「清空」。
 	SalaryMin      NullableInt64
@@ -317,8 +319,8 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, in *UpdateInput
 		if in.NextAction != nil {
 			row.NextAction = *in.NextAction
 		}
-		if in.NextActionDueAt != nil {
-			row.NextActionDueAt = in.NextActionDueAt
+		if in.NextActionDueAt.Set {
+			row.NextActionDueAt = in.NextActionDueAt.Value
 		}
 		if in.CustomValues != nil {
 			b, err := json.Marshal(in.CustomValues)
@@ -727,6 +729,11 @@ func (s *Service) List(ctx context.Context, ownerID int64, o repository.ListOpti
 
 // Bulk applies shared batch operations (tags/priority/archive) to the given
 // rows, skipping records that do not belong to the owner.
+//
+// 回收站里（软删）的行也会被跳过：勾选列在回收站里已经隐藏，但请求可能来自旧
+// 页面 / 脚本，而已删除记录被打上标签只会“静默成功”——列表上看不到任何变化。
+// 这里不能改成给 GetForUpdate 加 deleted_at 过滤：同一个方法也是 Restore 的
+// 入口，那样一改就再也恢复不了删除的记录。
 func (s *Service) Bulk(ctx context.Context, ownerID int64, ids []int64, addTags []string, priority *string, archive *bool) (int64, error) {
 	updated := int64(0)
 	err := s.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -737,6 +744,9 @@ func (s *Service) Bulk(ctx context.Context, ownerID int64, ids []int64, addTags 
 			}
 			if err != nil {
 				return err
+			}
+			if row.DeletedAt != nil {
+				continue // 已在回收站：不在可见列表里，不应被批量操作命中
 			}
 			if len(addTags) > 0 {
 				have := map[string]bool{}

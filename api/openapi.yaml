@@ -457,6 +457,9 @@ paths:
   # applications.next_action_due_at) travel as YYYY-MM-DD strings — never
   # timestamps — and are stored as the user's calendar day. Instant columns
   # (due_ts, submitted_at, …) remain RFC3339.
+  # On PATCH /applications/{id} these day fields distinguish three inputs:
+  # omitted = leave as is, "" = clear, YYYY-MM-DD = set. A JSON null reads as
+  # "omitted", so clearing a day always requires the empty string.
   /actions/{action_id}/postpone:
     post:
       summary: 延期行动项（due_date 为 YYYY-MM-DD 或 due_ts；空白 due_date = 清除截止）

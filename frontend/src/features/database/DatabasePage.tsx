@@ -34,6 +34,7 @@ import {
   DB_SORT_FIELDS,
   DB_SORT_STORAGE_KEY,
   loadDbSort,
+  pruneSelection,
   sortDirLabel,
   isShortcutView,
   trashQueryPath,
@@ -253,6 +254,15 @@ export function DatabasePage() {
   const rows = appsQ.data?.items ?? []
   const total = appsQ.data?.total ?? 0
 
+  // 选择集的「作用域」：翻页 / 切视图 / 改搜索 / 改筛选 / 进回收站 / 改排序，任何
+  // 一个变了，旧的行就不在屏幕上了。两道防线：作用域一变就清空，且发批量请求 /
+  // 显示计数时只用与当前结果集的交集（防止数据在后台被改动后的残留）。
+  const selectionScope = `${page}|${viewId}|${search}|${trashMode}|${JSON.stringify(extraFilters)}|${sort.field}|${sort.dir}`
+  useEffect(() => {
+    setSelRows(new Set())
+  }, [selectionScope])
+  const selectedIds = useMemo(() => pruneSelection(selRows, rows), [selRows, rows])
+
   const boardGroups = useMemo(
     () =>
       boardBuckets(viewId).map((bucket) => ({
@@ -264,7 +274,7 @@ export function DatabasePage() {
 
   const bulkMut = useMutation({
     mutationFn: () => {
-      const body: Record<string, unknown> = { ids: [...selRows] }
+      const body: Record<string, unknown> = { ids: [...selectedIds] }
       if (bulkTag.trim()) body.add_tags = [bulkTag.trim()]
       if (bulkPriority) body.priority = bulkPriority
       return api.post('/api/v1/applications/bulk', body)
@@ -287,6 +297,11 @@ export function DatabasePage() {
     if (next.has(id)) next.delete(id)
     else next.add(id)
     setSelRows(next)
+  }
+
+  /** 全选 / 全不选只作用于当前页可见的行。 */
+  const toggleAll = (checked: boolean) => {
+    setSelRows(checked ? new Set(rows.map((r) => r.id)) : new Set())
   }
 
   const toggleQuickFilter = (cond: FilterNode) => {
@@ -411,10 +426,10 @@ export function DatabasePage() {
         </div>
       )}
 
-      {selRows.size > 0 && (
+      {selectedIds.size > 0 && (
         <Card padding="10px 14px" variant="strong">
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
-            <b style={{ fontSize: 13 }}>已选 {selRows.size} 条</b>
+            <b style={{ fontSize: 13 }}>已选 {selectedIds.size} 条</b>
             <Input
               placeholder="加标签"
               value={bulkTag}
@@ -493,10 +508,10 @@ export function DatabasePage() {
       ) : (
         <TableView
           rows={rows}
-          selected={selRows}
+          selected={selectedIds}
           trashMode={trashMode}
           onToggle={toggleRow}
-          onToggleAll={(checked) => setSelRows(checked ? new Set(rows.map((r) => r.id)) : new Set())}
+          onToggleAll={toggleAll}
           onOpen={setSelApp}
           onRestore={(id) => restoreMut.mutate(id)}
         />
@@ -749,14 +764,18 @@ function TableView({
                 a.salary_max != null ? `${a.salary_min ?? '—'}–${a.salary_max} ${a.salary_currency}` : '—'
               return (
                 <tr key={a.id} className="tbl-row" onClick={() => onOpen(a.id)}>
-                  <td onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      aria-label={`选择 ${a.company_name} ${a.position}`}
-                      checked={selected.has(a.id)}
-                      onChange={() => onToggle(a.id)}
-                    />
-                  </td>
+                  {/* 回收站里不给勾选：批量操作会真的命中已删除记录（后端按 id 取行），
+                      而列表上看不到任何变化。勾选列在 visibleColumnKeys 里已被移除。 */}
+                  {!trashMode && (
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={`选择 ${a.company_name} ${a.position}`}
+                        checked={selected.has(a.id)}
+                        onChange={() => onToggle(a.id)}
+                      />
+                    </td>
+                  )}
                   <td>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
                       <CompanyMark name={a.company_name} seed={a.id} />

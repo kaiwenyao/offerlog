@@ -155,6 +155,19 @@ func (r *Repo) ClearInterviewReminders(ctx context.Context, ownerID, interviewID
 	return err
 }
 
+// ClearAssessmentReminders 是 ClearInterviewReminders 的 OA 版（kind=
+// 'assessment_due'，key 前缀 "assessment_due:<id>:<day>"）。
+//
+// 删除或改期一轮 OA / 测评时必须调用：幂等键里带的是当时的截止**日期**，所以轮次
+// 一旦消失或改到别的日子，旧键就被永久占着 —— 通知中心会一直挂着「OA 明天截止」，
+// 点进去指向一个已经不存在的轮次；改期还会把新一轮的提醒静音。
+func (r *Repo) ClearAssessmentReminders(ctx context.Context, ownerID, assessmentID int64) error {
+	_, err := r.db.Pool().Exec(ctx, `DELETE FROM notifications
+		WHERE owner_id=$1 AND kind='assessment_due' AND idempotency_key LIKE $2`,
+		ownerID, fmt.Sprintf("assessment_due:%d:%%", assessmentID))
+	return err
+}
+
 // ClearOccurrence removes every notification of an occurrence (matched by
 // kind + idempotency key), dismissed or not. Used when the occurrence is
 // actively changed — e.g. an action is postponed to a new due date — so the

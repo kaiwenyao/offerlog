@@ -429,7 +429,8 @@ func (h *Handler) patch(c *gin.Context) {
 		return
 	}
 	if req.NextActionDueAt != nil {
-		in.NextActionDueAt = naDue
+		// 与 deadline 同一约定：传了空串 = 清空（naDue 为 nil），没传 = 不动。
+		in.NextActionDueAt = appservice.NullableTime{Value: naDue, Set: true}
 	}
 	if req.Notes != nil {
 		in.Notes = req.Notes

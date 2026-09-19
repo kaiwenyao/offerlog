@@ -15,7 +15,7 @@ import { milestoneDefaultLabel, milestoneDotColor, milestoneIcon } from '../../l
 import { Badge, Button } from '../../ds'
 import { Icon } from '../../components/Icon'
 import { FlowGuide } from '../../components/FlowGuide'
-import { Dot, ErrorText, Num } from '../../components/ui'
+import { ConfirmDialog, Dot, ErrorText, Num } from '../../components/ui'
 import { MilestoneForm } from './forms'
 
 /**
@@ -87,6 +87,10 @@ export function TimelineTab({
 }) {
   const qc = useQueryClient()
   const [err, setErr] = useState('')
+  // 移除事件会连带重算岗位状态（阶段由时间线推导），所以先过确认弹窗。
+  const [pendingRemove, setPendingRemove] = useState<Milestone | null>(null)
+  // 失败文案要显示在弹窗里（setErr 渲染在时间线顶部，会被 backdrop 盖住）。
+  const [removeErr, setRemoveErr] = useState('')
   // 系统信息（录入时间等数据库时间）默认隐藏，点击逐条展开。
   const [sysInfo, setSysInfo] = useState<Set<number>>(new Set())
   const toggleSys = (id: number) =>
@@ -125,9 +129,11 @@ export function TimelineTab({
     mutationFn: (id: number) => api.del(`/api/v1/applications/${appId}/milestones/${id}`),
     onSuccess: () => {
       setErr('')
+      setRemoveErr('')
+      setPendingRemove(null)
       afterMilestoneChanged()
     },
-    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '删除失败'),
+    onError: (e: unknown) => setRemoveErr(e instanceof ApiError ? e.message : '删除失败'),
   })
   const afterMilestoneSaved = () => {
     afterMilestoneChanged()
@@ -223,8 +229,10 @@ export function TimelineTab({
                     <Button
                       variant="ghost"
                       size="sm"
-                      disabled={milestoneMut.isPending}
-                      onClick={() => milestoneMut.mutate(m.id)}
+                      onClick={() => {
+                        setRemoveErr('')
+                        setPendingRemove(m)
+                      }}
                     >
                       <Icon name="trash" size={13} /> 移除
                     </Button>
@@ -330,6 +338,22 @@ export function TimelineTab({
           onClose={() => setShowMilestone(null)}
           onDone={afterMilestoneSaved}
         />
+      )}
+      {pendingRemove && (
+        <ConfirmDialog
+          title="移除这个事件？"
+          confirmLabel="移除"
+          pending={milestoneMut.isPending}
+          error={removeErr}
+          onClose={() => setPendingRemove(null)}
+          onConfirm={() => milestoneMut.mutate(pendingRemove.id)}
+        >
+          将从时间线上移除「{pendingRemove.label || milestoneDefaultLabel(pendingRemove.kind)}」
+          {pendingRemove.occurred_at ? `（${fmtDateTime(pendingRemove.occurred_at)}）` : '（时间未定）'}，无法恢复。
+          {pendingRemove.status_effect
+            ? `岗位状态会按剩下的最后一个事件重新推导（可能从「${statusMeta(pendingRemove.status_effect).label}」回退）。`
+            : '这条事件不改变岗位状态。'}
+        </ConfirmDialog>
       )}
     </div>
   )

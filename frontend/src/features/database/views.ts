@@ -154,6 +154,23 @@ export function trashQueryPath(page: number, pageSize: number): string {
 }
 
 /**
+ * 选择集与当前查询结果的交集。
+ *
+ * 批量选择的 id 是按「当时屏幕上看到的那批行」勾的；翻页 / 切视图 / 加筛选 / 进
+ * 回收站之后，那批行已经不在屏幕上了，顶部还写着「已选 10 条」就会让「应用」
+ * 改到用户看不见的行（回收站里更是会真的改到已删除记录）。所以任何发批量请求、
+ * 显示计数的地方都用这个函数把选择集收敛到当前结果集上。
+ *
+ * 纯函数：便于单测锁定「翻页后旧选择不会生效」。
+ */
+export function pruneSelection(selected: Iterable<number>, rows: Array<{ id: number }>): Set<number> {
+  const visible = new Set(rows.map((r) => r.id))
+  const out = new Set<number>()
+  for (const id of selected) if (visible.has(id)) out.add(id)
+  return out
+}
+
+/**
  * Fields the database-page search box matches. Mirrors the ⌘K search
  * endpoint (position / company_name / notes) so the topbar placeholder
  * 「搜岗位、公司、备注…」 is honest about both surfaces.

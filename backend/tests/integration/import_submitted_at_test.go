@@ -117,7 +117,11 @@ func TestCreateBeyondAppliedKeepsItsSubmittedAt(t *testing.T) {
 	db, svc, repo, owner := setup(t)
 	ctx := context.Background()
 	submitted := time.Now().AddDate(0, 0, -3)
-	want := submitted.Format("2006-01-02")
+	// 期望值必须和 dayOf 同口径（都是 UTC）：dayOf 按 UTC 取日，而按本地时区
+	// 格式化会在 UTC+1 这类时区的凌晨 0–1 点之间错开一天（本地 09-15 那一瞬间
+	// 在 UTC 还是 09-14），于是同一条测试「白天绿、过午夜红」。这条测的是
+	//「回放没有覆盖投递时间」，与时区无关，两边取同一个口径即可。
+	want := submitted.UTC().Format("2006-01-02")
 	app, err := svc.Create(ctx, owner, &appservice.CreateInput{
 		CompanyName: "SkipAheadCo", Position: "Role",
 		Status: domain.StatusInterviewing, SubmittedAt: &submitted,

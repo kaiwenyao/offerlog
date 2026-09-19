@@ -169,3 +169,49 @@ func TestPatchApplicationVersionConflict(t *testing.T) {
 		t.Fatalf("conflict must not overwrite: location=%q", location)
 	}
 }
+
+// 回归：next_action_due_at 必须能被清空。
+//
+// 原始 bug：镜像同步用 JSON null 表示「清掉截止日」，但 handler 是
+// `if req.NextActionDueAt != nil` —— null 解码成空指针 = 「这个字段没传」，
+// 于是待办的截止日清掉了，岗位行却永远留着那个日期，表格「截止」列一直显示
+// 红色的「逾期 X月X日」。现在与 deadline 同一约定：空串 = 清空，不传 = 不动。
+func TestPatchApplicationClearsNextActionDueAt(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "MirrorCo", "Role")
+	srv := newAppDetailServer(t, db, owner, svc)
+	defer srv.Close()
+
+	if status, out := patchApp(t, srv, app.ID, `{"version":1,"next_action":"准备二面","next_action_due_at":"2026-09-20"}`); status != http.StatusOK {
+		t.Fatalf("seed mirror -> %d body=%v", status, out)
+	}
+	readDue := func() *string {
+		t.Helper()
+		var due *string
+		if err := db.Pool().QueryRow(ctx,
+			`SELECT to_char(next_action_due_at,'YYYY-MM-DD') FROM applications WHERE id=$1`, app.ID).Scan(&due); err != nil {
+			t.Fatal(err)
+		}
+		return due
+	}
+	if due := readDue(); due == nil || *due != "2026-09-20" {
+		t.Fatalf("seeded next_action_due_at = %v, want 2026-09-20", due)
+	}
+
+	// 没传这个字段 → 保持不动（只改标题不该顺手清掉截止日）。
+	if status, out := patchApp(t, srv, app.ID, `{"version":2,"next_action":"准备三面"}`); status != http.StatusOK {
+		t.Fatalf("patch title only -> %d body=%v", status, out)
+	}
+	if due := readDue(); due == nil || *due != "2026-09-20" {
+		t.Fatalf("omitted field must not clear: %v", due)
+	}
+
+	// 空串 → 真的清空。
+	if status, out := patchApp(t, srv, app.ID, `{"version":3,"next_action":"准备三面","next_action_due_at":""}`); status != http.StatusOK {
+		t.Fatalf("clear mirror -> %d body=%v", status, out)
+	}
+	if due := readDue(); due != nil {
+		t.Fatalf("next_action_due_at after clear = %v, want NULL", *due)
+	}
+}
