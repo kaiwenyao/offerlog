@@ -130,7 +130,9 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
         await api.patch(`/api/v1/applications/${app.id}`, {
           version: fresh.version,
           next_action: title || null,
-          next_action_due_at: due || null,
+          // 空串才是「清空」：JSON null 在后端等于「这个字段没传」，会把上一条
+          // 待办留下的旧截止日原样留在岗位行上。
+          next_action_due_at: due,
         })
       } catch {
         /* the standalone action still exists — surface stays consistent via it */
@@ -794,7 +796,9 @@ export function ActionEditForm({
             await api.patch(`/api/v1/applications/${appId}`, {
               version: fresh.version,
               next_action: String(body.title ?? ''),
-              next_action_due_at: (body.due_date as string | null) ?? null,
+              // 同上：清掉截止日必须发 ''，发 null 的话岗位行会永远显示那个
+              // 已经不存在的日期（且 isDayBeforeToday 之后还是红色「逾期」）。
+              next_action_due_at: (body.due_date as string | null) ?? '',
             })
           }
         } catch {

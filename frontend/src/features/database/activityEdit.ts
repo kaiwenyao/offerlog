@@ -19,7 +19,8 @@
  *     配置时区换算成 UTC 瞬间，并把时区标签一并写回（与新建时同一规则）；
  *   - 待办截止日是日历日 YYYY-MM-DD，原样发送，绝不做时区换算（DATE 列）。
  */
-import { toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
+import { toDayString } from '../../lib/api'
+import { effectiveZone, toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
 import type { ActionItem, AssessmentRound, Interview } from '../../lib/types'
 
 /* ---------------------------------- 面试 ---------------------------------- */
@@ -146,8 +147,20 @@ export interface ActionEditFields {
   due_date: string
 }
 
+/**
+ * 表单里那一格「截止日期」当前代表的日历日。
+ *
+ * due_date 为空不等于没有截止：延期（postponeAction 会把 due_date 置 null、只留
+ * due_ts）和迁移 00002 回填的老待办都只有 due_ts。抽屉里照样显示「截止 X」，
+ * 所以编辑框也必须显示同一个日子——否则表单在「留空表示没有截止日期」的提示下
+ * 显示空白，用户以为没有截止，保存后那个看不见的 due_ts 还在（清不掉）。
+ */
+function actionDueDay(a: ActionItem): string {
+  return (a.due_date ?? toDayString(a.due_ts, effectiveZone()) ?? '').trim()
+}
+
 export function actionEditFields(a: ActionItem): ActionEditFields {
-  return { title: a.title ?? '', due_date: a.due_date ?? '' }
+  return { title: a.title ?? '', due_date: actionDueDay(a) }
 }
 
 /**
@@ -171,7 +184,9 @@ export function buildActionPatch(a: ActionItem, f: ActionEditFields): Record<str
   if (title === '') throw new Error('请填写待办内容')
   const due = f.due_date.trim()
   if (due !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw new Error('截止日期格式需为 YYYY-MM-DD')
-  const dueChanged = due !== (a.due_date ?? '').trim()
+  // 基准必须与 actionEditFields 预填的同一个日子比，否则「只有 due_ts」的待办
+  // 一进表单就被判定为改过日期，改个标题也会把精确时间降级成日历日。
+  const dueChanged = due !== actionDueDay(a)
   return {
     title,
     due_date: due === '' ? null : due,

@@ -257,9 +257,29 @@ describe('buildActionPatch', () => {
     it('日期没变 → due_ts 保留（改标题不该降级成只有日历日）', () => {
       const a = action({ due_ts: '2026-10-01T02:00:00.000Z', due_date: '2026-10-01' })
       expect(buildActionPatch(a, { title: '改标题', due_date: '2026-10-01' }).due_ts).toBe('2026-10-01T02:00:00.000Z')
-      // 只有 due_ts、没有日历日的待办（同日再次保存）也不该被顺手清掉。
+      // 只有 due_ts、没有日历日的待办：表单预填的就是 due_ts 那一天，原样保存
+      // 也算「没动」，不该被降级成只有日历日。
       const tsOnly = action({ due_ts: '2026-10-01T02:00:00.000Z', due_date: null })
-      expect(buildActionPatch(tsOnly, { title: '改标题', due_date: '' }).due_ts).toBe('2026-10-01T02:00:00.000Z')
+      const f = actionEditFields(tsOnly)
+      expect(f.due_date).toBe('2026-10-01')
+      expect(buildActionPatch(tsOnly, { ...f, title: '改标题' }).due_ts).toBe('2026-10-01T02:00:00.000Z')
+    })
+
+    // 延期（postponeAction 把 due_date 置 null、只留 due_ts）和迁移 00002 回填的
+    // 老待办都是「只有 due_ts」。表单曾经把它们显示成空白，于是「留空 = 没有截止」
+    // 的提示下，用户根本清不掉那个看不见的截止时间。
+    it('只有 due_ts 的待办：清空截止日要真的清掉（两个字段一起）', () => {
+      const tsOnly = action({ due_ts: '2026-10-01T02:00:00.000Z', due_date: null })
+      const body = buildActionPatch(tsOnly, { title: '准备二面', due_date: '' })
+      expect(body.due_date).toBeNull()
+      expect(body.due_ts).toBeNull()
+    })
+
+    it('只有 due_ts 的待办：改成别的日子 → 日历日成为唯一真相', () => {
+      const tsOnly = action({ due_ts: '2026-10-01T02:00:00.000Z', due_date: null })
+      const body = buildActionPatch(tsOnly, { title: '准备二面', due_date: '2026-10-09' })
+      expect(body.due_date).toBe('2026-10-09')
+      expect(body.due_ts).toBeNull()
     })
   })
 
@@ -272,6 +292,14 @@ describe('buildActionPatch', () => {
   it('actionEditFields 预填标题与日历日截止', () => {
     expect(actionEditFields(action())).toEqual({ title: '准备二面', due_date: '2026-10-01' })
     expect(actionEditFields(action({ due_date: null })).due_date).toBe('')
+  })
+
+  it('actionEditFields 在只有 due_ts 时回落到它那一天（抽屉显示什么，编辑框就是什么）', () => {
+    const f = actionEditFields(action({ due_date: null, due_ts: '2026-10-01T02:00:00.000Z' }))
+    expect(f.due_date).toBe('2026-10-01')
+    // 日历日按用户时区算：UTC 的 2026-10-01T18:00 在上海已经是 10-02。
+    setUserZone('Asia/Shanghai')
+    expect(actionEditFields(action({ due_date: null, due_ts: '2026-10-01T18:00:00.000Z' })).due_date).toBe('2026-10-02')
   })
 })
 

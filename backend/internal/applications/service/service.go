@@ -68,19 +68,21 @@ type NullableTime struct {
 }
 
 type UpdateInput struct {
-	CompanyID       *int64
-	CompanyName     *string
-	Position        *string
-	JobURL          *string
-	Location        *string
-	RemotePolicy    *string
-	Channel         *string
-	Priority        *string
-	Tags            []string
-	Deadline        NullableTime
-	Notes           *string
-	NextAction      *string
-	NextActionDueAt *time.Time
+	CompanyID    *int64
+	CompanyName  *string
+	Position     *string
+	JobURL       *string
+	Location     *string
+	RemotePolicy *string
+	Channel      *string
+	Priority     *string
+	Tags         []string
+	Deadline     NullableTime
+	Notes        *string
+	NextAction   *string
+	// Set 区分「没传」与「清空」：待办编辑里清掉截止日，镜像也要跟着清，
+	// 否则岗位行的「截止」列会永远停在那个已经不存在的日期上（红色逾期）。
+	NextActionDueAt NullableTime
 	CustomValues    map[string]any
 	// 薪资快照（方案 §5：详情可直接补齐薪资）；Set 区分「没传」与「清空」。
 	SalaryMin      NullableInt64
@@ -317,8 +319,8 @@ func (s *Service) Update(ctx context.Context, ownerID, id int64, in *UpdateInput
 		if in.NextAction != nil {
 			row.NextAction = *in.NextAction
 		}
-		if in.NextActionDueAt != nil {
-			row.NextActionDueAt = in.NextActionDueAt
+		if in.NextActionDueAt.Set {
+			row.NextActionDueAt = in.NextActionDueAt.Value
 		}
 		if in.CustomValues != nil {
 			b, err := json.Marshal(in.CustomValues)
