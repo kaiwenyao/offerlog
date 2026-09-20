@@ -18,6 +18,11 @@ func at(y int, m time.Month, d, hh, mm int, loc *time.Location) *time.Time {
 	return &t
 }
 
+// replayNow pins "现在" for the replay tests: the fixtures below are dated
+// 2026-09, so a fixed clock keeps them deterministic no matter when the suite
+// runs, and lets the future-point cases state their intent explicitly.
+var replayNow = time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+
 func TestBuildStageHistoryRecordsFirstArrivalPerStatus(t *testing.T) {
 	// Arrange: saved (09-01) → applied (09-05) → interviewing (09-09) → rejected (09-11).
 	loc := time.UTC
@@ -132,7 +137,7 @@ func TestReplayStagePointsTakesTheLastPoint(t *testing.T) {
 		testPoint(1, "interviewing", at(2026, 9, 9, 9, 0, loc), "milestone"),
 	}
 
-	d := replayStagePoints(points)
+	d := replayStagePoints(points, replayNow)
 
 	if d.status != "interviewing" {
 		t.Errorf("status = %q, want interviewing", d.status)
@@ -143,7 +148,7 @@ func TestReplayStagePointsTakesTheLastPoint(t *testing.T) {
 }
 
 func TestReplayStagePointsWithNoPointsStaysSaved(t *testing.T) {
-	d := replayStagePoints(nil)
+	d := replayStagePoints(nil, replayNow)
 	if d.status != "saved" {
 		t.Errorf("status = %q, want saved", d.status)
 	}
@@ -161,7 +166,7 @@ func TestReplayStagePointsKeepsTheFirstSubmissionTime(t *testing.T) {
 		testPoint(1, "applied", at(2026, 9, 7, 9, 0, loc), "milestone"),
 	}
 
-	d := replayStagePoints(points)
+	d := replayStagePoints(points, replayNow)
 
 	if d.submitted == nil || !d.submitted.Equal(*at(2026, 9, 5, 9, 0, loc)) {
 		t.Errorf("submitted = %v, want the first 2026-09-05T09:00Z", d.submitted)
@@ -176,7 +181,7 @@ func TestReplayStagePointsTimelessPointSetsStageButNoDate(t *testing.T) {
 		testPoint(1, "applied", nil, "milestone"),
 	}
 
-	d := replayStagePoints(points)
+	d := replayStagePoints(points, replayNow)
 
 	if d.status != "applied" {
 		t.Errorf("status = %q, want applied", d.status)
@@ -253,5 +258,84 @@ func TestStripIdempotencyMarkerOnlyRemovesTheGeneratedSuffix(t *testing.T) {
 				t.Errorf("StripIdempotencyMarker(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// 未来时间的落点是「计划」，不是「已经发生」：它不能抢在之后记录的真实事件前面
+// 决定状态。原始 bug：记了「12/25 一面」，今天再记「被拒」，岗位一直停在面试中，
+// 连终态备注都进不了「原因」卡片。
+func TestReplayStagePointsIgnoresFuturePoints(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "saved", at(2026, 9, 1, 9, 0, loc), "event"),
+		testPoint(1, "rejected", at(2026, 9, 28, 9, 0, loc), "milestone"),
+		// 时间线把它排在最后（12/25 > 9/28），但它还没发生。
+		{ApplicationID: 1, Status: "interviewing", OccurredAt: at(2026, 12, 25, 9, 0, loc), Source: "milestone"},
+	}
+
+	d := replayStagePoints(points, replayNow)
+
+	if d.status != "rejected" {
+		t.Errorf("status = %q, want rejected（未来的一面不算数）", d.status)
+	}
+	if d.rejected == nil || !d.rejected.Equal(*at(2026, 9, 28, 9, 0, loc)) {
+		t.Errorf("rejected = %v, want 2026-09-28T09:00Z", d.rejected)
+	}
+}
+
+// 终态的备注要能进「原因」卡片——被未来落点挡住时它也一起丢了。
+func TestReplayStagePointsKeepsTerminalReasonBehindAFuturePoint(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "saved", at(2026, 9, 1, 9, 0, loc), "event"),
+		{ApplicationID: 1, Status: "rejected", OccurredAt: at(2026, 9, 28, 9, 0, loc), Note: "HC 关闭", Source: "milestone"},
+		{ApplicationID: 1, Status: "interviewing", OccurredAt: at(2026, 12, 25, 9, 0, loc), Source: "milestone"},
+	}
+
+	d := replayStagePoints(points, replayNow)
+
+	if d.reason != "HC 关闭" {
+		t.Errorf("reason = %q, want HC 关闭", d.reason)
+	}
+}
+
+// 只记了一个未来的面试：状态退回上一格「已投递」，而不是提前跳进面试中。
+// 到了那一天由 worker 的 RecomputeDueSince 补算（见 cmd/worker）。
+func TestReplayStagePointsFuturePointDoesNotAdvanceEarly(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "applied", at(2026, 9, 5, 9, 0, loc), "milestone"),
+		{ApplicationID: 1, Status: "interviewing", OccurredAt: at(2026, 10, 20, 9, 0, loc), Source: "milestone"},
+	}
+
+	if got := replayStagePoints(points, replayNow).status; got != "applied" {
+		t.Errorf("status = %q, want applied", got)
+	}
+	// 时间到了之后同一批落点推出面试中，无需用户再动一次时间线。
+	later := time.Date(2026, 10, 21, 0, 0, 0, 0, loc)
+	if got := replayStagePoints(points, later).status; got != "interviewing" {
+		t.Errorf("status after the date = %q, want interviewing", got)
+	}
+}
+
+// 工序条与「进入」日期跟状态用同一把尺：未来的落点不画成「曾经历」。
+func TestHappenedByDropsFuturePoints(t *testing.T) {
+	loc := time.UTC
+	points := []*StagePoint{
+		testPoint(1, "applied", at(2026, 9, 5, 9, 0, loc), "milestone"),
+		testPoint(1, "interviewing", at(2026, 12, 25, 9, 0, loc), "milestone"),
+		testPoint(1, "offer", nil, "milestone"), // 时间未定仍然算数
+	}
+
+	got := happenedBy(points, replayNow)
+
+	if len(got) != 2 {
+		t.Fatalf("kept %d points, want 2", len(got))
+	}
+	if got[1].Status != "offer" {
+		t.Errorf("kept[1] = %q, want the timeless offer node", got[1].Status)
+	}
+	if h := buildStageHistoryFromPoints(got, loc, nil)[1]; h["interviewing"] != "" {
+		t.Errorf("stage history must not record a future arrival; got %q", h["interviewing"])
 	}
 }

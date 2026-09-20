@@ -82,6 +82,9 @@ func (r *Repo) TimelineSummaryFor(ctx context.Context, ownerID int64, appIDs []i
 	if err != nil {
 		return nil, err
 	}
+	// 未来的落点还没发生：它不决定状态（RecomputeStatus 同款规则），也就不该在
+	// 工序条上被画成「曾经历」、或者给出一个未来的「进入」日期。
+	points = happenedBy(points, time.Now())
 	out.StageHistory = buildStageHistoryFromPoints(points, loc, submittedAt)
 	out.ProgressSince = buildProgressSinceFromPoints(points, loc)
 	return out, nil
@@ -99,5 +102,5 @@ func (r *Repo) StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int6
 	if err != nil {
 		return nil, err
 	}
-	return buildStageHistoryFromPoints(points, loc, submittedAt), nil
+	return buildStageHistoryFromPoints(happenedBy(points, time.Now()), loc, submittedAt), nil
 }

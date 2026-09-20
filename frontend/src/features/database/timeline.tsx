@@ -1,7 +1,9 @@
 // 时间线面板：记录求职进度的主界面（迁移 00005 / 00006）。
 //
 // 用户往这里添加事件（投递 / 初筛 / OA / 面试 / Offer / 任意自定义）并选择发生
-// 时间；面板按业务时间自动排序，岗位状态由后端推导成「时间线上最后一个事件」。
+// 时间；面板按业务时间自动排序，岗位状态由后端推导成「时间线上最后一个**已经
+// 发生**的事件」——填在未来的时间是计划，它照常画在这里并标上「待发生」，但不会
+// 抢在之后记录的真实事件前面决定状态（到了那天由后端的每日扫描补算）。
 // 顶上的参考流程图（FlowGuide）只是建议路线，点节点即可快速记录。
 //
 // 这里同时只读地显示旧的状态事件（AppEvent）——「更新进度」时代留下的追加式
@@ -33,6 +35,18 @@ function changeTypeLabel(t: string): string {
     default:
       return '推进'
   }
+}
+
+/**
+ * 这条事件还没发生吗（填在未来的时间）。
+ *
+ * 与后端 applications/repository.hasHappened 同一条线：未来的落点不参与「现在走
+ * 到哪了」的推导，所以面板上必须看得出来它为什么没有推进状态。
+ */
+export function isUpcoming(occurredAt: string | null | undefined, now: Date = new Date()): boolean {
+  if (!occurredAt) return false
+  const t = Date.parse(occurredAt)
+  return !Number.isNaN(t) && t > now.getTime()
 }
 
 /** 时间线统一条目：状态事件（审计）与用户节点（自由记录）合并排序。 */
@@ -167,7 +181,7 @@ export function TimelineTab({
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)', flexGrow: 1 }}>
-          当前状态：{comboLabel(status, substatus)}，取自时间线上最后一个事件。
+          当前状态：{comboLabel(status, substatus)}，取自时间线上最后一个已经发生的事件。
           按你填写的发生时间排列；系统录入时间默认隐藏，展开「系统信息」可见。
         </p>
         <Button variant="primary" size="sm" onClick={() => openAdd('')}>
@@ -198,6 +212,13 @@ export function TimelineTab({
                       <Badge tone="neutral">→ {statusMeta(m.status_effect).label}</Badge>
                     ) : (
                       <Badge tone="neutral">不改变状态</Badge>
+                    )}
+                    {/* 未来的事件不决定当前状态（后端同款规则）。不标出来的话，
+                        「记了下周的面试，状态却没变」看起来就像存坏了。 */}
+                    {isUpcoming(m.occurred_at) && (
+                      <Badge tone="warning" title="时间还没到：先记在时间线上，到那天才会推进状态">
+                        待发生
+                      </Badge>
                     )}
                     <span
                       style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 6 }}
