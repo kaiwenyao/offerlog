@@ -48,7 +48,9 @@ type SnapshotRequest struct {
 }
 
 func (r *Repo) whereClause(req *SnapshotRequest, extra ...string) (string, []any) {
-	clauses := []string{"owner_id = $1", "deleted_at IS NULL"}
+	// Same live set as the home dashboard and the database page: archived
+	// rows are a visibility flag, not part of funnel / rate denominators.
+	clauses := []string{"owner_id = $1", "deleted_at IS NULL", "archived_at IS NULL"}
 	args := []any{req.OwnerID}
 	add := func(cond string, val any) {
 		args = append(args, val)
@@ -87,7 +89,7 @@ func (r *Repo) whereClause(req *SnapshotRequest, extra ...string) (string, []any
 }
 
 type Metrics struct {
-	TotalAll       int64            `json:"total_all"`       // not deleted (any status)
+	TotalAll       int64            `json:"total_all"`       // live set: not deleted, not archived
 	ToApply        int64            `json:"to_apply"`        // saved/preparing with NO submission fact
 	SubmittedCount int64            `json:"submitted_count"` // past 未投递 (NOT toApplyFact) — incl 免正式投递 rows
 	InProgress     int64            `json:"in_progress"`     // applied/screening/assessment/interviewing

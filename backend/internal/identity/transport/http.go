@@ -117,9 +117,13 @@ func (h *Handler) register(c *gin.Context) {
 	if tz == "" {
 		tz = h.defaultTZ
 	}
+	// Signup has no timezone picker: a bad browser value must not block register.
+	// Settings PUT still 400s so the user can correct it there.
 	if _, err := idservice.NormalizeTimezone(tz); err != nil {
-		httpx.WriteErr(c, httpx.BadRequest("invalid_timezone", err.Error()))
-		return
+		tz = h.defaultTZ
+		if tz == "" {
+			tz = idservice.DefaultTimezone
+		}
 	}
 	u, err := h.auth.Register(c.Request.Context(), req.Email, req.Password, req.DisplayName, tz)
 	if err != nil {

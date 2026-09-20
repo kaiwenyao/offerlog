@@ -29,6 +29,7 @@ import {
   BUILTIN,
   SHORTCUT_VIEWS,
   WEEK_INTERVIEWS_VIEW,
+  archivedSearchHref,
   boardBuckets,
   buildFilters,
   DB_SORT_FIELDS,
@@ -37,6 +38,7 @@ import {
   pruneSelection,
   sortDirLabel,
   isShortcutView,
+  shouldOfferArchivedSearch,
   trashQueryPath,
   type BoardBucket,
   type FilterContext,
@@ -490,16 +492,23 @@ export function DatabasePage() {
         <EmptyHint>
           <p style={{ margin: 0 }}>{emptyMessage}</p>
           {search || extraFilters.length ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                setExtraFilters([])
-                nav('/database')
-              }}
-            >
-              清除筛选
-            </Button>
+            <>
+              {shouldOfferArchivedSearch(viewId, search, trashMode) && (
+                <Button variant="secondary" size="sm" onClick={() => nav(archivedSearchHref(search))}>
+                  在已归档里搜「{search.trim()}」
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setExtraFilters([])
+                  nav('/database')
+                }}
+              >
+                清除筛选
+              </Button>
+            </>
           ) : offerCreateInEmptyState ? (
             <Button variant="primary" size="sm" onClick={() => setShowCreate(true)}>
               ＋ 新增岗位

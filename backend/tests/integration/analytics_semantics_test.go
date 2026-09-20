@@ -106,3 +106,44 @@ func TestAnalyticsCohortOverFullDataset(t *testing.T) {
 		t.Fatalf("submitted_count = %d, want 250", m.SubmittedCount)
 	}
 }
+
+// Archiving is a visibility flag. After the database page and home KPIs
+// dropped archived rows from their live set, analytics has to use the same
+// cohort — otherwise the funnel is the only surface still counting them.
+func TestAnalyticsExcludesArchived(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	repo := analytics.New(db)
+	now := time.Now()
+	sub := now.Add(-48 * time.Hour)
+	if _, err := svc.Create(ctx, owner, &appservice.CreateInput{
+		CompanyName: "LiveFunnel", Position: "Role", Status: "applied", SubmittedAt: &sub,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := svc.Create(ctx, owner, &appservice.CreateInput{
+		CompanyName: "ArchivedFunnel", Position: "Role", Status: "applied", SubmittedAt: &sub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Archive(ctx, owner, archived.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	m, err := repo.Counts(ctx, &analytics.SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.InProgress != 1 {
+		t.Fatalf("in_progress=%d want 1 (archived excluded)", m.InProgress)
+	}
+	if m.SubmittedCount != 1 {
+		t.Fatalf("submitted_count=%d want 1", m.SubmittedCount)
+	}
+	if m.TotalAll != 1 {
+		t.Fatalf("total_all=%d want 1", m.TotalAll)
+	}
+	if m.Denominator != 1 {
+		t.Fatalf("denominator=%d want 1", m.Denominator)
+	}
+}

@@ -241,6 +241,25 @@ export function buildFilters(
   return [...conds, ...extra]
 }
 
+/**
+ * Empty live-view search should offer a jump into 「已归档」: default filters
+ * hide archived rows, so a company the user just archived looks like it
+ * vanished. Trash and the archived view itself don't need the hint.
+ */
+export function shouldOfferArchivedSearch(viewId: number, search: string, trashMode: boolean): boolean {
+  return !trashMode && viewId !== ARCHIVED_VIEW && search.trim() !== ''
+}
+
+/** `/database` URL that isolates the same query inside the archived view. */
+export function archivedSearchHref(search: string): string {
+  const q = new URLSearchParams({
+    view: String(ARCHIVED_VIEW),
+    q: search.trim(),
+    layout: 'table',
+  })
+  return `/database?${q.toString()}`
+}
+
 export interface BoardBucket {
   title: string
   dot: string

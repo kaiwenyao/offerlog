@@ -108,8 +108,11 @@ func TestRegisterCreatesSessionAndAllowsLogin(t *testing.T) {
 	}
 	res, body = postJSON(t, srv.URL+"/api/v1/auth/register",
 		map[string]any{"email": fmt.Sprintf("reg.badtz.%d@test.local", time.Now().UnixNano()), "password": "password123", "timezone": "Local"})
-	if res.StatusCode != http.StatusBadRequest || body.Code != "invalid_timezone" {
-		t.Fatalf("register Local timezone status=%d code=%q, want 400/invalid_timezone", res.StatusCode, body.Code)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register Local timezone status=%d, want 201 fallback (body: %+v)", res.StatusCode, body)
+	}
+	if body.Timezone != "Europe/Dublin" {
+		t.Fatalf("register Local timezone = %q, want instance default Europe/Dublin", body.Timezone)
 	}
 
 	// Same credentials must log in afterwards.

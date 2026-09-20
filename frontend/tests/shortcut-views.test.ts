@@ -10,11 +10,13 @@ import {
   FOLLOW_UP_VIEW,
   SHORTCUT_VIEWS,
   WEEK_INTERVIEWS_VIEW,
+  archivedSearchHref,
   boardBuckets,
   buildFilters,
   isShortcutView,
   pruneSelection,
   shortcutConditions,
+  shouldOfferArchivedSearch,
   statusesForView,
   trashQueryPath,
 } from '../src/features/database/views'
@@ -140,6 +142,23 @@ describe('buildFilters with shortcut views', () => {
     const view = SHORTCUT_VIEWS.find((v) => v.id === FOLLOW_UP_VIEW)
     const filters = buildFilters(view, '', [], ctx)
     expect(filters.filter((f) => JSON.stringify(f) === JSON.stringify({ field: 'archived', op: 'eq', value: false }))).toHaveLength(1)
+  })
+
+  it('offers a jump into 已归档 when a live-view search is empty', () => {
+    expect(shouldOfferArchivedSearch(-1, 'ZZ审核归档', false)).toBe(true)
+    expect(shouldOfferArchivedSearch(FOLLOW_UP_VIEW, '字节', false)).toBe(true)
+    expect(shouldOfferArchivedSearch(ARCHIVED_VIEW, '字节', false)).toBe(false)
+    expect(shouldOfferArchivedSearch(-1, '字节', true)).toBe(false)
+    expect(shouldOfferArchivedSearch(-1, '   ', false)).toBe(false)
+  })
+
+  it('builds the archived-view search URL from the same query', () => {
+    const href = archivedSearchHref('  ZZ审核归档  ')
+    const u = new URL(href, 'http://offerlog.local')
+    expect(u.pathname).toBe('/database')
+    expect(u.searchParams.get('view')).toBe(String(ARCHIVED_VIEW))
+    expect(u.searchParams.get('q')).toBe('ZZ审核归档')
+    expect(u.searchParams.get('layout')).toBe('table')
   })
 
   it('does not override a saved view that already filters on archived', () => {

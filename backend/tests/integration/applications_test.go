@@ -337,4 +337,66 @@ func TestCSVImportPreviewAndCommit(t *testing.T) {
 	}
 }
 
+// Backup still includes archived jobs, but the 归档 column must round-trip
+// so re-importing the CSV does not resurrect them as live rows.
+func TestCSVExportImportPreservesArchive(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	_ = mustCreate(t, svc, owner, "LiveCo", "在招")
+	archived := mustCreate(t, svc, owner, "ArchiveCo", "已归档岗")
+	if err := svc.Archive(ctx, owner, archived.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	tr := transfers.New(db)
+	rows, err := tr.ExportRows(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("export rows = %d, want 2 (archived included)", len(rows))
+	}
+	var archivedFlag, liveFlag string
+	for _, r := range rows {
+		if len(r) < 17 {
+			t.Fatalf("export row has %d cols, want 归档 as last", len(r))
+		}
+		switch r[0] {
+		case "ArchiveCo":
+			archivedFlag = r[len(r)-1]
+		case "LiveCo":
+			liveFlag = r[len(r)-1]
+		}
+	}
+	if archivedFlag != "1" {
+		t.Fatalf("archived export flag = %q, want 1", archivedFlag)
+	}
+	if liveFlag != "" {
+		t.Fatalf("live export flag = %q, want empty", liveFlag)
+	}
+
+	other := createOwner(t, db)
+	csvData := "公司,岗位,归档\nArchiveCo,已归档岗,1\nLiveCo,在招,\n"
+	pv, err := tr.ParseCSV(ctx, other, "x.csv", stringsNewReader(csvData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := tr.CommitImport(ctx, other, pv.BatchID, stringsNewReader(csvData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("imported %d rows, want 2", n)
+	}
+	var nArchived, nLive int
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM applications WHERE owner_id=$1 AND archived_at IS NOT NULL`, other).Scan(&nArchived); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM applications WHERE owner_id=$1 AND archived_at IS NULL`, other).Scan(&nLive); err != nil {
+		t.Fatal(err)
+	}
+	if nArchived != 1 || nLive != 1 {
+		t.Fatalf("imported archived=%d live=%d, want 1/1", nArchived, nLive)
+	}
+}
+
 func stringsNewReader(s string) *strings.Reader { return strings.NewReader(s) }

@@ -107,13 +107,13 @@ export function AnalyticsPage() {
 
 function MetricGrid({ metrics }: { metrics: Metrics }) {
   const cards: Array<{ label: string; value: string | number; def: string }> = [
-    { label: '待投递', value: metrics.to_apply, def: 'saved + preparing' },
-    { label: '进行中', value: metrics.in_progress, def: 'applied…interviewing' },
-    { label: '有结果', value: metrics.with_result, def: '含主动撤回等管理结果' },
+    { label: '待投递', value: metrics.to_apply, def: 'saved + preparing（不含归档）' },
+    { label: '进行中', value: metrics.in_progress, def: 'applied…interviewing（不含归档）' },
+    { label: '有结果', value: metrics.with_result, def: '含主动撤回等管理结果（不含归档）' },
     // 方案 §5：大阶段统计之外，单列 OA 的准备与等结果数量。
     { label: '准备 OA', value: metrics.preparing_assessment, def: 'OA / 作业阶段 · 准备中' },
     { label: 'OA 等结果', value: metrics.awaiting_oa_result, def: '已完成 / 已通过 · 等反馈' },
-    { label: '已投递', value: metrics.submitted_count, def: '已进入流程 · 含免正式投递' },
+    { label: '已投递', value: metrics.submitted_count, def: '已进入流程 · 含免正式投递（不含归档）' },
     { label: '有效回复率', value: rateOrDash(metrics.response_rate, metrics.denominator), def: `已回复 ${metrics.responded} / 样本 ${metrics.denominator}` },
     {
       label: '面试到达率',
