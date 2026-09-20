@@ -82,6 +82,11 @@ export function AppDetailContent({
     queryFn: () => api.get<{ items: Note[] }>(`/api/v1/applications/${appId}/notes`),
   })
 
+  // refetch 失败时 react-query 仍保留上一次的 data，只是把 status 置成 error。
+  // 只看 isError 的话，一次后台 refetch 失败（加完备注后 notesQ 重取、或 10s
+  // staleTime 过后重开抽屉）就会把一个已经加载好的标签页换成「加载失败」。
+  const failed = (q: { isError: boolean; data: unknown }) => q.isError && q.data === undefined
+
   const app = appQ.data
   const events = eventsQ.data?.items ?? []
   const milestones = milestonesQ.data?.items ?? []
@@ -229,7 +234,7 @@ export function AppDetailContent({
       )}
 
       {tab === 'overview' &&
-        (interviewsQ.isError || assessmentsQ.isError || notesQ.isError ? (
+        (failed(interviewsQ) || failed(assessmentsQ) || failed(notesQ) ? (
           <QueryError
             label="概览"
             onRetry={() => {
@@ -255,13 +260,13 @@ export function AppDetailContent({
           />
         ))}
       {tab === 'files' &&
-        (filesQ.isError ? (
+        (failed(filesQ) ? (
           <QueryError label="附件" onRetry={() => void filesQ.refetch()} />
         ) : (
           <FilesTab appId={app.id} files={files} interviews={interviews} />
         ))}
       {tab === 'timeline' &&
-        (eventsQ.isError || milestonesQ.isError ? (
+        (failed(eventsQ) || failed(milestonesQ) ? (
           <QueryError
             label="时间线"
             onRetry={() => {

@@ -19,7 +19,7 @@ import (
 // exposes a transaction-scoped variant.
 type ProfileWriter interface {
 	UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*authservice.UserRow, error)
-	UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*authservice.UserRow, error)
+	UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone *string) (*authservice.UserRow, error)
 }
 
 type Handler struct {
@@ -156,21 +156,21 @@ func (h *Handler) put(c *gin.Context) {
 			p.RemindWeekly = false
 			p.Locale = user.Locale
 		}
-		// users.timezone is canonical (PATCH /auth/me may have changed it
-		// since the prefs row was written). Seed from the session user so a
-		// reminder-only PUT cannot revert a zone change made through /auth/me.
-		p.Timezone = user.Timezone
-		p.DisplayName = user.DisplayName
-
+		// users 行才是 display_name / timezone 的真相（PATCH /auth/me 也写它）。
+		// 但不能拿 user 这个「进事务之前的会话快照」去填：改名和改提醒开关是两个
+		// 独立的 PUT，后发的那个手上还是旧名字，无条件写回去就把改名静默回滚了。
+		// 所以这两个字段只在本次请求真的带了的时候才写，其余交给 COALESCE 保留，
+		// 由 UpdateProfileTx 回读锁内的当前值。
+		var nameArg, tzArg *string
 		if req.DisplayName != nil {
-			p.DisplayName = *req.DisplayName
+			nameArg = req.DisplayName
 		}
 		if req.Timezone != nil {
 			norm, err := authservice.NormalizeTimezone(*req.Timezone)
 			if err != nil {
 				return err
 			}
-			p.Timezone = norm
+			tzArg = &norm
 		}
 		if req.WeekStart != nil {
 			p.WeekStart = *req.WeekStart
@@ -191,9 +191,23 @@ func (h *Handler) put(c *gin.Context) {
 		// Persist the profile fields on the users row AND the reminder
 		// preferences on the preferences row in ONE transaction: a mid-way
 		// failure would otherwise leave half of the settings saved.
+		p.DisplayName = user.DisplayName
+		p.Timezone = user.Timezone
 		if h.profiles != nil {
-			if _, err := h.profiles.UpdateProfileTx(ctx, tx, user.ID, p.DisplayName, p.Timezone); err != nil {
+			row, err := h.profiles.UpdateProfileTx(ctx, tx, user.ID, nameArg, tzArg)
+			if err != nil {
 				return err
+			}
+			// 镜像到 prefs 行、也用于响应体：这是提交后 users 行的真实内容，
+			// 既包含本次的改动，也包含别的请求刚写进去的。
+			p.DisplayName = row.DisplayName
+			p.Timezone = row.Timezone
+		} else {
+			if nameArg != nil {
+				p.DisplayName = *nameArg
+			}
+			if tzArg != nil {
+				p.Timezone = *tzArg
 			}
 		}
 		return h.repo.UpsertTx(ctx, tx, p)

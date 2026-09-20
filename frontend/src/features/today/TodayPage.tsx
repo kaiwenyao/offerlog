@@ -40,6 +40,10 @@ export function TodayPage() {
     qc.invalidateQueries({ queryKey: ['actions'] })
     qc.invalidateQueries({ queryKey: ['calendar'] })
     qc.invalidateQueries({ queryKey: ['notifications'] })
+    // 完成 / 延期会重写 applications.next_action(_due_at)，数据库页的「下一步 /
+    // 截止」两列读的正是它：不失效 apps 的话，在 10s staleTime 内切到数据库页
+    // 看到的还是刚刚那条已经完成的待办。
+    qc.invalidateQueries({ queryKey: ['apps'] })
   }
 
   const doneMut = useMutation({

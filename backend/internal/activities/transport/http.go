@@ -1231,7 +1231,16 @@ func (h *Handler) updateAction(c *gin.Context) {
 		ID: aid, OwnerID: user.ID, Title: title, DueDate: dueDate, DueTs: req.DueTs,
 		DoneAt: req.DoneAt, RemindMe: req.RemindMe, RemindAt: req.RemindAt, Priority: req.Priority,
 	}
-	if err := h.repo.UpdateAction(c.Request.Context(), h.repo.Pool(), a); err != nil {
+	// 改标题/改日期同样要重写镜像，和 postpone 走同一条路：表里的「下一步 / 截止」
+	// 读的是 applications 上的镜像，不是待办行。前端那条补偿 PATCH 只在镜像正好
+	// 等于旧标题时才发，改到不是当前镜像的那条待办就会把表留在旧值上。
+	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.UpdateAction(ctx, tx, a); err != nil {
+			return err
+		}
+		return h.repo.SyncNextActionMirrorForAction(ctx, tx, user.ID, aid)
+	})
+	if err != nil {
 		writeActionErr(c, err)
 		return
 	}

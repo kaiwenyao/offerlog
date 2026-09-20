@@ -26,14 +26,32 @@ import (
 	prefstransport "offerlog/backend/internal/prefs/transport"
 )
 
-type stubProfileWriter struct{}
+// stubProfileWriter stands in for the identity service with no users row: it
+// keeps the profile in memory and mirrors UpdateProfileTx's COALESCE semantics
+// (nil = 这次不改，回读当前值).
+type stubProfileWriter struct{ cur *idservice.UserRow }
 
-func (stubProfileWriter) UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*idservice.UserRow, error) {
-	return &idservice.UserRow{ID: id, DisplayName: displayName, Timezone: timezone, Email: "x@y.z", Locale: "zh-CN"}, nil
+func (s *stubProfileWriter) row(id int64) *idservice.UserRow {
+	if s.cur == nil {
+		s.cur = &idservice.UserRow{ID: id, Email: "x@y.z", Timezone: "Europe/Dublin", Locale: "zh-CN"}
+	}
+	return s.cur
 }
 
-func (s stubProfileWriter) UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*idservice.UserRow, error) {
-	return s.UpdateProfile(ctx, id, displayName, timezone)
+func (s *stubProfileWriter) UpdateProfile(ctx context.Context, id int64, displayName, timezone string) (*idservice.UserRow, error) {
+	return s.UpdateProfileTx(ctx, nil, id, &displayName, &timezone)
+}
+
+func (s *stubProfileWriter) UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone *string) (*idservice.UserRow, error) {
+	cur := s.row(id)
+	if displayName != nil {
+		cur.DisplayName = *displayName
+	}
+	if timezone != nil {
+		cur.Timezone = *timezone
+	}
+	copied := *cur
+	return &copied, nil
 }
 
 // newPrefsServer builds an authenticated /preferences surface over the shared
@@ -47,7 +65,7 @@ func newPrefsServer(t *testing.T, db *database.DB, owner int64) *httptest.Server
 		httpx.SetUser(c, &domain.User{ID: owner, Email: "x@y.z", Timezone: "Europe/Dublin", Locale: "zh-CN"})
 		c.Next()
 	})
-	prefsh := prefstransport.NewWithProfile(prefsrepo.New(db), stubProfileWriter{})
+	prefsh := prefstransport.NewWithProfile(prefsrepo.New(db), &stubProfileWriter{})
 	prefsh.Routes(r.Group("/api/v1/preferences"))
 	return httptest.NewServer(r)
 }
@@ -184,7 +202,7 @@ func (f *failingPrefsWriter) UpdateProfile(ctx context.Context, id int64, displa
 	return f.svc.UpdateProfile(ctx, id, displayName, timezone)
 }
 
-func (f *failingPrefsWriter) UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone string) (*idservice.UserRow, error) {
+func (f *failingPrefsWriter) UpdateProfileTx(ctx context.Context, q database.Querier, id int64, displayName, timezone *string) (*idservice.UserRow, error) {
 	// Phase 1: real users-row UPDATE on the tx.
 	row, err := f.svc.UpdateProfileTx(ctx, q, id, displayName, timezone)
 	if err != nil {
@@ -293,5 +311,68 @@ func TestPreferencesConcurrentPartialPutsKeepBothFields(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&out)
 	if out["remind_overdue"] != false || out["remind_interview"] != false {
 		t.Fatalf("after concurrent PUTs prefs = %#v, want both reminder switches off", out)
+	}
+}
+
+// Regression: PUT /preferences 只带提醒开关时，不能把 users.display_name 写回
+// 会话快照里的旧名字。
+//
+// 原始 bug：处理器把 p.DisplayName 无条件塞成 user.DisplayName——那是进事务之前
+// 的会话快照。设置页上「保存显示名称」和「翻一个提醒开关」是两个独立的 PUT：后发
+// 的那个手上的 user 还是改名前加载的，于是它把旧名字又写回 users 行，刚保存的
+// 改名被静默回滚了。修复后这两个字段只在请求真的带了的时候才写（COALESCE 保留）。
+func TestReminderOnlyPutKeepsConcurrentRename(t *testing.T) {
+	db, _, _, owner := setup(t)
+	ctx := context.Background()
+	gin.SetMode(gin.TestMode)
+
+	// 前一个 PUT 已经提交的改名。
+	if _, err := db.Pool().Exec(ctx,
+		`UPDATE users SET display_name='新名字', timezone='Europe/Dublin' WHERE id=$1`, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	// 后一个 PUT 的会话快照是改名之前的：display_name 还是旧的。
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		httpx.SetUser(c, &domain.User{ID: owner, Email: "x@y.z", DisplayName: "旧名字",
+			Timezone: "Europe/Dublin", Locale: "zh-CN"})
+		c.Next()
+	})
+	prefsh := prefstransport.NewWithProfile(prefsrepo.New(db),
+		idservice.New(db, idrepo.NewSQLUsers(db), 24, "test"))
+	prefsh.Routes(r.Group("/api/v1/preferences"))
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("PUT", srv.URL+"/api/v1/preferences",
+		bytes.NewBufferString(`{"remind_overdue":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d want 200", res.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+
+	var name string
+	if err := db.Pool().QueryRow(ctx, `SELECT display_name FROM users WHERE id=$1`, owner).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "新名字" {
+		t.Fatalf("提醒开关的 PUT 把改名回滚了: users.display_name = %q, want 新名字", name)
+	}
+	// 响应体也要给出提交后的真实名字，否则侧栏会把旧名字显示回去。
+	if body["display_name"] != "新名字" {
+		t.Fatalf("响应体 display_name = %v, want 新名字", body["display_name"])
+	}
+	if body["remind_overdue"] != false {
+		t.Fatalf("这次要改的字段没存上: remind_overdue = %v", body["remind_overdue"])
 	}
 }

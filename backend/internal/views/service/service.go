@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"offerlog/backend/internal/platform/database"
 	"offerlog/backend/internal/platform/timeutil"
@@ -81,10 +82,22 @@ func (s *Service) CreateProperty(ctx context.Context, ownerID int64, name, key, 
 	b, _ := json.Marshal(options)
 	p := &repository.PropertyDef{OwnerID: ownerID, Name: name, Key: key, DataType: dataType, Options: b, Required: required}
 	if err := s.repo.CreateProperty(ctx, p); err != nil {
-		// unique(owner_id,key) violation
-		return nil, ErrKeyTaken
+		// 只有 unique(owner_id,key) 冲突才是「键已被使用」。之前这里把所有错误
+		// 一律翻成 ErrKeyTaken，transport 再翻成 409「属性键已被使用」，于是库挂了
+		// 或者请求被取消时用户看到的是一句完全不相干的重复键提示，真正的 500 被藏起来。
+		if isUniqueViolation(err) {
+			return nil, ErrKeyTaken
+		}
+		return nil, err
 	}
 	return p, nil
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505).
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (s *Service) UpdateProperty(ctx context.Context, ownerID int64, id int64, name, dataType string, options []any, required bool) (*repository.PropertyDef, error) {

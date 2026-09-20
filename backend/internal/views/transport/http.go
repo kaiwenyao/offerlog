@@ -166,7 +166,9 @@ func (h *Handler) updateProp(c *gin.Context) {
 	_ = json.Unmarshal(req.Options, &opts)
 	p, err := h.svc.UpdateProperty(c.Request.Context(), user.ID, id, req.Name, req.DataType, opts, req.Required)
 	if err != nil {
-		httpx.WriteErr(c, err)
+		// 同 createProp 走一条映射：不然改 / 删一个已经不存在的属性会回 500，
+		// 前端只能显示「保存失败」而不是「属性不存在」。
+		writePropErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, p)
@@ -176,7 +178,7 @@ func (h *Handler) deleteProp(c *gin.Context) {
 	user := httpx.UserFrom(c)
 	id, _ := httpx.PathID(c, "prop_id")
 	if err := h.svc.DeleteProperty(c.Request.Context(), user.ID, id); err != nil {
-		httpx.WriteErr(c, err)
+		writePropErr(c, err)
 		return
 	}
 	httpx.Ok(c)
