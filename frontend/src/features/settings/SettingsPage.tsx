@@ -64,6 +64,9 @@ function AccountPanel({ me }: { me: Me | null }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['preferences'] })
       qc.invalidateQueries({ queryKey: ['me'] })
+      // 重试成功后必须清掉上一次的失败文案，否则「保存失败」会和「已保存 ✓」
+      // 同时挂在面板上，用户不知道该信哪个。
+      setErr('')
       setSaved(true)
       window.dispatchEvent(new Event('offerlog:profile-changed'))
       window.setTimeout(() => setSaved(false), 2500)
@@ -282,25 +285,29 @@ function RemindersPanel({ me }: { me: Me | null }) {
 function DataPanel() {
   const qc = useQueryClient()
   const fileRef = useRef<HTMLInputElement>(null)
-  const batchRef = useRef<{ id: number; file: File } | null>(null)
+  // 待确认的预检批次。必须是 state 而不是 ref：「确认导入」按钮的出现与消失都
+  // 由它决定，ref 改了不会触发重渲染。
+  const [batch, setBatch] = useState<{ id: number; file: File } | null>(null)
   const [info, setInfo] = useState('')
   const [infoTone, setInfoTone] = useState<'ok' | 'err'>('ok')
 
   const preview = useMutation({
     mutationFn: (f: File) => {
+      setBatch(null) // 换了一份 CSV：上一次预检的批次立刻作废
       const fd = new FormData()
       fd.append('file', f)
       return api.post<ImportPreview>('/api/v1/imports/preview', fd, true)
     },
-    onSuccess: (pv) => {
+    onSuccess: (pv, f) => {
       setInfoTone('ok')
       setInfo(
         `预检完成：共 ${pv.total_rows} 行，有效 ${pv.valid_rows} 行，错误 ${pv.errors.length} 行，` +
           `疑似重复 ${pv.duplicate_candidates.length} 行。` +
           (pv.errors.length ? ' 可下载逐行错误报告或修正 CSV 后重试。' : ''),
       )
-      const file = fileRef.current?.files?.[0]
-      if (file) batchRef.current = { id: pv.batch_id, file }
+      // 用发起这次预检的那个 File，而不是回读 input.files[0]——input 的值在
+      // 选完之后就被清掉了（否则同名文件选第二次不触发 change）。
+      setBatch({ id: pv.batch_id, file: f })
     },
     onError: (e: unknown) => {
       setInfoTone('err')
@@ -310,15 +317,17 @@ function DataPanel() {
 
   const commit = useMutation({
     mutationFn: () => {
-      const b = batchRef.current
-      if (!b) throw new Error('请先预检')
+      if (!batch) throw new Error('请先预检')
       const fd = new FormData()
-      fd.append('file', b.file)
-      return api.post<{ inserted: number }>(`/api/v1/imports/${b.id}/commit`, fd, true)
+      fd.append('file', batch.file)
+      return api.post<{ inserted: number }>(`/api/v1/imports/${batch.id}/commit`, fd, true)
     },
     onSuccess: (r) => {
       setInfoTone('ok')
       setInfo(`导入完成：成功写入 ${r.inserted} 条。当前状态按 CSV 记录，不伪造历史。`)
+      // 批次消费掉了：不清的话「确认导入」会一直留在页面上，再点一次就把同一份
+      // CSV 又提交一遍。
+      setBatch(null)
       qc.invalidateQueries({ queryKey: ['apps'] })
       qc.invalidateQueries({ queryKey: ['home'] })
     },
@@ -348,10 +357,14 @@ function DataPanel() {
           style={{ display: 'none' }}
           onChange={(e) => {
             const f = e.target.files?.[0]
+            // 必须清空 input 的值：不清的话再选**同一个文件**（预检报错 → 改完
+            // CSV → 重新选同名文件，这是最常走的路径）不会触发 change，看起来
+            // 就像「点了没反应」。
+            e.target.value = ''
             if (f) preview.mutate(f)
           }}
         />
-        {batchRef.current && (
+        {batch && (
           <Button variant="primary" size="sm" disabled={commit.isPending} onClick={() => commit.mutate()}>
             {commit.isPending ? <Spinner size={14} /> : '确认导入'}
           </Button>

@@ -27,6 +27,30 @@ function activityProgressLabel(progress: string, result: string, scheduled: bool
   return scheduled ? '待进行' : '待安排'
 }
 
+/**
+ * 一轮 OA / 测评那行的时间说明。
+ *
+ * 四种时间各自保存，但一行里最多说两件事：**这轮走到哪一步了**（完成于 / 计划）
+ * 和**什么时候截止**。截止只说一次——之前「只填了截止、还没开做」（最常见的
+ * 情况）会先在主时间位渲染一遍「截止 X」，后面再追加一遍「· 截止 X」，同一个
+ * 时间在同一行里出现两次。
+ *
+ * 纯函数（只依赖 fmtDateTime），便于单测钉住「截止不重复」。
+ */
+export function assessmentTiming(
+  a: Pick<AssessmentRound, 'completed_at' | 'planned_at' | 'due_at' | 'progress'>,
+): string {
+  const parts: string[] = []
+  if (a.completed_at) parts.push(`完成于 ${fmtDateTime(a.completed_at)}`)
+  else if (a.planned_at) parts.push(`计划 ${fmtDateTime(a.planned_at)}`)
+  // 做完之后截止时间不再是待办信息，所以只在「还没完成」时追加；但当它是这行
+  // 唯一已知的时间时仍然要显示，否则会退化成一句没用的「时间未定」。
+  if (a.due_at && (a.progress !== 'completed' || parts.length === 0)) {
+    parts.push(`截止 ${fmtDateTime(a.due_at)}`)
+  }
+  return parts.length > 0 ? parts.join(' · ') : '时间未定'
+}
+
 /** YYYY-MM-DD strictly before today's YYYY-MM-DD in the USER zone. */
 function dayBeforeToday(dayStr: string): boolean {
   const today = toDayString(new Date().toISOString(), effectiveZone()) ?? ''
@@ -507,14 +531,7 @@ export function OverviewTab({
                   {a.kind === 'take_home' ? ' · Take-home 作业' : a.kind === 'other' ? ' · 其他测评' : ' · 在线测试'}
                 </span>
                 <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {a.completed_at
-                    ? `完成于 ${fmtDateTime(a.completed_at)}`
-                    : a.planned_at
-                      ? `计划 ${fmtDateTime(a.planned_at)}`
-                      : a.due_at
-                        ? `截止 ${fmtDateTime(a.due_at)}`
-                        : '时间未定'}
-                  {a.due_at && a.progress !== 'completed' ? ` · 截止 ${fmtDateTime(a.due_at)}` : ''}
+                  {assessmentTiming(a)}
                 </span>
                 {a.link && (
                   <span style={{ display: 'block', fontSize: 12 }}>

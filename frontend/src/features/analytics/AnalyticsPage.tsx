@@ -88,7 +88,14 @@ export function AnalyticsPage() {
         <MetricGrid metrics={metrics} />
       ) : null}
 
-      <SankeyPanel mode={mode} setMode={setMode} data={sankeyQ.data} loading={sankeyQ.isLoading} />
+      <SankeyPanel
+        mode={mode}
+        setMode={setMode}
+        data={sankeyQ.data}
+        loading={sankeyQ.isLoading}
+        failed={sankeyQ.isError}
+        onRetry={() => sankeyQ.refetch()}
+      />
 
       <div className="split-grid">
         {metrics && <ChannelPanel rows={metrics.by_channel ?? []} />}
@@ -149,11 +156,16 @@ function SankeyPanel({
   setMode,
   data,
   loading,
+  failed,
+  onRetry,
 }: {
   mode: SankeyMode
   setMode: (m: SankeyMode) => void
   data?: SankeyData
   loading: boolean
+  /** 请求失败：图画不出来时必须说出来，不能留一块空白。 */
+  failed: boolean
+  onRetry: () => void
 }) {
   const box = useRef<HTMLDivElement>(null)
   const chart = useRef<echarts.ECharts | null>(null)
@@ -234,6 +246,27 @@ function SankeyPanel({
         {loading && (
           <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center' }}>
             <Spinner size={22} />
+          </div>
+        )}
+        {/* 以前只处理了 summary 的失败：桑基图挂掉时 data 是 undefined、loading
+            又已经是 false，画布上就只剩一块 360px 的空白，没有文案也没有重试。 */}
+        {!loading && failed && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'grid',
+              placeItems: 'center',
+              gap: 10,
+              background: 'var(--bg)',
+            }}
+          >
+            <div style={{ textAlign: 'center' }}>
+              <ErrorText>桑基图加载失败</ErrorText>
+              <Button variant="secondary" size="sm" onClick={onRetry} style={{ marginTop: 10 }}>
+                重试
+              </Button>
+            </div>
           </div>
         )}
       </div>

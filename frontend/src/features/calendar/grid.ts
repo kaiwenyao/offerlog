@@ -176,3 +176,26 @@ export function agenda(events: CalendarEvent[], now: Date = new Date(), zone?: s
 export function agendaWindowKeys(weekStartKey: string): { fromKey: string; toKey: string } {
   return { fromKey: addDaysToKey(weekStartKey, -90), toKey: addDaysToKey(weekStartKey, 30) }
 }
+
+// ---------------------------------------------------------------------------
+// Prev / next stepper
+// ---------------------------------------------------------------------------
+
+/**
+ * 「上一步 / 下一步」按钮的文案，null = 这个视图没有可翻的上下页。
+ *
+ * 原来两个按钮写死成「上一周 / 下一周」，对另外两个视图都是错的：月视图点一下
+ * 翻的是**一整个月**（文案对不上行为），议程视图的窗口固定锚在本周（−90d…+30d），
+ * 翻页处理函数对它压根没有分支——三个按钮亮着，点了什么都不发生。文案跟着视图
+ * 走，没有动作的视图就不画这排按钮。
+ */
+export function stepLabels(view: ViewMode): { prev: string; next: string } | null {
+  switch (view) {
+    case 'week':
+      return { prev: '上一周', next: '下一周' }
+    case 'month':
+      return { prev: '上个月', next: '下个月' }
+    default:
+      return null
+  }
+}

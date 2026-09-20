@@ -96,8 +96,10 @@ export function AppLayout({ me }: { me: Me | null }) {
   const counts = useSidebarCounts()
   const meta = pageMeta(loc.pathname)
 
-  // Close the mobile sheet whenever the route changes.
-  useEffect(() => setMenuOpen(false), [loc.pathname])
+  // Close the mobile sheet whenever the route changes. 必须看整条 location
+  // （key），不能只看 pathname：侧栏「已保存视图」跳的是 /database?view=…，
+  // 人已经在 /database 上时 pathname 根本不变，于是抽屉留在屏幕上盖着结果。
+  useEffect(() => setMenuOpen(false), [loc.key])
 
   // Keep the topbar input in sync with the URL: the database page's「清除筛选」
   // and the search chip's × navigate to /database without ?q= — the input must

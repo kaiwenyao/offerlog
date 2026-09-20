@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDay } from '../../lib/api'
@@ -31,6 +31,30 @@ export function AppDetailContent({
   // 基础信息（公司/岗位/城市/JD 链接/薪资/渠道/截止日期）的编辑入口：创建弹窗
   // 只要求公司和岗位，其余必须能在这里补齐。
   const [editing, setEditing] = useState(false)
+
+  // 抽屉是 aria-modal 的对话框，就得像对话框一样能被 Esc 关掉（ds/Dialog 一直
+  // 是这个行为）。嵌在 /apps/:id 整页里时不挂监听：那里没有可关的浮层，按 Esc
+  // 反而会把人踢回数据库页。
+  useEffect(() => {
+    if (embedded) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      // 抽屉里还开着弹窗（编辑事件 / 删除确认 / 文件预览）时，这一下 Esc 属于
+      // 那个弹窗。ds/Dialog 也监听 document，不让开就会一次关掉两层：确认框和
+      // 它背后的整个抽屉。
+      if (document.querySelector('.modal-backdrop')) return
+      onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    // 抽屉也是浮层：背景列表不该跟着滚轮一起滚（与 ds/Dialog 同一把锁）。
+    document.body.classList.add('ol-modal-open')
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      if (document.querySelectorAll('.modal-backdrop').length === 0) {
+        document.body.classList.remove('ol-modal-open')
+      }
+    }
+  }, [embedded, onClose])
 
   const appQ = useQuery({ queryKey: ['app', appId], queryFn: () => api.get<AppRow>(`/api/v1/applications/${appId}`) })
   const eventsQ = useQuery({
@@ -67,21 +91,36 @@ export function AppDetailContent({
   const notes = notesQ.data?.items ?? []
 
   if (!app) {
-    if (appQ.isError) {
-      return embedded ? (
+    // 加载中与加载失败都得穿上抽屉的外壳：以前 loading 分支直接返回一个光秃秃
+    // 的 PageSpinner，于是点开一个岗位时页面底部先冒出一个孤零零的转圈，既没有
+    // backdrop 也没有关闭按钮——这段时间连「我点错了，退出」都做不到。
+    const body = appQ.isError ? (
+      <>
         <ErrorText>加载失败</ErrorText>
-      ) : (
-        <>
-          <div className="drawer-backdrop" onClick={onClose} />
-          <aside className="drawer">
-            <div className="drawer-body">
-              <ErrorText>加载失败</ErrorText>
-            </div>
-          </aside>
-        </>
-      )
-    }
-    return <PageSpinner />
+        <Button variant="secondary" size="sm" onClick={() => appQ.refetch()} style={{ marginTop: 10 }}>
+          重试
+        </Button>
+      </>
+    ) : (
+      <PageSpinner />
+    )
+    if (embedded) return <div>{body}</div>
+    return (
+      <>
+        <div className="drawer-backdrop" onClick={onClose} />
+        <aside className="drawer" role="dialog" aria-modal="true" aria-label="岗位详情">
+          <div className="drawer-head">
+            <span className="grow" style={{ fontSize: 14, color: 'var(--text-muted)' }}>
+              {appQ.isError ? '岗位详情' : '加载中…'}
+            </span>
+            <IconButton label="关闭" size="sm" variant="ghost" onClick={onClose}>
+              <Icon name="close" size={16} />
+            </IconButton>
+          </div>
+          <div className="drawer-body">{body}</div>
+        </aside>
+      </>
+    )
   }
 
   const tabItems = [
@@ -121,23 +160,27 @@ export function AppDetailContent({
           <Icon name="edit" size={16} />
         </IconButton>
         {!embedded && (
-          <>
-            <Link to={`/apps/${app.id}`} aria-label="完整详情" title="完整详情" style={{ display: 'inline-flex' }}>
-              <Icon name="external" size={16} color="var(--text-muted)" />
-            </Link>
-            <RowMenu
-              appId={app.id}
-              app={app}
-              onEdit={() => setEditing(true)}
-              onChanged={() => {
-                qc.invalidateQueries()
-                onClose()
-              }}
-            />
-            <IconButton label="关闭" size="sm" variant="ghost" onClick={onClose}>
-              <Icon name="close" size={16} />
-            </IconButton>
-          </>
+          <Link to={`/apps/${app.id}`} aria-label="完整详情" title="完整详情" style={{ display: 'inline-flex' }}>
+            <Icon name="external" size={16} color="var(--text-muted)" />
+          </Link>
+        )}
+        {/* 归档 / 移到回收站 / 恢复在整页详情上同样要有。今日待办、面试日历和
+            通知中心跳过来的全是 /apps/:id（embedded），以前这个菜单被
+            `!embedded` 一起关掉了——从这三个入口进来的人只能改基础信息，想归档
+            得自己绕回数据库页再从抽屉里打开。 */}
+        <RowMenu
+          appId={app.id}
+          app={app}
+          onEdit={() => setEditing(true)}
+          onChanged={() => {
+            qc.invalidateQueries()
+            onClose()
+          }}
+        />
+        {!embedded && (
+          <IconButton label="关闭" size="sm" variant="ghost" onClick={onClose}>
+            <Icon name="close" size={16} />
+          </IconButton>
         )}
       </span>
     </>

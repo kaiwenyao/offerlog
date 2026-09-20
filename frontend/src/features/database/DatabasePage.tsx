@@ -369,7 +369,12 @@ export function DatabasePage() {
           onClick={() => {
             // 进/出回收站都回到第 1 页：两个集合的行序无关，沿用旧页码只会
             // 落到一个空页上，看起来像「回收站是空的」。
-            setTrashMode((v) => !v)
+            setTrashMode((v) => {
+              // 「恢复」按钮只画在表格布局里。停在看板 / 列表上点进回收站，会看到
+              // 一堆已删除的卡片却没有任何恢复入口——所以进回收站就切回表格。
+              if (!v) setLayout('table')
+              return !v
+            })
             setPage(1)
           }}
         >
