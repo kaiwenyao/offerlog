@@ -91,15 +91,58 @@ func parseStatus(s string) string {
 	return ""
 }
 
+// parseDate accepts every layout the app itself emits plus the common hand-typed
+// ones. `2006-01-02 15:04` is NOT optional: it is exactly what ExportRows writes
+// for 投递时间, and without it OfferLog's own backup cannot be re-imported —
+// the preview flagged every exported row as「投递时间 日期格式错误」and the commit
+// then dropped the value, so a restore silently lost every submission time.
+//
+// A layout with no zone parses as UTC, which is the zone ExportRows renders in,
+// so the instant survives the round trip (truncated to the minute the CSV shows).
 func parseDate(s string) *time.Time {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
 	}
-	for _, layout := range []string{"2006-01-02", "2006/01/02", time.RFC3339, "02/01/2006"} {
+	for _, layout := range []string{
+		"2006-01-02",
+		"2006-01-02 15:04",
+		"2006-01-02 15:04:05",
+		"2006/01/02",
+		time.RFC3339,
+		"02/01/2006",
+	} {
 		if t, err := time.Parse(layout, s); err == nil {
 			return &t
 		}
+	}
+	return nil
+}
+
+// validateRow applies the import's row rules and returns the preview error the
+// row earns (Row left unset — the caller knows the line number), or nil when the
+// row is importable.
+//
+// ParseCSV and CommitImport MUST share this. When the commit had its own, weaker
+// rule (公司/岗位 非空) the two disagreed in the user's face: the preview said
+// 「共 11 行，有效 1 行，错误 10 行」and the commit then answered「成功写入 11 条」,
+// having inserted every rejected row with the offending field silently dropped.
+// A preview that the commit ignores is not a preview.
+func validateRow(row map[string]string) *RowError {
+	if strings.TrimSpace(row["company_name"]) == "" {
+		return &RowError{Column: "公司", Message: "公司不能为空"}
+	}
+	if strings.TrimSpace(row["position"]) == "" {
+		return &RowError{Column: "岗位", Message: "岗位不能为空"}
+	}
+	if st := strings.TrimSpace(row["status"]); st != "" && parseStatus(st) == "" {
+		return &RowError{Column: "状态", Message: "未知状态：" + st}
+	}
+	if dt := strings.TrimSpace(row["deadline"]); dt != "" && parseDate(dt) == nil {
+		return &RowError{Column: "截止日期", Message: "日期格式错误"}
+	}
+	if st := strings.TrimSpace(row["submitted_at"]); st != "" && parseDate(st) == nil {
+		return &RowError{Column: "投递时间", Message: "日期格式错误"}
 	}
 	return nil
 }
@@ -149,28 +192,13 @@ func (r *Repo) ParseCSV(ctx context.Context, ownerID int64, filename string, dat
 				row[target] = rec[ci]
 			}
 		}
+		if bad := validateRow(row); bad != nil {
+			bad.Row = rowNo
+			preview.Errors = append(preview.Errors, *bad)
+			continue
+		}
 		company := strings.TrimSpace(row["company_name"])
 		position := strings.TrimSpace(row["position"])
-		if company == "" {
-			preview.Errors = append(preview.Errors, RowError{Row: rowNo, Column: "公司", Message: "公司不能为空"})
-			continue
-		}
-		if position == "" {
-			preview.Errors = append(preview.Errors, RowError{Row: rowNo, Column: "岗位", Message: "岗位不能为空"})
-			continue
-		}
-		if st := row["status"]; st != "" && parseStatus(st) == "" {
-			preview.Errors = append(preview.Errors, RowError{Row: rowNo, Column: "状态", Message: "未知状态：" + st})
-			continue
-		}
-		if dt := row["deadline"]; dt != "" && parseDate(dt) == nil {
-			preview.Errors = append(preview.Errors, RowError{Row: rowNo, Column: "截止日期", Message: "日期格式错误"})
-			continue
-		}
-		if st := row["submitted_at"]; st != "" && parseDate(st) == nil {
-			preview.Errors = append(preview.Errors, RowError{Row: rowNo, Column: "投递时间", Message: "日期格式错误"})
-			continue
-		}
 		valid++
 		// duplicate candidate: same (company, position, url) pair already seen
 		key := company + "|" + position + "|" + row["job_url"]
@@ -198,27 +226,30 @@ func (r *Repo) ParseCSV(ctx context.Context, ownerID int64, filename string, dat
 	return preview, nil
 }
 
-// CommitImport inserts the valid rows of a previously previewed batch. It is
-// idempotent: a committed batch returns the same count without re-inserting.
-func (r *Repo) CommitImport(ctx context.Context, ownerID, batchID int64, data io.Reader) (int64, error) {
+// CommitImport inserts the valid rows of a previously previewed batch and
+// reports how many rows it skipped, so the UI can say what actually happened
+// instead of counting rejected rows as successes. It is idempotent: a committed
+// batch replays the persisted preview counts without re-inserting.
+func (r *Repo) CommitImport(ctx context.Context, ownerID, batchID int64, data io.Reader) (inserted, skipped int64, err error) {
 	var status string
 	if err := r.db.Pool().QueryRow(ctx, `SELECT status FROM import_batches WHERE id=$1 AND owner_id=$2`, batchID, ownerID).Scan(&status); err != nil {
-		return 0, errors.New("批次不存在")
+		return 0, 0, errors.New("批次不存在")
 	}
 	if status == "committed" {
 		var prev json.RawMessage
 		_ = r.db.Pool().QueryRow(ctx, `SELECT preview FROM import_batches WHERE id=$1`, batchID).Scan(&prev)
 		var p struct {
+			TotalRows int `json:"total_rows"`
 			ValidRows int `json:"valid_rows"`
 		}
 		_ = json.Unmarshal(prev, &p)
-		return int64(p.ValidRows), nil
+		return int64(p.ValidRows), int64(p.TotalRows - p.ValidRows), nil
 	}
 	rd := csv.NewReader(data)
 	rd.FieldsPerRecord = -1
 	header, err := rd.Read()
 	if err != nil {
-		return 0, errors.New("CSV 无法解析表头")
+		return 0, 0, errors.New("CSV 无法解析表头")
 	}
 	colMap := map[int]string{}
 	for i, h := range header {
@@ -227,13 +258,13 @@ func (r *Repo) CommitImport(ctx context.Context, ownerID, batchID int64, data io
 			colMap[i] = target
 		}
 	}
-	inserted := int64(0)
 	for {
 		rec, err := rd.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			skipped++
 			continue
 		}
 		row := map[string]string{}
@@ -242,9 +273,9 @@ func (r *Repo) CommitImport(ctx context.Context, ownerID, batchID int64, data io
 				row[target] = strings.TrimSpace(rec[ci])
 			}
 		}
-		company := row["company_name"]
-		position := row["position"]
-		if company == "" || position == "" {
+		// Same gate the preview showed the user — see validateRow.
+		if validateRow(row) != nil {
+			skipped++
 			continue
 		}
 		st := domain.StatusSaved
@@ -253,12 +284,13 @@ func (r *Repo) CommitImport(ctx context.Context, ownerID, batchID int64, data io
 		}
 		// build the insert via apps repo (respecting owner + company)
 		if err := r.insertApp(ctx, ownerID, row, st); err != nil {
+			skipped++
 			continue
 		}
 		inserted++
 	}
 	_, err = r.db.Pool().Exec(ctx, `UPDATE import_batches SET status='committed', committed_at=now() WHERE id=$1 AND owner_id=$2`, batchID, ownerID)
-	return inserted, err
+	return inserted, skipped, err
 }
 
 func (r *Repo) insertApp(ctx context.Context, ownerID int64, row map[string]string, status string) error {
@@ -357,6 +389,18 @@ func defStr(s, def string) string {
 func (r *Repo) Errors(ctx context.Context, ownerID, batchID int64, out *json.RawMessage) error {
 	return r.db.Pool().QueryRow(ctx, `SELECT preview FROM import_batches WHERE id=$1 AND owner_id=$2`,
 		batchID, ownerID).Scan(out)
+}
+
+// ExportHeader is the CSV header ExportRows' columns line up with, in order.
+// It lives next to the row builder (rather than in the HTTP layer) so the two
+// cannot drift, and so a round-trip test can rebuild the real exported file
+// instead of hand-writing a CSV that only looks like one.
+//
+// Every name here must be a key of csvFieldByHeader, or the column exports but
+// silently fails to import back.
+func ExportHeader() []string {
+	return []string{"公司", "岗位", "链接", "地点", "远程", "类型", "渠道", "状态", "优先级",
+		"标签", "截止日期", "投递时间", "薪资下限", "薪资上限", "币种", "备注", "归档"}
 }
 
 // ExportRows streams every non-deleted application as CSV-safe string rows.

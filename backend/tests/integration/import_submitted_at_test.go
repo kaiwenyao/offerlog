@@ -40,7 +40,7 @@ func TestImportedSubmittedAtSurvivesATimelineEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData)); err != nil {
+	if _, _, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData)); err != nil {
 		t.Fatal(err)
 	}
 	var appID int64
@@ -84,7 +84,7 @@ func TestImportedLaterStageKeepsItsSubmittedAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData)); err != nil {
+	if _, _, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData)); err != nil {
 		t.Fatal(err)
 	}
 	var appID int64

@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"errors"
 	"os"
 	"testing"
@@ -316,17 +318,22 @@ func TestCSVImportPreviewAndCommit(t *testing.T) {
 	if pv.TotalRows != 4 || pv.ValidRows != 3 {
 		t.Fatalf("preview counts wrong: %+v", pv)
 	}
-	n, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData))
+	n, skipped, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 3 {
 		t.Fatalf("expected 3 inserted, got %d", n)
 	}
+	// The 4th row (empty 公司) is the one the preview rejected — the commit must
+	// own up to skipping it rather than quietly counting it as a success.
+	if skipped != 1 {
+		t.Fatalf("expected 1 skipped row, got %d", skipped)
+	}
 	// idempotent second commit
-	n2, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData))
-	if err != nil || n2 != 3 {
-		t.Fatalf("idempotent commit: %d %v", n2, err)
+	n2, skipped2, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData))
+	if err != nil || n2 != 3 || skipped2 != 1 {
+		t.Fatalf("idempotent commit: inserted=%d skipped=%d %v", n2, skipped2, err)
 	}
 	var count int
 	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM applications WHERE owner_id=$1`, owner).Scan(&count); err != nil {
@@ -337,66 +344,137 @@ func TestCSVImportPreviewAndCommit(t *testing.T) {
 	}
 }
 
-// Backup still includes archived jobs, but the 归档 column must round-trip
-// so re-importing the CSV does not resurrect them as live rows.
-func TestCSVExportImportPreservesArchive(t *testing.T) {
+// A backup you cannot restore is not a backup. This walks the REAL round trip —
+// ExportHeader + ExportRows serialized exactly as the HTTP handler writes them,
+// then fed straight back through ParseCSV/CommitImport.
+//
+// The previous version of this test hand-wrote a 3-column CSV, so it never
+// exercised the exported 投递时间 format and happily passed while every restored
+// row silently lost its submission time (parseDate did not accept the very
+// layout ExportRows emits).
+func TestCSVExportReimportsCleanly(t *testing.T) {
 	db, svc, _, owner := setup(t)
 	ctx := context.Background()
-	_ = mustCreate(t, svc, owner, "LiveCo", "在招")
+	submitted := time.Date(2026, 3, 9, 14, 30, 0, 0, time.UTC)
+	if _, err := svc.Create(ctx, owner, &appservice.CreateInput{
+		CompanyName: "RoundTripCo", Position: "后端", Status: domain.StatusApplied, SubmittedAt: &submitted,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	archived := mustCreate(t, svc, owner, "ArchiveCo", "已归档岗")
 	if err := svc.Archive(ctx, owner, archived.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	tr := transfers.New(db)
-	rows, err := tr.ExportRows(ctx, owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("export rows = %d, want 2 (archived included)", len(rows))
-	}
-	var archivedFlag, liveFlag string
-	for _, r := range rows {
-		if len(r) < 17 {
-			t.Fatalf("export row has %d cols, want 归档 as last", len(r))
-		}
-		switch r[0] {
-		case "ArchiveCo":
-			archivedFlag = r[len(r)-1]
-		case "LiveCo":
-			liveFlag = r[len(r)-1]
-		}
-	}
-	if archivedFlag != "1" {
-		t.Fatalf("archived export flag = %q, want 1", archivedFlag)
-	}
-	if liveFlag != "" {
-		t.Fatalf("live export flag = %q, want empty", liveFlag)
-	}
+
+	csvData := exportCSV(t, db, owner)
 
 	other := createOwner(t, db)
-	csvData := "公司,岗位,归档\nArchiveCo,已归档岗,1\nLiveCo,在招,\n"
-	pv, err := tr.ParseCSV(ctx, other, "x.csv", stringsNewReader(csvData))
+	tr := transfers.New(db)
+	pv, err := tr.ParseCSV(ctx, other, "applications.csv", stringsNewReader(csvData))
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := tr.CommitImport(ctx, other, pv.BatchID, stringsNewReader(csvData))
+	// The app's own export must survive its own preview without a single error.
+	if len(pv.Errors) != 0 {
+		t.Fatalf("own export failed preview: %+v", pv.Errors)
+	}
+	if pv.TotalRows != 2 || pv.ValidRows != 2 {
+		t.Fatalf("preview total=%d valid=%d, want 2/2", pv.TotalRows, pv.ValidRows)
+	}
+	n, skipped, err := tr.CommitImport(ctx, other, pv.BatchID, stringsNewReader(csvData))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("imported %d rows, want 2", n)
+	if n != 2 || skipped != 0 {
+		t.Fatalf("import inserted=%d skipped=%d, want 2/0", n, skipped)
 	}
+
+	// 投递时间 survives to the minute the CSV renders.
+	var got *time.Time
+	if err := db.Pool().QueryRow(ctx,
+		`SELECT submitted_at FROM applications WHERE owner_id=$1 AND company_name='RoundTripCo'`,
+		other).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("submitted_at lost on re-import (was 2026-03-09 14:30Z)")
+	}
+	if want := submitted.Truncate(time.Minute); !got.UTC().Equal(want) {
+		t.Fatalf("submitted_at = %s, want %s", got.UTC(), want)
+	}
+	// 归档 survives too: a restore must not resurrect archived jobs as live ones.
 	var nArchived, nLive int
-	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM applications WHERE owner_id=$1 AND archived_at IS NOT NULL`, other).Scan(&nArchived); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM applications WHERE owner_id=$1 AND archived_at IS NULL`, other).Scan(&nLive); err != nil {
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FILTER (WHERE archived_at IS NOT NULL),
+		count(*) FILTER (WHERE archived_at IS NULL) FROM applications WHERE owner_id=$1`,
+		other).Scan(&nArchived, &nLive); err != nil {
 		t.Fatal(err)
 	}
 	if nArchived != 1 || nLive != 1 {
 		t.Fatalf("imported archived=%d live=%d, want 1/1", nArchived, nLive)
 	}
+}
+
+// The commit must apply the same gate the preview showed, so「有效 N 行」and
+// 「写入 N 条」can never contradict each other on screen.
+func TestCSVCommitSkipsRowsThePreviewRejected(t *testing.T) {
+	db, _, _, owner := setup(t)
+	ctx := context.Background()
+	tr := transfers.New(db)
+	csvData := "公司,岗位,状态,截止日期,投递时间\n" +
+		"GoodCo,后端,已投递,2026-01-02,2026-01-02 09:30\n" +
+		"BadDate,后端,已投递,,not-a-date\n" +
+		"BadStatus,后端,火星状态,,\n" +
+		"BadDeadline,后端,,乱七八糟,\n" +
+		",没有公司,,,\n"
+	pv, err := tr.ParseCSV(ctx, owner, "x.csv", stringsNewReader(csvData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pv.TotalRows != 5 || pv.ValidRows != 1 || len(pv.Errors) != 4 {
+		t.Fatalf("preview total=%d valid=%d errors=%d, want 5/1/4", pv.TotalRows, pv.ValidRows, len(pv.Errors))
+	}
+	n, skipped, err := tr.CommitImport(ctx, owner, pv.BatchID, stringsNewReader(csvData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int(n) != pv.ValidRows {
+		t.Fatalf("inserted=%d but preview promised valid=%d", n, pv.ValidRows)
+	}
+	if int(skipped) != len(pv.Errors) {
+		t.Fatalf("skipped=%d but preview reported %d errors", skipped, len(pv.Errors))
+	}
+	var count int
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM applications WHERE owner_id=$1`, owner).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rows in db = %d, want only the 1 valid row", count)
+	}
+}
+
+// exportCSV renders the export exactly as the HTTP handler does: the shared
+// header plus ExportRows, through encoding/csv.
+func exportCSV(t *testing.T, db *database.DB, owner int64) string {
+	t.Helper()
+	rows, err := transfers.New(db).ExportRows(context.Background(), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	if err := w.Write(transfers.ExportHeader()); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if len(r) != len(transfers.ExportHeader()) {
+			t.Fatalf("export row has %d cells, header has %d", len(r), len(transfers.ExportHeader()))
+		}
+		if err := w.Write(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.Flush()
+	return buf.String()
 }
 
 func stringsNewReader(s string) *strings.Reader { return strings.NewReader(s) }
