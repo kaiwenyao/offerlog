@@ -78,14 +78,14 @@ export function columnByKey(key: DbColumnKey): DbColumn {
 /**
  * 当前可见的列。
  *
- * - 回收站操作列（恢复）只在回收站模式下出现；
+ * - 行内操作列（回收站「恢复」/ 已归档「取消归档」）只在这两种视图出现；
  * - 勾选列则相反：**回收站里不给勾选**。批量操作会真的作用到已删除的记录上
  *   （后端 GetForUpdate 按 id 取行），而列表上看不到任何变化——看起来就像
- *   「点了没反应」。
+ *   「点了没反应」。已归档仍可勾选（批量打标签等）。
  */
-export function visibleColumnKeys(trashMode: boolean): DbColumnKey[] {
+export function visibleColumnKeys(trashMode: boolean, archivedMode = false): DbColumnKey[] {
   return DB_COLUMNS.filter((c) => {
-    if (c.key === 'actions') return trashMode
+    if (c.key === 'actions') return trashMode || archivedMode
     if (c.key === 'select') return !trashMode
     return true
   }).map((c) => c.key)

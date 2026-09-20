@@ -102,8 +102,10 @@ export function TodayPage() {
 
   const week = useMemo(() => (summary ? buildWeek(summary) : []), [summary])
 
-  if (summaryQ.isLoading) return <PageSpinner />
-  if (summaryQ.isError) {
+  if (summaryQ.isLoading && !summary) return <PageSpinner />
+  // refetch 失败时 react-query 仍保留 data，但 isError 为真。有缓存就继续
+  // 画看板，只在顶部提示；整页换成错误卡会把好好的内容瞬间抹掉。
+  if (summaryQ.isError && !summary) {
     return (
       <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <Card padding="18px">
@@ -126,6 +128,14 @@ export function TodayPage() {
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {summaryQ.isError && (
+        <Card padding="12px 14px">
+          <ErrorText>刷新失败，正在显示上次加载的内容。</ErrorText>
+          <Button variant="ghost" size="sm" onClick={() => summaryQ.refetch()} style={{ marginTop: 8 }}>
+            重试
+          </Button>
+        </Card>
+      )}
       {toast && (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
           <span className="grow">

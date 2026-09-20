@@ -1377,7 +1377,18 @@ func (h *Handler) postponeAction(c *gin.Context) {
 	} else {
 		a.DueDate = nil
 	}
-	if err := h.repo.UpdateAction(c.Request.Context(), h.repo.Pool(), a); err != nil {
+	// Postpone + mirror rewrite must be one transaction: the table 「截止」
+	// column reads applications.next_action_due_at, not the action row.
+	err = h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.UpdateAction(ctx, tx, a); err != nil {
+			return err
+		}
+		if a.ApplicationID == nil {
+			return nil
+		}
+		return h.repo.SyncNextActionMirror(ctx, tx, user.ID, *a.ApplicationID)
+	})
+	if err != nil {
 		writeActionErr(c, err)
 		return
 	}

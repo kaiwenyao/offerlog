@@ -356,17 +356,20 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 	}
 	rows.Close()
 
-	// Upcoming OA rounds with a planned time: same cross-application ordering
-	// as interviews; cancelled rounds never surface here.
+	// Upcoming OA rounds with a planned time: same rules as interviews —
+	// completed / cancelled rounds and anything already in the past are not
+	// 「即将到来」. Without the time floor + progress filter, the oldest
+	// finished OA fills the LIMIT 5 panel forever and hides real future ones.
 	aRows, err := q.Query(ctx, `SELECT r.id, a.id, a.company_name, a.position, r.name, r.kind,
 		r.planned_at, r.due_at, COALESCE(r.progress,'')
 		FROM assessment_rounds r
 		JOIN applications a ON a.id = r.application_id AND a.owner_id = r.owner_id
 		WHERE r.owner_id=$1 AND r.planned_at IS NOT NULL
-		  AND COALESCE(r.progress,'') <> 'cancelled'
+		  AND COALESCE(r.progress,'') NOT IN ('completed','cancelled')
 		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		  AND r.planned_at >= $2
 		ORDER BY r.planned_at ASC
-		LIMIT $2`, ownerID, upcomingLimit)
+		LIMIT $3`, ownerID, now, upcomingLimit)
 	if err != nil {
 		return nil, err
 	}

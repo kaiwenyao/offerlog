@@ -3,8 +3,9 @@
 // 原始 bug：新建待办会把标题同步到 applications.next_action；完成后这个字段还在，
 // 详情发现「没有未完成待办」就把镜像当成迁移遗留再显示一遍，于是出现
 // 「待办 (0)，下面却还有一条不可操作的待办」。修复后：完成最后一个未完成待办时
-// 镜像清空（next_action_due_at 一并清），还有未完成待办时绝不动它；撤销完成
-// （reopen）不会把镜像复活——独立待办才是唯一真相。
+// 镜像清空（next_action_due_at 一并清），还有未完成待办时把镜像切到剩下那条
+// （标题 + 截止日期一起改，不能继续指向刚完成的）；撤销完成（reopen）不会
+// 把镜像复活——独立待办才是唯一真相。
 package integration
 
 import (
@@ -71,10 +72,10 @@ func TestCompletingLastActionClearsLegacyNextAction(t *testing.T) {
 	srv := newActivityServer(t, db, owner)
 	defer srv.Close()
 
-	// 还有一条未完成待办：镜像必须原样保留（不能误清）。
+	// 还有一条未完成待办：镜像必须切到剩下那条，不能继续指向刚完成的「跟进 HR」。
 	postActionDone(t, srv.URL, first, true)
-	if action, due := legacyMirror(t, db, app.ID); action == "" || due == nil {
-		t.Fatalf("还有未完成待办时必须保留镜像, got action=%q due=%v", action, due)
+	if action, due := legacyMirror(t, db, app.ID); action != "准备二面" {
+		t.Fatalf("完成其中一条后镜像应指向剩下的待办, got action=%q due=%v", action, due)
 	}
 
 	// 完成最后一条：镜像一起清空，详情才不会再把它当「旧记录」显示。

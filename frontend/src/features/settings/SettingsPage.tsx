@@ -186,11 +186,17 @@ function RemindersPanel({ me }: { me: Me | null }) {
       setSavingKey('')
     },
   })
+  // 每个开关各自发一整行 PUT。连点时后到的请求会用过期快照盖掉先到的字段
+  // （后端现在会串行化，前端也排队，避免连点看起来「点了没反应」）。
+  const inflight = useRef(Promise.resolve())
 
   const toggle = (key: string, next: boolean | number) => {
     setSavingKey(key)
     setErr('')
-    save.mutate({ [key]: next } as never)
+    inflight.current = inflight.current
+      .catch(() => undefined)
+      .then(() => save.mutateAsync({ [key]: next } as never))
+      .then(() => undefined)
   }
 
   const remindRows: Array<{ key: string; label: string; hint: string; value: boolean; control: 'switch' }> = [

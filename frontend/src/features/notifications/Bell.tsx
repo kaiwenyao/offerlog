@@ -70,14 +70,25 @@ export function NotificationsBell() {
   const items = q.data?.items ?? []
   const unread = items.length
 
+  const [actionErr, setActionErr] = useState('')
+  const onActionError = (e: unknown) =>
+    setActionErr(e instanceof ApiError ? e.message : '操作失败，请重试')
+
   const dismiss = useMutation({
     mutationFn: (id: number) => api.post(`/api/v1/notifications/${id}/dismiss`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
-    onError: (e: unknown) => console.error(e),
+    onSuccess: () => {
+      setActionErr('')
+      qc.invalidateQueries({ queryKey: ['notifications'] })
+    },
+    onError: onActionError,
   })
   const read = useMutation({
     mutationFn: (id: number) => api.post(`/api/v1/notifications/${id}/read`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+    onSuccess: () => {
+      setActionErr('')
+      qc.invalidateQueries({ queryKey: ['notifications'] })
+    },
+    onError: onActionError,
   })
 
   return (
@@ -139,8 +150,13 @@ export function NotificationsBell() {
                 {q.isLoading ? <Spinner size={13} /> : unread === 0 ? '没有未读' : `${unread} 条未读`}
               </span>
             </div>
+            {actionErr && (
+              <div style={{ padding: '8px 14px' }}>
+                <ErrorText>{actionErr}</ErrorText>
+              </div>
+            )}
             <div style={{ maxHeight: 380, overflowY: 'auto' }}>
-              {q.isError ? (
+              {q.isError && items.length === 0 ? (
                 <div style={{ padding: 14 }}>
                   <ErrorText>通知加载失败</ErrorText>
                 </div>

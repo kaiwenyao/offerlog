@@ -219,6 +219,9 @@ export function OverviewTab({
     // 今天完成 / 延期一条待办会改首页的统一待办计数与清单（还有过期提醒）。
     qc.invalidateQueries({ queryKey: ['home'] })
     qc.invalidateQueries({ queryKey: ['notifications'] })
+    // 岗位行的 next_action / next_action_due_at 镜像会跟着变，数据库表格
+    // 「下一步 / 截止」读的是 ['apps']，漏掉就会一直显示已完成或旧日期。
+    qc.invalidateQueries({ queryKey: ['apps'] })
     refetchAll()
   }
   const doneMut = useMutation({

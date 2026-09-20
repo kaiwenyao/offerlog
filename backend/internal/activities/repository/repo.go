@@ -472,7 +472,7 @@ func (r *Repo) DeleteActionAndSettle(ctx context.Context, ownerID, id int64) err
 			// 跨岗位待办（application_id IS NULL）没有镜像可清。
 			return nil
 		}
-		return r.ClearLegacyNextActionForApp(ctx, tx, ownerID, *appID)
+		return r.SyncNextActionMirror(ctx, tx, ownerID, *appID)
 	})
 }
 
@@ -485,23 +485,47 @@ func (r *Repo) MarkActionDone(ctx context.Context, q database.Querier, ownerID, 
 	return err
 }
 
-// ClearLegacyNextActionWhenSettled removes the application's legacy next_action
-// mirror once it has no open actions left.
-//
-// 方案 §5.3：独立待办是唯一真相，岗位行上的 next_action 只是历史镜像
-// （迁移 00002 把老数据搬进 actions）。镜像不跟着关就会出现自相矛盾的界面：
-// 详情说「待办 (0)」，下面却还挂着一条不可操作的旧记录——因为它把镜像当成了
-// 迁移遗留。所以最后一个未完成待办被完成时镜像必须一起清空；还有未完成待办时
-// 绝不能动它（NOT EXISTS 子句）。
-func (r *Repo) ClearLegacyNextActionWhenSettled(ctx context.Context, q database.Querier, ownerID, actionID int64) error {
-	_, err := q.Exec(ctx, `UPDATE applications ap SET next_action='', next_action_due_at=NULL,
-		next_action_due_ts=NULL, version=version+1, updated_at=now()
-		WHERE ap.owner_id=$1
-		  AND ap.id=(SELECT a.application_id FROM actions a WHERE a.id=$2 AND a.owner_id=$1)
-		  AND NOT EXISTS (SELECT 1 FROM actions x
-		        WHERE x.application_id=ap.id AND x.owner_id=$1 AND x.done_at IS NULL)`,
-		ownerID, actionID)
+// SyncNextActionMirror rewrites the application's legacy next_action /
+// next_action_due_at snapshot from the earliest still-open action. No open
+// action → clear the snapshot. The table 「下一步 / 截止」 columns read this
+// snapshot, so postpone / completing one of several todos used to leave a
+// stale title and date on the row.
+func (r *Repo) SyncNextActionMirror(ctx context.Context, q database.Querier, ownerID, appID int64) error {
+	var title string
+	var dueDate, dueTs *time.Time
+	err := q.QueryRow(ctx, `SELECT title, due_date, due_ts FROM actions
+		WHERE application_id=$1 AND owner_id=$2 AND done_at IS NULL
+		ORDER BY COALESCE(due_date, due_ts) NULLS LAST, id
+		LIMIT 1`, appID, ownerID).Scan(&title, &dueDate, &dueTs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = q.Exec(ctx, `UPDATE applications SET next_action='', next_action_due_at=NULL,
+			next_action_due_ts=NULL, version=version+1, updated_at=now()
+			WHERE owner_id=$1 AND id=$2`, ownerID, appID)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `UPDATE applications SET next_action=$3, next_action_due_at=$4,
+		next_action_due_ts=$5, version=version+1, updated_at=now()
+		WHERE owner_id=$1 AND id=$2`, ownerID, appID, title, dueDate, dueTs)
 	return err
+}
+
+// ClearLegacyNextActionWhenSettled refreshes the application's next_action
+// snapshot after an action is completed: remaining open actions retarget the
+// mirror; none left → clear it.
+func (r *Repo) ClearLegacyNextActionWhenSettled(ctx context.Context, q database.Querier, ownerID, actionID int64) error {
+	var appID *int64
+	err := q.QueryRow(ctx, `SELECT application_id FROM actions WHERE id=$1 AND owner_id=$2`,
+		actionID, ownerID).Scan(&appID)
+	if errors.Is(err, pgx.ErrNoRows) || appID == nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return r.SyncNextActionMirror(ctx, q, ownerID, *appID)
 }
 
 // MarkActionDoneAndSettle marks the action (un)done and, on completion, clears

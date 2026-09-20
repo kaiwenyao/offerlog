@@ -75,7 +75,7 @@ function useSidebarCounts() {
   const unread = useUnreadCount()
   return {
     apps: home.data?.active ?? home.data?.total ?? 0,
-    files: (files.data?.items ?? []).length,
+    files: (files.data?.items ?? []).filter((f) => f.status !== 'deleted' && f.status !== 'failed').length,
     open: home.data?.todos.open ?? 0,
     unread,
   }
@@ -122,7 +122,12 @@ export function AppLayout({ me }: { me: Me | null }) {
   }, [])
 
   const doLogout = async () => {
-    await logout()
+    try {
+      await logout()
+    } catch {
+      // 后端挂掉 / 断网时仍清掉本地会话并回到登录页；卡在「点了没反应」
+      // 正好发生在用户最想退出的时刻。
+    }
     nav('/')
     window.location.reload()
   }

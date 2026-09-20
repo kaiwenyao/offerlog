@@ -39,6 +39,40 @@ func newActivityServer(t *testing.T, db *database.DB, owner int64) *httptest.Ser
 	return httptest.NewServer(r)
 }
 
+func TestPostponeRewritesApplicationDueMirror(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "MirrorDueCo", "Role")
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进 HR','2026-09-21', NULL, FALSE, 'medium','manual') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool().Exec(ctx, `UPDATE applications SET next_action='跟进 HR', next_action_due_at='2026-09-21' WHERE id=$1`, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	srv := newActivityServer(t, db, owner)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/actions/"+itoa(actionID)+"/postpone", bytes.NewBufferString(`{"due_date":"2026-09-22"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("postpone status = %d, want 200", res.StatusCode)
+	}
+	var due string
+	if err := db.Pool().QueryRow(ctx, `SELECT to_char(next_action_due_at,'YYYY-MM-DD') FROM applications WHERE id=$1`, app.ID).Scan(&due); err != nil {
+		t.Fatal(err)
+	}
+	if due != "2026-09-22" {
+		t.Fatalf("application next_action_due_at = %q, want 2026-09-22", due)
+	}
+}
+
 func TestPostponeBlankDateClearsDue(t *testing.T) {
 	db, svc, _, owner := setup(t)
 	ctx := context.Background()

@@ -392,7 +392,7 @@ func (h *Handler) list(c *gin.Context) {
 	args := []any{user.ID}
 	// 列名一律带 f. 前缀：下面 JOIN 了 applications，owner_id 在两张表上都有，
 	// 不限定的话 PostgreSQL 直接报 ambiguous column。
-	where := "f.owner_id=$1"
+	where := "f.owner_id=$1 AND f.status NOT IN ('deleted','failed')"
 	if appID != "" {
 		args = append(args, appID)
 		where += " AND f.used_by_application=$2"

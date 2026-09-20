@@ -54,6 +54,11 @@ describe('column geometry', () => {
     expect(visibleColumnKeys(true)).toContain('actions')
   })
 
+  it('shows the 操作 column in the archived view so 取消归档 is reachable', () => {
+    expect(visibleColumnKeys(false, true)).toContain('actions')
+    expect(visibleColumnKeys(false, true)).toContain('select')
+  })
+
   // 回收站里不给勾选：批量打标签会真的命中已删除记录（后端按 id 取行），而列表上
   // 看不到任何变化，看起来就像「点了没反应」。
   it('hides the checkbox column inside the recycle bin', () => {

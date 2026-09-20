@@ -110,90 +110,97 @@ func (h *Handler) put(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
-	cur, err := h.repo.Get(c.Request.Context(), user.ID)
-	if err != nil {
-		httpx.WriteErr(c, err)
+	// Validate the patch before opening a transaction so a bad payload never
+	// takes the per-user prefs lock.
+	if req.DisplayName != nil && len(*req.DisplayName) > 80 {
+		httpx.WriteErr(c, httpx.BadRequest("display_name_too_long", "显示名称不能超过 80 个字符"))
 		return
 	}
-	p := &prefs.Preferences{UserID: user.ID}
-	if cur != nil {
-		*p = *cur
-	} else {
-		p.DisplayName = user.DisplayName
-		p.WeekStart = 1
-		p.RemindOverdue = true
-		p.RemindInterview = true
-		p.RemindStaleDays = 14
-		p.RemindWeekly = false
-		p.Locale = user.Locale
-	}
-	// users.timezone is canonical (PATCH /auth/me may have changed it since the
-	// prefs row was written). Seed from the session user so a reminder-only PUT
-	// cannot revert a zone change made through /auth/me.
-	p.Timezone = user.Timezone
-	p.DisplayName = user.DisplayName
-
-	if req.DisplayName != nil {
-		name := *req.DisplayName
-		if len(name) > 80 {
-			httpx.WriteErr(c, httpx.BadRequest("display_name_too_long", "显示名称不能超过 80 个字符"))
-			return
-		}
-		p.DisplayName = name
-	}
 	if req.Timezone != nil {
-		norm, err := authservice.NormalizeTimezone(*req.Timezone)
-		if err != nil {
+		if _, err := authservice.NormalizeTimezone(*req.Timezone); err != nil {
 			httpx.WriteErr(c, httpx.BadRequest("invalid_timezone", err.Error()))
 			return
 		}
-		p.Timezone = norm
 	}
-	if req.WeekStart != nil {
-		if *req.WeekStart < 0 || *req.WeekStart > 6 {
-			httpx.WriteErr(c, httpx.BadRequest("invalid_week_start", "每周起始日必须是 0（周日）到 6（周六）"))
-			return
-		}
-		p.WeekStart = *req.WeekStart
+	if req.WeekStart != nil && (*req.WeekStart < 0 || *req.WeekStart > 6) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_week_start", "每周起始日必须是 0（周日）到 6（周六）"))
+		return
 	}
-	if req.RemindOverdue != nil {
-		p.RemindOverdue = *req.RemindOverdue
-	}
-	if req.RemindInterview != nil {
-		p.RemindInterview = *req.RemindInterview
-	}
-	if req.RemindStaleDays != nil {
-		if *req.RemindStaleDays < 0 || *req.RemindStaleDays > 365 {
-			httpx.WriteErr(c, httpx.BadRequest("invalid_stale_days", "未回复提醒天数需在 0–365 之间（0 表示关闭）"))
-			return
-		}
-		p.RemindStaleDays = *req.RemindStaleDays
-	}
-	if req.RemindWeekly != nil {
-		p.RemindWeekly = *req.RemindWeekly
+	if req.RemindStaleDays != nil && (*req.RemindStaleDays < 0 || *req.RemindStaleDays > 365) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_stale_days", "未回复提醒天数需在 0–365 之间（0 表示关闭）"))
+		return
 	}
 
-	// Persist the profile fields on the users row AND the reminder preferences
-	// on the preferences row in ONE transaction: a mid-way failure would
-	// otherwise leave half of the settings saved (e.g. a new timezone on the
-	// users row without the preferences row, or vice versa). When no profile
-	// writer is wired (prefs-only surface) only the preferences row is written.
-	if h.profiles != nil {
-		err := h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+	// Read-modify-write is atomic: lock the user, re-read the current row
+	// inside the same transaction, apply only the fields this PUT sent, then
+	// write. Two overlapping PUTs (settings page fires one PUT per toggle)
+	// used to each snapshot the row outside the tx and last-writer-wins the
+	// whole row — the first toggle silently snapped back.
+	p := &prefs.Preferences{UserID: user.ID}
+	err := h.repo.Pool().RunInTx(c.Request.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := h.repo.LockUser(ctx, tx, user.ID); err != nil {
+			return err
+		}
+		cur, err := h.repo.GetTx(ctx, tx, user.ID)
+		if err != nil {
+			return err
+		}
+		if cur != nil {
+			*p = *cur
+		} else {
+			p.DisplayName = user.DisplayName
+			p.WeekStart = 1
+			p.RemindOverdue = true
+			p.RemindInterview = true
+			p.RemindStaleDays = 14
+			p.RemindWeekly = false
+			p.Locale = user.Locale
+		}
+		// users.timezone is canonical (PATCH /auth/me may have changed it
+		// since the prefs row was written). Seed from the session user so a
+		// reminder-only PUT cannot revert a zone change made through /auth/me.
+		p.Timezone = user.Timezone
+		p.DisplayName = user.DisplayName
+
+		if req.DisplayName != nil {
+			p.DisplayName = *req.DisplayName
+		}
+		if req.Timezone != nil {
+			norm, err := authservice.NormalizeTimezone(*req.Timezone)
+			if err != nil {
+				return err
+			}
+			p.Timezone = norm
+		}
+		if req.WeekStart != nil {
+			p.WeekStart = *req.WeekStart
+		}
+		if req.RemindOverdue != nil {
+			p.RemindOverdue = *req.RemindOverdue
+		}
+		if req.RemindInterview != nil {
+			p.RemindInterview = *req.RemindInterview
+		}
+		if req.RemindStaleDays != nil {
+			p.RemindStaleDays = *req.RemindStaleDays
+		}
+		if req.RemindWeekly != nil {
+			p.RemindWeekly = *req.RemindWeekly
+		}
+
+		// Persist the profile fields on the users row AND the reminder
+		// preferences on the preferences row in ONE transaction: a mid-way
+		// failure would otherwise leave half of the settings saved.
+		if h.profiles != nil {
 			if _, err := h.profiles.UpdateProfileTx(ctx, tx, user.ID, p.DisplayName, p.Timezone); err != nil {
 				return err
 			}
-			return h.repo.UpsertTx(ctx, tx, p)
-		})
-		if err != nil {
-			httpx.WriteErr(c, err)
-			return
 		}
-	} else {
-		if err := h.repo.Upsert(c.Request.Context(), p); err != nil {
-			httpx.WriteErr(c, err)
-			return
-		}
+		return h.repo.UpsertTx(ctx, tx, p)
+	})
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
 	}
 	// Keep the session's own user snapshot in step so /auth/me and the sidebar
 	// reflect the saved profile immediately.

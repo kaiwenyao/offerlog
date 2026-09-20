@@ -148,7 +148,7 @@ func (h *Handler) createProp(c *gin.Context) {
 	_ = json.Unmarshal(req.Options, &opts)
 	p, err := h.svc.CreateProperty(c.Request.Context(), user.ID, req.Name, req.Key, req.DataType, opts, req.Required)
 	if err != nil {
-		httpx.WriteErr(c, err)
+		writePropErr(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, p)
@@ -223,4 +223,17 @@ func (h *Handler) query(c *gin.Context) {
 // parseFilterSort converts JSON maps into the typed filter/sort structures.
 func parseFilterSort(rawF []map[string]any, rawS []map[string]any) ([]views.FilterNode, []views.SortItem, error) {
 	return vservice.ParseFilters(rawF, rawS)
+}
+
+func writePropErr(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, vservice.ErrEmptyKey), errors.Is(err, vservice.ErrKeyConflict):
+		httpx.WriteErr(c, httpx.BadRequest("invalid_key", err.Error()))
+	case errors.Is(err, vservice.ErrKeyTaken):
+		httpx.WriteErr(c, httpx.Conflict("key_taken", "属性键已被使用"))
+	case errors.Is(err, vservice.ErrNotFound):
+		httpx.WriteErr(c, httpx.NotFound("属性不存在"))
+	default:
+		httpx.WriteErr(c, err)
+	}
 }

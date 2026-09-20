@@ -69,6 +69,7 @@ func newRedesignServer(t *testing.T, db *database.DB, owner int64, timezone stri
 	vs := vservice.New(db, vrepo.New(db)).WithStageHistory(apprepo.New(db))
 	vH := vtransport.New(vs)
 	vH.Routes(api.Group("/views"))
+	vH.PropertiesRoutes(api.Group("/properties"))
 
 	sH := searchtransport.New(searchrepo.New(db))
 	sH.Routes(api.Group("/search"))
@@ -169,7 +170,9 @@ func TestStageHistoryIncludeOnListAndQuery(t *testing.T) {
 		t.Error("stage_history must be absent without include=stage_history")
 	}
 
-	// Views query honors include=stage_history too.
+	// Views query honors include=stage_history too. Also the list must carry
+	// substatus + progress_since — the database table reads those, not the
+	// detail endpoint.
 	body := `{"include":["stage_history"],"page":1,"page_size":10}`
 	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/views/query", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -184,6 +187,12 @@ func TestStageHistoryIncludeOnListAndQuery(t *testing.T) {
 	sh, ok = page.Items[0]["stage_history"].(map[string]any)
 	if !ok || sh["rejected"] != "2026-09-06" {
 		t.Fatalf("views query stage_history = %#v", page.Items[0]["stage_history"])
+	}
+	if page.Items[0]["substatus"] == nil {
+		t.Fatalf("views query must emit substatus, got %#v", page.Items[0])
+	}
+	if page.Items[0]["progress_since"] != "2026-09-06" {
+		t.Fatalf("views query progress_since = %#v, want 2026-09-06", page.Items[0]["progress_since"])
 	}
 }
 
@@ -571,6 +580,75 @@ func TestUploadFileToInterviewRoundAndCleanup(t *testing.T) {
 	arr2 := m[propKey].([]any)
 	if len(arr2) != 1 || arr2[0] != "keep2" {
 		t.Fatalf("custom_values after linked delete = %v, want only keep2", m[propKey])
+	}
+
+	// Soft-deleted rows must not come back on GET /files (ghost rows).
+	res, err = http.Get(srv.URL + "/api/v1/files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode(t, res, &list)
+	for _, it := range list.Items {
+		if it.ID == up.ID || it.ID == up2.ID {
+			t.Fatalf("deleted file %s still listed", it.ID)
+		}
+	}
+}
+
+func TestFileListOmitsFailedRows(t *testing.T) {
+	ctx := context.Background()
+	db, _, _, owner := setup(t)
+	var fid string
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO files(owner_id, object_key, final_key, original_name, category, status, size_bytes)
+		VALUES($1,'staging/f','owners/$1/files/f','坏掉.pdf','other','failed',0) RETURNING id`, owner).Scan(&fid); err != nil {
+		t.Fatal(err)
+	}
+	srv := newRedesignServer(t, db, owner, "Europe/Dublin")
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/api/v1/files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list struct {
+		Items []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	decode(t, res, &list)
+	for _, it := range list.Items {
+		if it.ID == fid || it.Status == "failed" || it.Status == "deleted" {
+			t.Fatalf("list returned a ghost file: %+v", it)
+		}
+	}
+}
+
+func TestCreatePropertyChineseNameGeneratesKey(t *testing.T) {
+	db, _, _, owner := setup(t)
+	srv := newRedesignServer(t, db, owner, "Europe/Dublin")
+	defer srv.Close()
+	body := `{"name":"期望职级","data_type":"text"}`
+	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/properties", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(res.Body)
+		t.Fatalf("POST /properties Chinese name -> %d %s, want 201", res.StatusCode, buf.String())
+	}
+	var out struct {
+		Name string `json:"name"`
+		Key  string `json:"key"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Name != "期望职级" || out.Key == "" {
+		t.Fatalf("created property = %+v, want a non-empty generated key", out)
 	}
 }
 

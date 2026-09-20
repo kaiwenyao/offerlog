@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -248,5 +249,49 @@ func TestPreferencesPutIsAtomicOnSecondWriteFailure(t *testing.T) {
 	}
 	if prefsCount != 0 {
 		t.Fatalf("user_preferences rows = %d, want 0 (whole save must roll back)", prefsCount)
+	}
+}
+
+func TestPreferencesConcurrentPartialPutsKeepBothFields(t *testing.T) {
+	db, _, _, owner := setup(t)
+	srv := newPrefsServer(t, db, owner)
+	defer srv.Close()
+
+	put := func(body string) error {
+		req, _ := http.NewRequest("PUT", srv.URL+"/api/v1/preferences", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return fmt.Errorf("PUT %s -> %d", body, res.StatusCode)
+		}
+		return nil
+	}
+	// Seed a row so both PUTs are updates, not first-inserts.
+	if err := put(`{"remind_overdue":true,"remind_interview":true}`); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- put(`{"remind_overdue":false}`) }()
+	go func() { errCh <- put(`{"remind_interview":false}`) }()
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := http.Get(srv.URL + "/api/v1/preferences")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	if out["remind_overdue"] != false || out["remind_interview"] != false {
+		t.Fatalf("after concurrent PUTs prefs = %#v, want both reminder switches off", out)
 	}
 }

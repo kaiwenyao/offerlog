@@ -40,17 +40,34 @@ export function NotificationsPage() {
     refetchInterval: 60_000,
   })
 
+  const [actionErr, setActionErr] = useState('')
+
+  const onActionError = (e: unknown) =>
+    setActionErr(e instanceof ApiError ? e.message : '操作失败，请重试')
+
   const readAll = useMutation({
     mutationFn: () => api.post('/api/v1/notifications/read-all'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+    onSuccess: () => {
+      setActionErr('')
+      qc.invalidateQueries({ queryKey: ['notifications'] })
+    },
+    onError: onActionError,
   })
   const markRead = useMutation({
     mutationFn: (id: number) => api.post(`/api/v1/notifications/${id}/read`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+    onSuccess: () => {
+      setActionErr('')
+      qc.invalidateQueries({ queryKey: ['notifications'] })
+    },
+    onError: onActionError,
   })
   const dismiss = useMutation({
     mutationFn: (id: number) => api.post(`/api/v1/notifications/${id}/dismiss`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+    onSuccess: () => {
+      setActionErr('')
+      qc.invalidateQueries({ queryKey: ['notifications'] })
+    },
+    onError: onActionError,
   })
 
   const items = q.data?.items ?? []
@@ -74,9 +91,11 @@ export function NotificationsPage() {
         )}
       </div>
 
-      {q.isLoading ? (
+      {actionErr && <ErrorText>{actionErr}</ErrorText>}
+
+      {q.isLoading && items.length === 0 ? (
         <PageSpinner />
-      ) : q.isError ? (
+      ) : q.isError && items.length === 0 ? (
         <Card padding="18px">
           <ErrorText>通知加载失败</ErrorText>
           <Button variant="secondary" size="sm" onClick={() => q.refetch()} style={{ marginTop: 10 }}>
