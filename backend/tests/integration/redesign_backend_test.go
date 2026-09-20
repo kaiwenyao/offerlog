@@ -399,8 +399,9 @@ func TestSearchScopesAndMixes(t *testing.T) {
 	}
 	for _, q := range []string{"北极星已归档", ""} {
 		for _, it := range get(srvA, q) {
-			if it["kind"] == "application" && strings.Contains(fmt.Sprint(it["label"]), "北极星已归档") {
-				t.Errorf("archived app leaked into search q=%q: %v", q, it)
+			label := fmt.Sprint(it["label"])
+			if strings.Contains(label, "北极星已归档") {
+				t.Errorf("archived app/company leaked into search q=%q kind=%v: %v", q, it["kind"], it)
 			}
 		}
 	}

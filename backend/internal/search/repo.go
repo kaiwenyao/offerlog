@@ -98,7 +98,9 @@ func (r *Repo) Search(ctx context.Context, ownerID int64, kw string, limit int) 
 	}
 	room := limit - len(out)
 
-	// companies: name matches, hint shows the number of live applications.
+	// companies: name matches, hint shows live (not deleted / not archived)
+	// applications. Companies with zero live apps are omitted — picking one
+	// would jump to /database?q=<name> and land on an empty list.
 	coWhere, coArgs := likeConjunction([]string{"c.name"}, terms, 2)
 	coArgs = append([]any{ownerID}, coArgs...)
 	coArgs = append(coArgs, room)
@@ -106,6 +108,11 @@ func (r *Repo) Search(ctx context.Context, ownerID int64, kw string, limit int) 
 			(SELECT count(*) FROM applications a WHERE a.company_id = c.id AND a.owner_id = c.owner_id AND a.deleted_at IS NULL AND a.archived_at IS NULL)
 		FROM companies c
 		WHERE c.owner_id=$1 AND (`+coWhere+`)
+		  AND EXISTS (
+			SELECT 1 FROM applications a
+			WHERE a.company_id = c.id AND a.owner_id = c.owner_id
+			  AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		  )
 		ORDER BY c.updated_at DESC, c.id
 		LIMIT $`+strconv.Itoa(len(coArgs)), coArgs...)
 	if err != nil {
