@@ -108,6 +108,23 @@ func TestCreatesRejectForeignApplication(t *testing.T) {
 	}
 }
 
+func TestCreateActionRejectsEmptyTitle(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	app := mustCreate(t, svc, owner, "EmptyTitleCo", "Role")
+	srv := newFullActivityServer(t, db, owner)
+	defer srv.Close()
+
+	for _, body := range []string{`{"title":""}`, `{"title":"   "}`, `{}`} {
+		status := createOnForeignApp(t, srv, app.ID, "/actions", body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("create action %s -> %d, want 400", body, status)
+		}
+	}
+	if status := createOnForeignApp(t, srv, app.ID, "/actions", `{"title":"准备二面"}`); status != http.StatusCreated {
+		t.Fatalf("create action with title -> %d, want 201", status)
+	}
+}
+
 // Regression (review round 4, P1): B attaching an open action to A's app used
 // to surface A's company/status inside B's /home/summary todo list via the
 // open_actions CTE join (which lacked the ap.owner_id = a.owner_id predicate).

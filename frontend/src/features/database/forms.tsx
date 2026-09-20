@@ -125,7 +125,7 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
       // (never a browser-local-midnight instant — that shifts the stored day
       // for non-UTC users). The backend stores it in a DATE column.
       const created = await api.post<{ id: number }>(`/api/v1/applications/${app.id}/actions`, {
-        title,
+        title: title.trim(),
         due_date: due || null,
         priority: app.priority,
       })
@@ -134,7 +134,7 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
         const fresh = await api.get<AppRow>(`/api/v1/applications/${app.id}`)
         await api.patch(`/api/v1/applications/${app.id}`, {
           version: fresh.version,
-          next_action: title || null,
+          next_action: title.trim() || null,
           // 空串才是「清空」：JSON null 在后端等于「这个字段没传」，会把上一条
           // 待办留下的旧截止日原样留在岗位行上。
           next_action_due_at: due,
@@ -157,7 +157,7 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
           <Button variant="ghost" size="sm" onClick={onClose} disabled={mut.isPending}>
             取消
           </Button>
-          <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+          <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={!title.trim() || mut.isPending}>
             {mut.isPending ? <Spinner size={14} /> : '保存'}
           </Button>
         </>
@@ -848,7 +848,7 @@ export function ActionEditForm({
           <Button
             variant="primary"
             size="sm"
-            disabled={mut.isPending}
+            disabled={mut.isPending || !fields.title.trim()}
             onClick={() => {
               setErr('')
               try {

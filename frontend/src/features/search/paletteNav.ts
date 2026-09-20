@@ -1,5 +1,15 @@
 import type { SearchItem } from './CommandPalette'
 
+/**
+ * Empty-state copy for the palette list. While a search is in flight there
+ * are no items yet — show a loading line instead of a fake 「没有匹配」.
+ */
+export function paletteEmptyCopy(q: string, fetching: boolean): string {
+  if (fetching) return '搜索中…'
+  const term = q.trim()
+  return term ? `没有匹配「${term}」的结果` : '输入关键字搜索，或试试「跳转 / 记一个岗位」'
+}
+
 /** One selectable row of the ⌘K palette: a server search hit or a command. */
 export type PaletteRow =
   | { kind: 'item'; data: SearchItem }

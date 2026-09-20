@@ -24,11 +24,11 @@ import {
   toDayString,
   fmtDay,
 } from '../src/lib/api'
-import { defaultSubmittedIso } from '../src/lib/tz'
+import { defaultSubmittedIso, listTimezones } from '../src/lib/tz'
 import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, splitMonthCell, weekColumns } from '../src/features/calendar/grid'
 import { mergeTimeline } from '../src/features/database/timeline'
-import { applicationSearchQuery, moveHighlight, paletteRows } from '../src/features/search/paletteNav'
+import { applicationSearchQuery, moveHighlight, paletteEmptyCopy, paletteRows } from '../src/features/search/paletteNav'
 import {
   BUILTIN,
   buildFilters,
@@ -448,6 +448,27 @@ describe('⌘K palette keyboard navigation', () => {
     expect(moveHighlight(2, 4, 'End')).toBe(3)
     expect(moveHighlight(0, 0, 'ArrowDown')).toBeNull()
     expect(moveHighlight(0, 0, 'End')).toBeNull()
+  })
+})
+
+describe('⌘K palette empty copy', () => {
+  it('does not claim「没有匹配」while a request is in flight', () => {
+    expect(paletteEmptyCopy('阿', true)).toBe('搜索中…')
+    expect(paletteEmptyCopy('阿里巴巴', false)).toBe('没有匹配「阿里巴巴」的结果')
+    expect(paletteEmptyCopy('', false)).toContain('输入关键字')
+    expect(paletteEmptyCopy('  ', false)).toContain('输入关键字')
+  })
+})
+
+describe('settings timezone list', () => {
+  it('includes cities the 7-item preset used to omit', () => {
+    const zones = listTimezones()
+    for (const z of ['America/Los_Angeles', 'Asia/Tokyo', 'Asia/Singapore', 'Australia/Sydney', 'UTC']) {
+      expect(zones).toContain(z)
+    }
+  })
+  it('keeps a currently saved zone even if Intl omitted it', () => {
+    expect(listTimezones('Not/ARealZone')[0]).toBe('Not/ARealZone')
   })
 })
 

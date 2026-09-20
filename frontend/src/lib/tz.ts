@@ -91,3 +91,53 @@ export function defaultSubmittedIso(occurredIso: string | null, now: Date = new 
   if (isNaN(occ.getTime())) return now.toISOString()
   return new Date(Math.min(occ.getTime(), now.getTime())).toISOString()
 }
+
+/**
+ * Browser IANA zone for signup. Empty / "Local" are not persistable (backend
+ * NormalizeTimezone rejects them), so those fall back to undefined and the
+ * server applies its default.
+ */
+export function browserTimezone(): string | undefined {
+  try {
+    const z = Intl.DateTimeFormat().resolvedOptions().timeZone
+    if (z && z !== 'Local') return z
+  } catch {
+    /* Intl missing or throws */
+  }
+  return undefined
+}
+
+/**
+ * IANA zones for the settings dropdown. `Intl.supportedValuesOf('timeZone')`
+ * is the full list the backend already accepts; the current saved value is
+ * prepended if it's somehow missing so a loaded preference never disappears.
+ */
+export function listTimezones(current?: string): string[] {
+  let zones: string[] = []
+  try {
+    const intl = Intl as typeof Intl & { supportedValuesOf?: (key: 'timeZone') => string[] }
+    if (typeof intl.supportedValuesOf === 'function') {
+      zones = intl.supportedValuesOf('timeZone')
+    }
+  } catch {
+    /* keep the fallback below */
+  }
+  if (zones.length === 0) {
+    zones = [
+      'UTC',
+      'Europe/Dublin',
+      'Europe/London',
+      'Europe/Berlin',
+      'Asia/Shanghai',
+      'Asia/Tokyo',
+      'Asia/Singapore',
+      'Asia/Kolkata',
+      'America/New_York',
+      'America/Los_Angeles',
+      'Australia/Sydney',
+    ]
+  }
+  if (!zones.includes('UTC')) zones = ['UTC', ...zones]
+  if (current && !zones.includes(current)) zones = [current, ...zones]
+  return zones
+}

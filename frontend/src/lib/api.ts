@@ -1,6 +1,6 @@
 // Thin fetch wrapper: attaches session cookie (same-origin), CSRF header on
 // writes, and unwraps the canonical {code,message} error envelope.
-import { effectiveZone } from './tz'
+import { browserTimezone, effectiveZone } from './tz'
 import type { Me } from './types'
 
 const CSRF_KEY = 'offerlog.csrf'
@@ -118,12 +118,17 @@ export async function fetchAuthConfig(): Promise<{ registration_open: boolean }>
   return api.get<{ registration_open: boolean }>('/api/v1/auth/config')
 }
 
-export async function register(email: string, password: string, displayName?: string): Promise<Me> {
+export async function register(email: string, password: string, displayName?: string, timezone?: string): Promise<Me> {
   const res = await fetch('/api/v1/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ email, password, display_name: displayName }),
+    body: JSON.stringify({
+      email,
+      password,
+      display_name: displayName,
+      timezone: timezone ?? browserTimezone(),
+    }),
   })
   const text = await res.text()
   if (!res.ok) {

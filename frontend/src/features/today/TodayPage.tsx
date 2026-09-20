@@ -33,6 +33,15 @@ export function TodayPage() {
     queryFn: () => api.get<HomeSummary>('/api/v1/home/summary?limit=5'),
   })
 
+  // 抽屉 invalidateAfterAction 刷新 actions / calendar / home / notifications；
+  // 首页以前只失效 summary，日历上的待办和岗位详情卡片会停在旧状态。
+  const invalidateAfterTodo = () => {
+    qc.invalidateQueries({ queryKey: ['home'] })
+    qc.invalidateQueries({ queryKey: ['actions'] })
+    qc.invalidateQueries({ queryKey: ['calendar'] })
+    qc.invalidateQueries({ queryKey: ['notifications'] })
+  }
+
   const doneMut = useMutation({
     mutationFn: ({ id, actionId }: { id: number; actionId: number | null }) =>
       actionId != null
@@ -40,7 +49,7 @@ export function TodayPage() {
         : Promise.reject(new ApiError('derived_todo', '该待办来自岗位记录，请到岗位详情更新', 409)),
     onSuccess: () => {
       setToast('')
-      qc.invalidateQueries({ queryKey: ['home', 'summary'] })
+      invalidateAfterTodo()
     },
     onError: (e: unknown) => setToast(e instanceof ApiError ? e.message : '操作失败'),
     onSettled: () => setBusyTodoId(null),
@@ -50,7 +59,7 @@ export function TodayPage() {
     mutationFn: (actionId: number) => api.post(`/api/v1/actions/${actionId}/postpone`, { days: 1 }),
     onSuccess: () => {
       setToast('')
-      qc.invalidateQueries({ queryKey: ['home', 'summary'] })
+      invalidateAfterTodo()
     },
     onError: (e: unknown) => setToast(e instanceof ApiError ? e.message : '延期失败'),
     onSettled: () => setBusyTodoId(null),

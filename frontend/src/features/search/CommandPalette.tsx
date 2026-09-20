@@ -5,7 +5,7 @@ import { api } from '../../lib/api'
 import type { SavedView } from '../../lib/types'
 import { Dialog } from '../../ds/Dialog'
 import { Icon, type IconName } from '../../components/Icon'
-import { moveHighlight, applicationSearchQuery, paletteRows } from './paletteNav'
+import { moveHighlight, applicationSearchQuery, paletteRows, paletteEmptyCopy } from './paletteNav'
 
 export interface SearchItem {
   kind: 'application' | 'company' | 'file'
@@ -68,6 +68,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     queryKey: ['search', 'palette', q],
     queryFn: () => api.get<{ items: SearchItem[] }>(`/api/v1/search?q=${encodeURIComponent(q)}&limit=20`),
     enabled: open,
+    // 每个字换 queryKey 时不要把 items 清成 []，否则中文输入会闪「没有匹配「阿」」。
+    placeholderData: (prev) => prev,
   })
   const viewsQ = useQuery({
     queryKey: ['views'],
@@ -299,7 +301,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
         {items.length === 0 && filteredCmds.length === 0 && (
           <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
-            {q ? `没有匹配「${q}」的结果` : '输入关键字搜索，或试试「跳转 / 记一个岗位」'}
+            {paletteEmptyCopy(q, searchQ.isFetching)}
           </div>
         )}
       </div>
