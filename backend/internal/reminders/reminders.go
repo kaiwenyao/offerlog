@@ -152,6 +152,11 @@ func (g *Gen) runOne(ctx context.Context, ownerID int64, loc *time.Location, now
 			FROM interviews i JOIN applications ap ON ap.id = i.application_id AND ap.owner_id = i.owner_id
 			LEFT JOIN schedule_links sl ON sl.interview_id = i.id AND sl.owner_id = i.owner_id
 			WHERE i.owner_id=$1 AND i.scheduled_at IS NOT NULL
+			  -- 回收站里的、以及已归档的岗位不再提醒（其余三类提醒一直是这个
+			  -- 口径）。这里漏掉它尤其伤：软删除 / 归档时 clearAppReminders 会
+			  -- DELETE 掉已生成的通知并释放幂等键，于是第二天的扫描又把「明天
+			  -- 有面试」原样造回来，用户忽略多少次都会复活。
+			  AND ap.deleted_at IS NULL AND ap.archived_at IS NULL
 			  AND COALESCE(sl.cancelled, FALSE) = FALSE
 			  -- 已完成 / 已取消的轮次不再提醒：用户在轮次卡片上标过「已完成」就不该
 			  -- 再收到「明天有面试」（方案 §3.3 完成事实独立于排期）。

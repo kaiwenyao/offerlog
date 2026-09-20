@@ -328,8 +328,13 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		JOIN applications a ON a.id = i.application_id AND a.owner_id = i.owner_id
 		LEFT JOIN schedule_links sl ON sl.interview_id = i.id AND sl.owner_id = i.owner_id
 		WHERE i.owner_id=$1 AND i.scheduled_at IS NOT NULL AND COALESCE(sl.cancelled, FALSE) = FALSE
-		  AND COALESCE(i.progress,'') <> 'cancelled'
-		  AND a.deleted_at IS NULL
+		  -- 已完成的轮次不再是「即将到来」：用户在卡片上点过「标记完成」之后，
+		  -- 它不该继续占着首页最上面那一栏（提醒生成器用的是同一条规则）。
+		  AND COALESCE(i.progress,'') NOT IN ('completed','cancelled')
+		  -- 归档同样要排除：本文件其余每一条统计、周工序条、待办清单和日历都把
+		  -- 已归档的岗位藏了起来，只有这里漏了，于是归档一个岗位之后首页还在
+		  -- 广告它的面试。
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		  AND i.scheduled_at >= $2
 		ORDER BY i.scheduled_at ASC
 		LIMIT $3`, ownerID, now, upcomingLimit)
@@ -359,7 +364,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 		JOIN applications a ON a.id = r.application_id AND a.owner_id = r.owner_id
 		WHERE r.owner_id=$1 AND r.planned_at IS NOT NULL
 		  AND COALESCE(r.progress,'') <> 'cancelled'
-		  AND a.deleted_at IS NULL
+		  AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		ORDER BY r.planned_at ASC
 		LIMIT $2`, ownerID, upcomingLimit)
 	if err != nil {
