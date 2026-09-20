@@ -175,12 +175,15 @@ func TestHomeSummaryUpcomingAssessmentsAndWeekChips(t *testing.T) {
 	if !at.After(now) {
 		at = now.Add(2 * time.Hour)
 	}
-	if !at.Before(we) {
-		t.Skip("week nearly over — cannot place a chip deterministically")
+	// 两个 chip（计划 + 截止）都得落在本周内，否则这条断言只是在测「今天几点」。
+	// 原来的守卫只看 at，所以在一周最后一天的晚上跑必定红：at+3h 跨到了下周。
+	due := at.Add(3 * time.Hour)
+	if !at.Before(we) || !due.Before(we) {
+		t.Skip("week nearly over — cannot place both chips deterministically")
 	}
 	app := mustCreate(t, svc, owner, "OAHomeCo", "Role")
 	if _, err := db.Pool().Exec(ctx, `INSERT INTO assessment_rounds(application_id, owner_id, kind, name, progress, planned_at, due_at)
-		VALUES($1,$2,'online_test','笔试','preparing',$3,$4)`, app.ID, owner, at, at.Add(3*time.Hour)); err != nil {
+		VALUES($1,$2,'online_test','笔试','preparing',$3,$4)`, app.ID, owner, at, due); err != nil {
 		t.Fatal(err)
 	}
 	s, err := repo.Get(ctx, owner, tz, time.Monday, now, 5)
