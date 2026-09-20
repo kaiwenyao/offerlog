@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
@@ -25,6 +25,8 @@ export function TodayPage() {
   const nav = useNavigate()
   const qc = useQueryClient()
   const [toast, setToast] = useState('')
+  // 正在提交的那一条待办的 id（完成 / 延期共用一个，两者不会同时发起）。
+  const [busyTodoId, setBusyTodoId] = useState<number | null>(null)
 
   const summaryQ = useQuery({
     queryKey: ['home', 'summary', { limit: 5 }],
@@ -36,15 +38,31 @@ export function TodayPage() {
       actionId != null
         ? api.post(`/api/v1/actions/${actionId}/done`, { done: true })
         : Promise.reject(new ApiError('derived_todo', '该待办来自岗位记录，请到岗位详情更新', 409)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['home', 'summary'] }),
+    onSuccess: () => {
+      setToast('')
+      qc.invalidateQueries({ queryKey: ['home', 'summary'] })
+    },
     onError: (e: unknown) => setToast(e instanceof ApiError ? e.message : '操作失败'),
+    onSettled: () => setBusyTodoId(null),
   })
 
   const postponeMut = useMutation({
     mutationFn: (actionId: number) => api.post(`/api/v1/actions/${actionId}/postpone`, { days: 1 }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['home', 'summary'] }),
+    onSuccess: () => {
+      setToast('')
+      qc.invalidateQueries({ queryKey: ['home', 'summary'] })
+    },
     onError: (e: unknown) => setToast(e instanceof ApiError ? e.message : '延期失败'),
+    onSettled: () => setBusyTodoId(null),
   })
+
+  // 失败文案必须自己会消失。以前它只被 setToast 写入、从不清除：完成待办失败
+  // 一次，那条红字就永远挂在首页顶上——哪怕后面几次都成功了，也没有关闭按钮。
+  useEffect(() => {
+    if (!toast) return
+    const t = window.setTimeout(() => setToast(''), 6000)
+    return () => window.clearTimeout(t)
+  }, [toast])
 
   const summary = summaryQ.data
 
@@ -99,7 +117,16 @@ export function TodayPage() {
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {toast && <ErrorText>{toast}</ErrorText>}
+      {toast && (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <span className="grow">
+            <ErrorText>{toast}</ErrorText>
+          </span>
+          <Button variant="ghost" size="sm" onClick={() => setToast('')}>
+            知道了
+          </Button>
+        </div>
+      )}
 
       <WeekStrip week={week} totals={weekTotals} />
 
@@ -164,10 +191,20 @@ export function TodayPage() {
                   <TodoRow
                     key={t.id}
                     item={t}
-                    busy={doneMut.isPending || postponeMut.isPending}
+                    // 只冻结**正在操作的那一行**：以前传的是
+                    // `doneMut.isPending || postponeMut.isPending`，点一条
+                    // 「完成」会把整张清单的按钮全灰掉，网络一慢就没法连着处理。
+                    busy={busyTodoId === t.id}
                     onOpen={() => t.application_id && nav(`/apps/${t.application_id}`)}
-                    onDone={() => doneMut.mutate({ id: t.id, actionId: t.action_id ?? null })}
-                    onPostpone={() => t.action_id != null && postponeMut.mutate(t.action_id)}
+                    onDone={() => {
+                      setBusyTodoId(t.id)
+                      doneMut.mutate({ id: t.id, actionId: t.action_id ?? null })
+                    }}
+                    onPostpone={() => {
+                      if (t.action_id == null) return
+                      setBusyTodoId(t.id)
+                      postponeMut.mutate(t.action_id)
+                    }}
                   />
                 ))}
               </div>

@@ -83,9 +83,14 @@ export function InterviewForm({
       title="安排面试"
       onClose={onClose}
       footer={
-        <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
-          {mut.isPending ? <Spinner size={14} /> : '保存'}
-        </Button>
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={mut.isPending}>
+            取消
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
       }
     >
       {err && <ErrorText>{err}</ErrorText>}
@@ -148,9 +153,14 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
       title="设置下一步行动"
       onClose={onClose}
       footer={
-        <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
-          {mut.isPending ? <Spinner size={14} /> : '保存'}
-        </Button>
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={mut.isPending}>
+            取消
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
       }
     >
       {err && <ErrorText>{err}</ErrorText>}
@@ -175,9 +185,14 @@ export function NoteForm({ appId, onClose, onDone }: { appId: number; onClose: (
       title="记录备注"
       onClose={onClose}
       footer={
-        <Button variant="primary" size="sm" disabled={!content.trim() || mut.isPending} onClick={() => mut.mutate()}>
-          {mut.isPending ? <Spinner size={14} /> : '保存'}
-        </Button>
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={mut.isPending}>
+            取消
+          </Button>
+          <Button variant="primary" size="sm" disabled={!content.trim() || mut.isPending} onClick={() => mut.mutate()}>
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
       }
     >
       {err && <ErrorText>{err}</ErrorText>}
@@ -262,9 +277,14 @@ export function AssessmentForm({
       title="新增一轮测评"
       onClose={onClose}
       footer={
-        <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
-          {mut.isPending ? <Spinner size={14} /> : '保存'}
-        </Button>
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={mut.isPending}>
+            取消
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
       }
     >
       {err && <ErrorText>{err}</ErrorText>}
@@ -384,9 +404,14 @@ export function MilestoneForm({
       title={milestone ? '编辑事件' : '添加事件'}
       onClose={onClose}
       footer={
-        <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
-          {mut.isPending ? <Spinner size={14} /> : '保存'}
-        </Button>
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={mut.isPending}>
+            取消
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+            {mut.isPending ? <Spinner size={14} /> : '保存'}
+          </Button>
+        </>
       }
     >
       {err && <ErrorText>{err}</ErrorText>}

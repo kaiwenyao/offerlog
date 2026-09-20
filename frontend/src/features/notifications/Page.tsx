@@ -92,14 +92,30 @@ export function NotificationsPage() {
         </Card>
       ) : (
         <Card padding={0}>
-          {items.map((n) => (
-            <div key={n.id} className="panel-row" style={{ alignItems: 'flex-start' }}>
-              <span aria-hidden style={{ width: 7, height: 7, marginTop: 7, background: kindTone(n.kind), flex: '0 0 auto' }} />
+          {items.map((n) => {
+            // 「全部」里已读和未读以前长得一模一样，整页看起来跟「未读」没区别。
+            // 未读=实心圆点 + 正常字重，已读=空心 + 整行压暗，一眼分得出。
+            const handled = n.read_at != null || n.dismissed_at != null
+            return (
+            <div key={n.id} className="panel-row" style={{ alignItems: 'flex-start', opacity: handled ? 0.6 : 1 }}>
+              <span
+                aria-hidden
+                title={handled ? '已处理' : '未读'}
+                style={{
+                  width: 7,
+                  height: 7,
+                  marginTop: 7,
+                  flex: '0 0 auto',
+                  background: handled ? 'transparent' : kindTone(n.kind),
+                  border: handled ? '1px solid var(--neutral-400)' : undefined,
+                }}
+              />
               <span className="grow" style={{ minWidth: 0 }}>
-                <span style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>
+                <span style={{ display: 'block', fontSize: 14, fontWeight: handled ? 400 : 500 }}>
                   {n.title}
                   <span style={{ color: 'var(--text-muted)', fontSize: 11, fontWeight: 400 }}>
                     · {KIND_LABEL[n.kind] ?? n.kind} · {fmtDateTime(n.created_at)}
+                    {handled ? ` · ${n.dismissed_at != null ? '已忽略' : '已读'}` : ''}
                   </span>
                 </span>
                 <span style={{ display: 'block', fontSize: 13, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.5 }}>
@@ -126,7 +142,8 @@ export function NotificationsPage() {
                 )}
               </span>
             </div>
-          ))}
+            )
+          })}
         </Card>
       )}
     </section>

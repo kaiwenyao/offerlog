@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, fmtBytes, fmtDate } from '../../lib/api'
 import { FILE_CATEGORIES } from '../../lib/files'
@@ -167,8 +168,20 @@ export function FilesPage() {
                     <td>
                       <Num>{fmtBytes(f.size_bytes)}</Num>
                     </td>
+                    {/* 以前这里渲染的是裸 id（`#12`）：既看不出是哪家公司，也点不动。
+                        现在显示公司 · 岗位并直接链到岗位详情。 */}
                     <td className="ellipsis" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                      {f.application_id ? `#${f.application_id}` : '—'}
+                      {f.application_id ? (
+                        <Link
+                          to={`/apps/${f.application_id}`}
+                          title={`${f.company_name ?? `岗位 #${f.application_id}`}${f.position ? ` · ${f.position}` : ''}`}
+                        >
+                          {f.company_name ?? `岗位 #${f.application_id}`}
+                          {f.position ? ` · ${f.position}` : ''}
+                        </Link>
+                      ) : (
+                        '—'
+                      )}
                     </td>
                     <td>
                       <Num color="var(--text-muted)">{fmtDate(f.created_at)}</Num>

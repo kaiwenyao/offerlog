@@ -15,6 +15,7 @@ import {
   monthKeyOf,
   mondayKeyOf,
   splitMonthCell,
+  stepLabels,
   todayKeyInZone,
   weekColumns,
   WEEKDAYS,
@@ -125,7 +126,8 @@ export function CalendarPage() {
       ? `${fmtMonthKey(weekKey)} ${weekKey.slice(8, 10)} 日起`
       : view === 'month'
         ? fmtMonthKey(monthKey)
-        : '议程'
+        : '议程 · 近 90 天 → 未来 30 天'
+  const steps = stepLabels(view)
 
   const shiftMonth = (k: string, n: number): string => {
     const y = Number(k.slice(0, 4))
@@ -162,17 +164,21 @@ export function CalendarPage() {
           ariaLabel="日历视图"
         />
         <b style={{ fontSize: 15, minWidth: 150 }}>{navTitle}</b>
-        <span style={{ display: 'flex', gap: 6 }}>
-          <Button variant="ghost" size="sm" onClick={goPrev}>
-            上一周
-          </Button>
-          <Button variant="ghost" size="sm" onClick={goToday}>
-            今天
-          </Button>
-          <Button variant="ghost" size="sm" onClick={goNext}>
-            下一周
-          </Button>
-        </span>
+        {/* 议程视图的窗口固定锚在本周，没有上下页可翻——不画按钮，好过画三个
+            点了没反应的。「今天」同理：议程本来就从今天往两边展开。 */}
+        {steps && (
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button variant="ghost" size="sm" onClick={goPrev}>
+              {steps.prev}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={goToday}>
+              今天
+            </Button>
+            <Button variant="ghost" size="sm" onClick={goNext}>
+              {steps.next}
+            </Button>
+          </span>
+        )}
         <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>
           已汇总面试 / 待办 / 截止 · 半开区间
         </span>

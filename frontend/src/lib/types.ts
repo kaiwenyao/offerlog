@@ -111,6 +111,9 @@ export interface FileItem {
   /** 归属的面试轮次（截图/附件按轮次归档）；无轮次为 null */
   interview_id: number | null
   created_at: string
+  /** 关联岗位的公司 / 岗位名（服务端 LEFT JOIN 带出）；未关联时为空。 */
+  company_name?: string | null
+  position?: string | null
 }
 
 export interface Interview {

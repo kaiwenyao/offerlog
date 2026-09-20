@@ -390,14 +390,21 @@ func (h *Handler) list(c *gin.Context) {
 	user := httpx.UserFrom(c)
 	appID := c.Query("application_id")
 	args := []any{user.ID}
-	where := "owner_id=$1"
+	// 列名一律带 f. 前缀：下面 JOIN 了 applications，owner_id 在两张表上都有，
+	// 不限定的话 PostgreSQL 直接报 ambiguous column。
+	where := "f.owner_id=$1"
 	if appID != "" {
 		args = append(args, appID)
-		where += " AND used_by_application=$2"
+		where += " AND f.used_by_application=$2"
 	}
-	rows, err := h.db.Query(c.Request.Context(), `SELECT id, owner_id, original_name, content_type, size_bytes, sha256, status, category, used_by_application, created_at,
-		(SELECT af.interview_id FROM application_files af WHERE af.file_id = f.id LIMIT 1) AS interview_id
-		FROM files f WHERE `+where+` ORDER BY created_at DESC`, args...)
+	// 关联岗位要带上公司 / 岗位名：文件库列表以前只拿得到 used_by_application，
+	// 于是「关联岗位」那一列渲染成一个光秃秃的 `#12`——对用户没有任何意义，也无从
+	// 判断这份简历投的是哪家。LEFT JOIN 保证未关联岗位的文件照常返回（名字为 NULL）。
+	rows, err := h.db.Query(c.Request.Context(), `SELECT f.id, f.owner_id, f.original_name, f.content_type, f.size_bytes, f.sha256, f.status, f.category, f.used_by_application, f.created_at,
+		(SELECT af.interview_id FROM application_files af WHERE af.file_id = f.id LIMIT 1) AS interview_id,
+		a.company_name, a.position
+		FROM files f LEFT JOIN applications a ON a.id = f.used_by_application AND a.owner_id = f.owner_id
+		WHERE `+where+` ORDER BY f.created_at DESC`, args...)
 	if err != nil {
 		httpx.WriteErr(c, err)
 		return
@@ -414,13 +421,16 @@ func (h *Handler) list(c *gin.Context) {
 		UsedByApp   *int64    `json:"application_id"`
 		InterviewID *int64    `json:"interview_id"`
 		CreatedAt   time.Time `json:"created_at"`
+		CompanyName *string   `json:"company_name,omitempty"`
+		Position    *string   `json:"position,omitempty"`
 	}
 	var items []fDTO
 	for rows.Next() {
 		var f fDTO
 		var owner int64
 		if err := rows.Scan(&f.ID, &owner, &f.Name, &f.ContentType, &f.SizeBytes, &f.SHA256,
-			&f.Status, &f.Category, &f.UsedByApp, &f.CreatedAt, &f.InterviewID); err != nil {
+			&f.Status, &f.Category, &f.UsedByApp, &f.CreatedAt, &f.InterviewID,
+			&f.CompanyName, &f.Position); err != nil {
 			httpx.WriteErr(c, err)
 			return
 		}
