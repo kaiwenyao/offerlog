@@ -5,6 +5,7 @@ import type { Me, Preferences } from '../../lib/types'
 import { Button, Card, Input, PanelTitle, Select, Switch } from '../../ds'
 import { ErrorText, ConfirmDialog, Num, Spinner } from '../../components/ui'
 import { listTimezones } from '../../lib/tz'
+import { importResultCopy } from './importCopy'
 
 const PROPERTY_TYPES = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'url', 'image']
 
@@ -310,11 +311,13 @@ function DataPanel() {
       if (!batch) throw new Error('请先预检')
       const fd = new FormData()
       fd.append('file', batch.file)
-      return api.post<{ inserted: number }>(`/api/v1/imports/${batch.id}/commit`, fd, true)
+      return api.post<{ inserted: number; skipped: number }>(`/api/v1/imports/${batch.id}/commit`, fd, true)
     },
     onSuccess: (r) => {
       setInfoTone('ok')
-      setInfo(`导入完成：成功写入 ${r.inserted} 条。当前状态按 CSV 记录，不伪造历史。`)
+      // 跳过数必须说出来：它就是预检里那几行错误。只报「成功写入 N 条」的话，
+      // 预检说「有效 1 行、错误 10 行」而导入说「写入 11 条」，两句话自相矛盾。
+      setInfo(importResultCopy(r.inserted, r.skipped))
       // 批次消费掉了：不清的话「确认导入」会一直留在页面上，再点一次就把同一份
       // CSV 又提交一遍。
       setBatch(null)
