@@ -390,6 +390,31 @@ func TestSearchScopesAndMixes(t *testing.T) {
 	if len(recent) == 0 {
 		t.Error("empty q must return recent rows")
 	}
+
+	// Archived applications belong in the 「已归档」 view, not ⌘K. The
+	// live app above must still match; the archived twin must not.
+	archived := mustCreate(t, svc, ownerA, "北极星已归档", "测试岗")
+	if err := svc.Archive(ctx, ownerA, archived.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"北极星已归档", ""} {
+		for _, it := range get(srvA, q) {
+			label := fmt.Sprint(it["label"])
+			if strings.Contains(label, "北极星已归档") {
+				t.Errorf("archived app/company leaked into search q=%q kind=%v: %v", q, it["kind"], it)
+			}
+		}
+	}
+	live := get(srvA, "北极星公司")
+	foundLive := false
+	for _, it := range live {
+		if it["kind"] == "application" && fmt.Sprint(it["label"]) == "北极星公司 · 前端工程师" {
+			foundLive = true
+		}
+	}
+	if !foundLive {
+		t.Errorf("live app missing from search after archiving a sibling: %v", live)
+	}
 }
 
 func TestUploadFileToInterviewRoundAndCleanup(t *testing.T) {

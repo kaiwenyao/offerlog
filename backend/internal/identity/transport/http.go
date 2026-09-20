@@ -83,11 +83,13 @@ func (h *Handler) login(c *gin.Context) {
 	})
 }
 
-// registerReq mirrors loginReq plus an optional display name.
+// registerReq mirrors loginReq plus an optional display name and timezone.
+// Timezone is the browser IANA name; empty falls back to the instance default.
 type registerReq struct {
 	Email       string `json:"email"`
 	Password    string `json:"password"`
 	DisplayName string `json:"display_name"`
+	Timezone    string `json:"timezone"`
 }
 
 func (h *Handler) register(c *gin.Context) {
@@ -111,7 +113,19 @@ func (h *Handler) register(c *gin.Context) {
 		})
 		return
 	}
-	u, err := h.auth.Register(c.Request.Context(), req.Email, req.Password, req.DisplayName, h.defaultTZ)
+	tz := strings.TrimSpace(req.Timezone)
+	if tz == "" {
+		tz = h.defaultTZ
+	}
+	// Signup has no timezone picker: a bad browser value must not block register.
+	// Settings PUT still 400s so the user can correct it there.
+	if _, err := idservice.NormalizeTimezone(tz); err != nil {
+		tz = h.defaultTZ
+		if tz == "" {
+			tz = idservice.DefaultTimezone
+		}
+	}
+	u, err := h.auth.Register(c.Request.Context(), req.Email, req.Password, req.DisplayName, tz)
 	if err != nil {
 		httpx.WriteErr(c, err)
 		return

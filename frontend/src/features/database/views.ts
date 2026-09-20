@@ -183,9 +183,29 @@ const SEARCH_FIELDS = ['company_name', 'position', 'notes'] as const
  */
 const SEARCH_TERM_LIMIT = 5
 
+/** 未归档：与首页 / 日历同一可见性口径。回收站走 trashQueryPath，不经这里。 */
+const ACTIVE_ONLY: FilterCond = { field: 'archived', op: 'eq', value: false }
+
+/** Walk a filter tree and report whether any leaf already constrains `archived`. */
+function mentionsArchived(nodes: FilterNode[]): boolean {
+  for (const n of nodes) {
+    if ('conditions' in n) {
+      if (mentionsArchived(n.conditions)) return true
+    } else if (n.field === 'archived') {
+      return true
+    }
+  }
+  return false
+}
+
 /**
  * Build the `/views/query` filter list for the active view, search term and
  * ad-hoc chips. Pure so the query shape stays testable.
+ *
+ * 归档是可见性旗标，不是状态：非「已归档」的视图（以及顶栏搜索）默认只看
+ * 未归档岗位。后端 /views/query 本身不排除 archived_at——它是通用查询引擎，
+ * 「已归档」视图要靠 archived=true 把行筛回来——所以默认排除必须发生在这里。
+ * 回收站走独立的 trashQueryPath，不会经过本函数。
  */
 export function buildFilters(
   view: SavedView | undefined,
@@ -202,6 +222,12 @@ export function buildFilters(
     if (view.id >= 0 && Array.isArray(ast.conditions)) conds.push(...ast.conditions)
     else if (view.id < 0) conds.push(ast)
   }
+  // 视图 / 快捷条件 / 临时 chip 都没提 archived 时，默认藏起已归档的行。
+  // 「已归档」快捷视图已经带 archived=true；自定义视图若自己筛了 archived
+  // 也尊重它，避免把「面试中且已归档」存成的视图查成空集。
+  if (!mentionsArchived(conds) && !mentionsArchived(extra)) {
+    conds.push(ACTIVE_ONLY)
+  }
   // Search matches on ANY of the searched fields (OR inside a term), and a
   // multi-word query like「字节 后端」requires EVERY word to match (AND across
   // terms) — same semantics as the ⌘K endpoint. Typing a company name must
@@ -213,6 +239,25 @@ export function buildFilters(
     })
   }
   return [...conds, ...extra]
+}
+
+/**
+ * Empty live-view search should offer a jump into 「已归档」: default filters
+ * hide archived rows, so a company the user just archived looks like it
+ * vanished. Trash and the archived view itself don't need the hint.
+ */
+export function shouldOfferArchivedSearch(viewId: number, search: string, trashMode: boolean): boolean {
+  return !trashMode && viewId !== ARCHIVED_VIEW && search.trim() !== ''
+}
+
+/** `/database` URL that isolates the same query inside the archived view. */
+export function archivedSearchHref(search: string): string {
+  const q = new URLSearchParams({
+    view: String(ARCHIVED_VIEW),
+    q: search.trim(),
+    layout: 'table',
+  })
+  return `/database?${q.toString()}`
 }
 
 export interface BoardBucket {

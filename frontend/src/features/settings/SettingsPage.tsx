@@ -4,6 +4,7 @@ import { api, ApiError } from '../../lib/api'
 import type { Me, Preferences } from '../../lib/types'
 import { Button, Card, Input, PanelTitle, Select, Switch } from '../../ds'
 import { ErrorText, ConfirmDialog, Num, Spinner } from '../../components/ui'
+import { listTimezones } from '../../lib/tz'
 
 const PROPERTY_TYPES = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'url', 'image']
 
@@ -14,17 +15,6 @@ interface ImportPreview {
   errors: Array<{ row: number; column?: string; message: string }>
   duplicate_candidates: number[]
 }
-
-/** Common selectable timezones (any IANA name is accepted server-side). */
-const TIMEZONE_PRESETS = [
-  'Europe/Dublin',
-  'Europe/London',
-  'Europe/Berlin',
-  'Europe/Stockholm',
-  'Asia/Shanghai',
-  'America/New_York',
-  'UTC',
-]
 
 const REMINDER_HINTS: Record<string, string> = {
   overdue: '逾期待办会在你打开应用时置顶提醒',
@@ -148,7 +138,7 @@ function TimezoneField({
 }) {
   const [tz, setTz] = useState(value)
   const dirty = tz !== value
-  const options = TIMEZONE_PRESETS.includes(tz) ? TIMEZONE_PRESETS : [tz, ...TIMEZONE_PRESETS]
+  const options = listTimezones(tz)
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
       <div style={{ flex: 1 }}>

@@ -1,7 +1,8 @@
 // Package search backs the ⌘K command-palette cross-entity search: one query
 // returns a mixed list of applications / companies / files owned by the user,
 // so the palette can jump to any of them. Only the current owner's rows are
-// ever touched; soft-deleted applications and deleted files are excluded.
+// ever touched; soft-deleted and archived applications, and deleted files,
+// are excluded — archived apps live in the 「已归档」 view, not in ⌘K.
 package search
 
 import (
@@ -63,7 +64,7 @@ func (r *Repo) Search(ctx context.Context, ownerID int64, kw string, limit int) 
 	appArgs = append(appArgs, limit)
 	appRows, err := r.db.Pool().Query(ctx, `SELECT a.id, a.company_name, a.position, a.status, a.location
 		FROM applications a
-		WHERE a.owner_id=$1 AND a.deleted_at IS NULL
+		WHERE a.owner_id=$1 AND a.deleted_at IS NULL AND a.archived_at IS NULL
 		  AND (`+appWhere+`)
 		ORDER BY COALESCE(a.updated_at, a.created_at) DESC, a.id DESC
 		LIMIT $`+strconv.Itoa(len(appArgs)), appArgs...)
@@ -97,14 +98,21 @@ func (r *Repo) Search(ctx context.Context, ownerID int64, kw string, limit int) 
 	}
 	room := limit - len(out)
 
-	// companies: name matches, hint shows the number of live applications.
+	// companies: name matches, hint shows live (not deleted / not archived)
+	// applications. Companies with zero live apps are omitted — picking one
+	// would jump to /database?q=<name> and land on an empty list.
 	coWhere, coArgs := likeConjunction([]string{"c.name"}, terms, 2)
 	coArgs = append([]any{ownerID}, coArgs...)
 	coArgs = append(coArgs, room)
 	coRows, err := r.db.Pool().Query(ctx, `SELECT c.id, c.name,
-			(SELECT count(*) FROM applications a WHERE a.company_id = c.id AND a.owner_id = c.owner_id AND a.deleted_at IS NULL)
+			(SELECT count(*) FROM applications a WHERE a.company_id = c.id AND a.owner_id = c.owner_id AND a.deleted_at IS NULL AND a.archived_at IS NULL)
 		FROM companies c
 		WHERE c.owner_id=$1 AND (`+coWhere+`)
+		  AND EXISTS (
+			SELECT 1 FROM applications a
+			WHERE a.company_id = c.id AND a.owner_id = c.owner_id
+			  AND a.deleted_at IS NULL AND a.archived_at IS NULL
+		  )
 		ORDER BY c.updated_at DESC, c.id
 		LIMIT $`+strconv.Itoa(len(coArgs)), coArgs...)
 	if err != nil {
@@ -163,7 +171,7 @@ func (r *Repo) recent(ctx context.Context, ownerID int64, limit int) ([]*Item, e
 	var out []*Item
 	appRows, err := r.db.Pool().Query(ctx, `SELECT id, company_name, position, status, location
 		FROM applications
-		WHERE owner_id=$1 AND deleted_at IS NULL
+		WHERE owner_id=$1 AND deleted_at IS NULL AND archived_at IS NULL
 		ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
 		LIMIT $2`, ownerID, limit)
 	if err != nil {

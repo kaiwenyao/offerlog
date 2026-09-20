@@ -6,7 +6,7 @@ import { effectiveZone } from '../../lib/tz'
 import type { AppRow, CalendarEvent, SavedView } from '../../lib/types'
 import { addDaysToKey, mondayKeyOf } from '../calendar/grid'
 import { comboLabel, FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
-import { Button, Card, Input, Select, Tabs, Tag } from '../../ds'
+import { Badge, Button, Card, Input, Select, Tabs, Tag } from '../../ds'
 import { CompanyMark } from '../../components/Icon'
 import { StageRail } from '../../components/StageRail'
 import { Dot, EmptyHint, ErrorText, Modal, Num, PageSpinner, Spinner, StatusChip } from '../../components/ui'
@@ -29,6 +29,7 @@ import {
   BUILTIN,
   SHORTCUT_VIEWS,
   WEEK_INTERVIEWS_VIEW,
+  archivedSearchHref,
   boardBuckets,
   buildFilters,
   DB_SORT_FIELDS,
@@ -37,6 +38,7 @@ import {
   pruneSelection,
   sortDirLabel,
   isShortcutView,
+  shouldOfferArchivedSearch,
   trashQueryPath,
   type BoardBucket,
   type FilterContext,
@@ -490,16 +492,23 @@ export function DatabasePage() {
         <EmptyHint>
           <p style={{ margin: 0 }}>{emptyMessage}</p>
           {search || extraFilters.length ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                setExtraFilters([])
-                nav('/database')
-              }}
-            >
-              清除筛选
-            </Button>
+            <>
+              {shouldOfferArchivedSearch(viewId, search, trashMode) && (
+                <Button variant="secondary" size="sm" onClick={() => nav(archivedSearchHref(search))}>
+                  在已归档里搜「{search.trim()}」
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setExtraFilters([])
+                  nav('/database')
+                }}
+              >
+                清除筛选
+              </Button>
+            </>
           ) : offerCreateInEmptyState ? (
             <Button variant="primary" size="sm" onClick={() => setShowCreate(true)}>
               ＋ 新增岗位
@@ -788,6 +797,11 @@ function TableView({
                       <span className="ellipsis" style={{ fontSize: 14, fontWeight: 500 }} title={a.company_name}>
                         {a.company_name}
                       </span>
+                      {a.archived && (
+                        <Badge tone="neutral" style={{ height: 16, padding: '0 6px', fontSize: 10, flex: '0 0 auto' }}>
+                          已归档
+                        </Badge>
+                      )}
                     </span>
                   </td>
                   <td>

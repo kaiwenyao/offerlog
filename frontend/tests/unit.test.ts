@@ -24,11 +24,11 @@ import {
   toDayString,
   fmtDay,
 } from '../src/lib/api'
-import { defaultSubmittedIso } from '../src/lib/tz'
+import { defaultSubmittedIso, listTimezones } from '../src/lib/tz'
 import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, splitMonthCell, weekColumns } from '../src/features/calendar/grid'
 import { mergeTimeline } from '../src/features/database/timeline'
-import { applicationSearchQuery, moveHighlight, paletteRows } from '../src/features/search/paletteNav'
+import { applicationSearchQuery, moveHighlight, paletteEmptyCopy, paletteRows } from '../src/features/search/paletteNav'
 import {
   BUILTIN,
   buildFilters,
@@ -256,76 +256,52 @@ describe('database search filter (topbar 搜索 → /views/query)', () => {
   const noView = undefined
   // 快捷视图之外的筛选与上下文无关；给一个固定的「今天」保证断言稳定。
   const ctx = { today: '2026-09-17' }
+  const notArchived = { field: 'archived', op: 'eq', value: false }
+  const searchGroup = (term: string) => ({
+    op: 'or' as const,
+    conditions: [
+      { field: 'company_name', op: 'contains', value: term },
+      { field: 'position', op: 'contains', value: term },
+      { field: 'notes', op: 'contains', value: term },
+    ],
+  })
   it('matches company / position / notes — one term in a single or-group', () => {
     // 搜索“字节”必须能命中公司名，而不是只匹配岗位名（否则搜公司永远 0 条）。
     // 三个字段同一个 or 组，顶层仍然是一个条件，与视图自身的筛选 AND 组合。
-    expect(buildFilters(noView, '字节', [], ctx)).toEqual([
-      {
-        op: 'or',
-        conditions: [
-          { field: 'company_name', op: 'contains', value: '字节' },
-          { field: 'position', op: 'contains', value: '字节' },
-          { field: 'notes', op: 'contains', value: '字节' },
-        ],
-      },
-    ])
+    expect(buildFilters(noView, '字节', [], ctx)).toEqual([notArchived, searchGroup('字节')])
   })
   it('trims whitespace and drops blank searches entirely', () => {
-    expect(buildFilters(noView, '   ', [], ctx)).toEqual([])
-    expect(buildFilters(noView, '  字节  ', [], ctx)).toEqual([
-      {
-        op: 'or',
-        conditions: [
-          { field: 'company_name', op: 'contains', value: '字节' },
-          { field: 'position', op: 'contains', value: '字节' },
-          { field: 'notes', op: 'contains', value: '字节' },
-        ],
-      },
-    ])
+    expect(buildFilters(noView, '   ', [], ctx)).toEqual([notArchived])
+    expect(buildFilters(noView, '  字节  ', [], ctx)).toEqual([notArchived, searchGroup('字节')])
   })
   it('keeps the builtin view filter and appends the search group after it', () => {
     const view = BUILTIN.find((v) => v.id === -3)!
     const filters = buildFilters(view, '字节', [], ctx)
-    expect(filters).toHaveLength(2)
+    expect(filters).toHaveLength(3)
     expect(filters[0]).toEqual(view.filter_ast)
-    expect(filters[1]).toMatchObject({ op: 'or' })
+    expect(filters[1]).toEqual(notArchived)
+    expect(filters[2]).toMatchObject({ op: 'or' })
   })
   it('multi-word queries AND one or-group per word (same semantics as the ⌘K endpoint)', () => {
     // 「字节 后端」：两个词都要命中，而不是拿整句做子串匹配搜出 0 条。
     const filters = buildFilters(undefined, '字节 后端', [], ctx)
-    expect(filters).toHaveLength(2)
-    expect(filters[0]).toEqual({
-      op: 'or',
-      conditions: [
-        { field: 'company_name', op: 'contains', value: '字节' },
-        { field: 'position', op: 'contains', value: '字节' },
-        { field: 'notes', op: 'contains', value: '字节' },
-      ],
-    })
-    expect(filters[1]).toEqual({
-      op: 'or',
-      conditions: [
-        { field: 'company_name', op: 'contains', value: '后端' },
-        { field: 'position', op: 'contains', value: '后端' },
-        { field: 'notes', op: 'contains', value: '后端' },
-      ],
-    })
+    expect(filters).toHaveLength(3)
+    expect(filters[0]).toEqual(notArchived)
+    expect(filters[1]).toEqual(searchGroup('字节'))
+    expect(filters[2]).toEqual(searchGroup('后端'))
     // 全角空格也是分隔符
-    expect(buildFilters(undefined, '字节　后端', [], ctx)).toHaveLength(2)
+    expect(buildFilters(undefined, '字节　后端', [], ctx)).toHaveLength(3)
   })
   it('caps pathological queries at SEARCH_TERM_LIMIT or-groups', () => {
     const filters = buildFilters(undefined, 'a b c d e f g', [], ctx)
-    expect(filters).toHaveLength(5)
-    expect(filters.map((f) => (f as { conditions: Array<{ value: string }> }).conditions[0].value)).toEqual([
-      'a', 'b', 'c', 'd', 'e',
-    ])
+    expect(filters).toHaveLength(6)
+    expect(
+      filters.slice(1).map((f) => (f as { conditions: Array<{ value: string }> }).conditions[0].value),
+    ).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
   it('appends ad-hoc quick-filter chips after the search group', () => {
     const chip = { field: 'priority', op: 'eq', value: 'high' } as const
-    expect(buildFilters(noView, '字节', [chip], ctx)).toEqual([
-      { op: 'or', conditions: [{ field: 'company_name', op: 'contains', value: '字节' }, { field: 'position', op: 'contains', value: '字节' }, { field: 'notes', op: 'contains', value: '字节' }] },
-      chip,
-    ])
+    expect(buildFilters(noView, '字节', [chip], ctx)).toEqual([notArchived, searchGroup('字节'), chip])
   })
 })
 
@@ -472,6 +448,27 @@ describe('⌘K palette keyboard navigation', () => {
     expect(moveHighlight(2, 4, 'End')).toBe(3)
     expect(moveHighlight(0, 0, 'ArrowDown')).toBeNull()
     expect(moveHighlight(0, 0, 'End')).toBeNull()
+  })
+})
+
+describe('⌘K palette empty copy', () => {
+  it('does not claim「没有匹配」while a request is in flight', () => {
+    expect(paletteEmptyCopy('阿', true)).toBe('搜索中…')
+    expect(paletteEmptyCopy('阿里巴巴', false)).toBe('没有匹配「阿里巴巴」的结果')
+    expect(paletteEmptyCopy('', false)).toContain('输入关键字')
+    expect(paletteEmptyCopy('  ', false)).toContain('输入关键字')
+  })
+})
+
+describe('settings timezone list', () => {
+  it('includes cities the 7-item preset used to omit', () => {
+    const zones = listTimezones()
+    for (const z of ['America/Los_Angeles', 'Asia/Tokyo', 'Asia/Singapore', 'Australia/Sydney', 'UTC']) {
+      expect(zones).toContain(z)
+    }
+  })
+  it('keeps a currently saved zone even if Intl omitted it', () => {
+    expect(listTimezones('Not/ARealZone')[0]).toBe('Not/ARealZone')
   })
 })
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1163,8 +1164,13 @@ func (h *Handler) createAction(c *gin.Context) {
 		httpx.WriteErr(c, httpx.BadRequest("bad_due_date", err.Error()))
 		return
 	}
+	title, err := trimActionTitle(req.Title)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
 	a := &actrepo.Action{
-		ApplicationID: appPtr, OwnerID: user.ID, Title: req.Title, DueDate: dueDate,
+		ApplicationID: appPtr, OwnerID: user.ID, Title: title, DueDate: dueDate,
 		DueTs: req.DueTs, DoneAt: req.DoneAt, RemindMe: req.RemindMe, RemindAt: req.RemindAt,
 		Priority: req.Priority,
 	}
@@ -1173,6 +1179,14 @@ func (h *Handler) createAction(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, actionToDTO(a))
+}
+
+func trimActionTitle(title string) (string, error) {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return "", httpx.BadRequest("empty_title", "请填写待办内容")
+	}
+	return t, nil
 }
 
 // parseDueDate validates an optional date-only string into a UTC-midnight
@@ -1208,8 +1222,13 @@ func (h *Handler) updateAction(c *gin.Context) {
 		httpx.WriteErr(c, httpx.BadRequest("bad_due_date", err.Error()))
 		return
 	}
+	title, err := trimActionTitle(req.Title)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
 	a := &actrepo.Action{
-		ID: aid, OwnerID: user.ID, Title: req.Title, DueDate: dueDate, DueTs: req.DueTs,
+		ID: aid, OwnerID: user.ID, Title: title, DueDate: dueDate, DueTs: req.DueTs,
 		DoneAt: req.DoneAt, RemindMe: req.RemindMe, RemindAt: req.RemindAt, Priority: req.Priority,
 	}
 	if err := h.repo.UpdateAction(c.Request.Context(), h.repo.Pool(), a); err != nil {

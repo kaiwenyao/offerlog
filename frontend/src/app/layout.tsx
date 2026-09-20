@@ -60,8 +60,8 @@ function pageMeta(pathname: string) {
 /** Counts shown beside the nav entries — cheap queries the pages already cache. */
 function useSidebarCounts() {
   // Server-side aggregates (full data set) — the badge next to 今日待办 is the
-  // unified open-action count, and the 岗位 badge is the real total; neither is
-  // derived from a 200-row page.
+  // unified open-action count, and the 岗位 badge is how many rows the
+  // database page will show (active = not deleted, not archived).
   const home = useQuery({
     queryKey: ['home', 'summary', { limit: 1 }],
     queryFn: () => api.get<HomeSummary>('/api/v1/home/summary?limit=1'),
@@ -74,7 +74,7 @@ function useSidebarCounts() {
   })
   const unread = useUnreadCount()
   return {
-    apps: home.data?.total ?? home.data?.active ?? 0,
+    apps: home.data?.active ?? home.data?.total ?? 0,
     files: (files.data?.items ?? []).length,
     open: home.data?.todos.open ?? 0,
     unread,

@@ -66,6 +66,7 @@ var csvFieldByHeader = map[string]string{
 	"薪资下限": "salary_min", "salary_min": "salary_min",
 	"薪资上限": "salary_max", "salary_max": "salary_max",
 	"币种": "salary_currency", "salary_currency": "salary_currency",
+	"归档": "archived", "archived": "archived", "已归档": "archived",
 }
 
 var statusAliases = map[string]string{
@@ -327,7 +328,22 @@ func (r *Repo) insertApp(ctx context.Context, ownerID int64, row map[string]stri
 		apprepo.InitialEvents(appID, ownerID, status, now, sub, "导入创建")); err != nil {
 		return err
 	}
+	// Export still includes archived jobs (that's the backup). Without this
+	// flag a round-trip would resurrect them as live rows.
+	if parseArchived(row["archived"]) {
+		if _, err := tx.Exec(ctx, `UPDATE applications SET archived_at=now() WHERE id=$1 AND owner_id=$2`, appID, ownerID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
+}
+
+func parseArchived(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "y", "已归档", "archived":
+		return true
+	}
+	return false
 }
 
 func defStr(s, def string) string {
@@ -347,7 +363,7 @@ func (r *Repo) Errors(ctx context.Context, ownerID, batchID int64, out *json.Raw
 func (r *Repo) ExportRows(ctx context.Context, ownerID int64) ([][]string, error) {
 	rows, err := r.db.Pool().Query(ctx, `SELECT company_name, position, job_url, location, remote_policy,
 		employment_type, channel, status, priority, array_to_string(tags,'|'), deadline, submitted_at,
-		salary_min, salary_max, salary_currency, notes
+		salary_min, salary_max, salary_currency, notes, archived_at IS NOT NULL
 		FROM applications WHERE owner_id=$1 AND deleted_at IS NULL ORDER BY id`, ownerID)
 	if err != nil {
 		return nil, err
@@ -359,8 +375,9 @@ func (r *Repo) ExportRows(ctx context.Context, ownerID int64) ([][]string, error
 		var deadline, submitted *time.Time
 		var minP, maxP *int64
 		var currency, notes string
+		var archived bool
 		if err := rows.Scan(&company, &position, &jobURL, &location, &remote, &emp, &channel,
-			&status, &priority, &tags, &deadline, &submitted, &minP, &maxP, &currency, &notes); err != nil {
+			&status, &priority, &tags, &deadline, &submitted, &minP, &maxP, &currency, &notes, &archived); err != nil {
 			return nil, err
 		}
 		d := ""
@@ -378,7 +395,11 @@ func (r *Repo) ExportRows(ctx context.Context, ownerID int64) ([][]string, error
 		if maxP != nil {
 			mx = strconv.FormatInt(*maxP, 10)
 		}
-		out = append(out, []string{company, position, jobURL, location, remote, emp, channel, status, priority, tags, d, s, mn, mx, currency, notes})
+		flag := ""
+		if archived {
+			flag = "1"
+		}
+		out = append(out, []string{company, position, jobURL, location, remote, emp, channel, status, priority, tags, d, s, mn, mx, currency, notes, flag})
 	}
 	return out, rows.Err()
 }

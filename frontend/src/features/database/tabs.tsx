@@ -649,7 +649,9 @@ export function OverviewTab({
           appId={app.id}
           onClose={() => setShowInterview(false)}
           onDone={() => {
-            refetchAll()
+            // 新增必须和编辑/删除/取消走同一套刷新：否则日历 staleTime 30s、
+            // 首页 10s 内还显示旧数据，刚排的面试像没存上。
+            refreshActivity()
             setShowInterview(false)
           }}
         />
@@ -670,8 +672,7 @@ export function OverviewTab({
           suggestedName={assessments.length === 0 ? 'OA' : `OA ${assessments.length + 1}`}
           onClose={() => setShowAssessment(false)}
           onDone={() => {
-            qc.invalidateQueries({ queryKey: ['assessments', app.id] })
-            qc.invalidateQueries({ queryKey: ['app', app.id] })
+            refreshActivity()
             setShowAssessment(false)
           }}
         />

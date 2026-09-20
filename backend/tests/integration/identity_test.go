@@ -54,6 +54,7 @@ type authRes struct {
 	Message   string `json:"message"`
 	ID        int64  `json:"id"`
 	Email     string `json:"email"`
+	Timezone  string `json:"timezone"`
 	CSRFToken string `json:"csrf_token"`
 }
 
@@ -85,12 +86,33 @@ func TestRegisterCreatesSessionAndAllowsLogin(t *testing.T) {
 	if body.Email != email || body.ID == 0 || body.CSRFToken == "" {
 		t.Fatalf("register body incomplete: %+v", body)
 	}
+	if body.Timezone != "Europe/Dublin" {
+		t.Fatalf("register without timezone = %q, want instance default Europe/Dublin", body.Timezone)
+	}
 	var cookies []string
 	for _, c := range res.Cookies() {
 		cookies = append(cookies, c.Name+"="+c.Value)
 	}
 	if len(cookies) == 0 {
 		t.Fatal("register did not set session cookie")
+	}
+
+	emailTZ := fmt.Sprintf("reg.tz.%d@test.local", time.Now().UnixNano())
+	res, body = postJSON(t, srv.URL+"/api/v1/auth/register",
+		map[string]any{"email": emailTZ, "password": "password123", "timezone": "America/Los_Angeles"})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register with timezone status = %d, want 201 (body: %+v)", res.StatusCode, body)
+	}
+	if body.Timezone != "America/Los_Angeles" {
+		t.Fatalf("register timezone = %q, want America/Los_Angeles", body.Timezone)
+	}
+	res, body = postJSON(t, srv.URL+"/api/v1/auth/register",
+		map[string]any{"email": fmt.Sprintf("reg.badtz.%d@test.local", time.Now().UnixNano()), "password": "password123", "timezone": "Local"})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register Local timezone status=%d, want 201 fallback (body: %+v)", res.StatusCode, body)
+	}
+	if body.Timezone != "Europe/Dublin" {
+		t.Fatalf("register Local timezone = %q, want instance default Europe/Dublin", body.Timezone)
 	}
 
 	// Same credentials must log in afterwards.

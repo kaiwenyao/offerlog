@@ -103,7 +103,7 @@ func (h *Handler) exportCSV(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="applications.csv"`)
 	w := csv.NewWriter(c.Writer)
-	_ = w.Write([]string{"公司", "岗位", "链接", "地点", "远程", "类型", "渠道", "状态", "优先级", "标签", "截止日期", "投递时间", "薪资下限", "薪资上限", "币种", "备注"})
+	_ = w.Write([]string{"公司", "岗位", "链接", "地点", "远程", "类型", "渠道", "状态", "优先级", "标签", "截止日期", "投递时间", "薪资下限", "薪资上限", "币种", "备注", "归档"})
 	for _, r := range rows {
 		rec := make([]string, len(r))
 		for i, v := range r {
