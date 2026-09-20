@@ -47,6 +47,9 @@ func TestViewsQueryEmitsDateOnlyStrings(t *testing.T) {
 	if !ok || na == nil || *na != "2026-10-05" {
 		t.Fatalf("next_action_due_at wire = %#v (%T), want *string '2026-10-05'", row["next_action_due_at"], row["next_action_due_at"])
 	}
+	if _, ok := row["substatus"]; !ok {
+		t.Fatal("views query must include substatus on every row")
+	}
 }
 
 var _ = views.FilterNode{}

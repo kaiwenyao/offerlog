@@ -804,34 +804,12 @@ export function ActionEditForm({
     setFields((f) => ({ ...f, [key]: value }))
 
   const mut = useMutation({
-    mutationFn: async (body: Record<string, unknown>) => {
-      const r = await api.patch<unknown>(`/api/v1/actions/${action.id}`, body)
-      // 岗位行上的 next_action 只是这条待办的镜像（§5.3），标题改了要一起跟上，
-      // 否则表格「下一步」列会一直显示旧文案。但镜像同步有两个前提：
-      //   1. 这条待办仍未完成——后端在最后一个未完成待办被完成时会刻意清空镜像
-      //      （ClearLegacyNextActionWhenSettled）；编辑一条已完成的待办又把它写回去，
-      //      正好撤销了那次清理；
-      //   2. 这条确实是当前被镜像的那条（岗位行的 next_action 就是它原来的标题）
-      //      ——否则编辑三条里的第二条也会把「下一步」列改成它。
-      // 尽力而为：待办的真相在 actions 表里，镜像同步失败不回滚。
-      if (action.done_at == null) {
-        try {
-          const fresh = await api.get<AppRow>(`/api/v1/applications/${appId}`)
-          if ((fresh.next_action ?? '').trim() === (action.title ?? '').trim()) {
-            await api.patch(`/api/v1/applications/${appId}`, {
-              version: fresh.version,
-              next_action: String(body.title ?? ''),
-              // 同上：清掉截止日必须发 ''，发 null 的话岗位行会永远显示那个
-              // 已经不存在的日期（且 isDayBeforeToday 之后还是红色「逾期」）。
-              next_action_due_at: (body.due_date as string | null) ?? '',
-            })
-          }
-        } catch {
-          /* 镜像同步是尽力而为 */
-        }
-      }
-      return r
-    },
+    // 岗位行上的 next_action 只是「最早的未完成待办」的镜像（§5.3），由 PATCH
+    // /actions/:id 在同一个事务里重写。这里曾经有一段前端补偿：先 GET 岗位、镜像
+    // 恰好等于旧标题才写回新标题。它比后端少知道两件事——哪条待办才是最早的、
+    // 以及这次编辑有没有改掉排序——所以只会在后端刚写对之后再把镜像改错。
+    mutationFn: (body: Record<string, unknown>) =>
+      api.patch<unknown>(`/api/v1/actions/${action.id}`, body),
     onSuccess: onDone,
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
   })

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"offerlog/backend/internal/platform/database"
 	"offerlog/backend/internal/platform/timeutil"
@@ -17,9 +18,11 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrBadFilter = errors.New("bad filter")
-	ErrKeyTaken  = errors.New("key taken")
+	ErrNotFound    = errors.New("not found")
+	ErrBadFilter   = errors.New("bad filter")
+	ErrKeyTaken    = errors.New("key taken")
+	ErrEmptyKey    = errors.New("属性键不能为空")
+	ErrKeyConflict = errors.New("属性键与内置字段冲突")
 )
 
 type Service struct {
@@ -30,13 +33,13 @@ type Service struct {
 
 func New(db *database.DB, repo *repository.Repo) *Service { return &Service{db: db, repo: repo} }
 
-// StageHistoryProvider computes the per-application stage history map for a
-// batch of ids. Implemented at the wiring layer (bootstrap) so the views
-// module never imports the applications module (which would be a cycle).
-// submittedAt carries each application's user-entered 投递时间, which wins for
-// the applied stage (backfilled submissions must render their real day).
+// StageHistoryProvider computes the per-application list enrichment (stage
+// rail + 「X 进入」 date) for a batch of ids. Implemented at the wiring
+// layer (bootstrap) so the views module never imports the applications
+// module (which would be a cycle). submittedAt carries each application's
+// user-entered 投递时间, which wins for the applied stage.
 type StageHistoryProvider interface {
-	StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location, submittedAt map[int64]*time.Time) (map[int64]map[string]string, error)
+	ListTimeline(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location, submittedAt map[int64]*time.Time) (stageHistory map[int64]map[string]string, progressSince map[int64]string, err error)
 }
 
 // WithStageHistory attaches the cross-module stage-history provider used by
@@ -59,10 +62,17 @@ func (s *Service) CreateProperty(ctx context.Context, ownerID int64, name, key, 
 		key = slugify(name)
 	}
 	if key == "" {
-		return nil, errors.New("属性键不能为空")
+		// slugify only keeps [a-z0-9]; a Chinese-only display name (the
+		// settings placeholder is 「期望职级」) would otherwise yield an
+		// empty key and 500. Generate a stable unique key from the name
+		// so the optional "键" field really is optional.
+		key = generatedPropKey(name)
+	}
+	if key == "" {
+		return nil, ErrEmptyKey
 	}
 	if _, ok := views.CoreFields[key]; ok {
-		return nil, errors.New("属性键与内置字段冲突")
+		return nil, ErrKeyConflict
 	}
 	switch dataType {
 	case views.TypeText, views.TypeNumber, views.TypeSelect, views.TypeMultiSelect, views.TypeDate, views.TypeCheckbox, views.TypeURL, views.TypeImage:
@@ -72,10 +82,22 @@ func (s *Service) CreateProperty(ctx context.Context, ownerID int64, name, key, 
 	b, _ := json.Marshal(options)
 	p := &repository.PropertyDef{OwnerID: ownerID, Name: name, Key: key, DataType: dataType, Options: b, Required: required}
 	if err := s.repo.CreateProperty(ctx, p); err != nil {
-		// unique(owner_id,key) violation
-		return nil, ErrKeyTaken
+		// 只有 unique(owner_id,key) 冲突才是「键已被使用」。之前这里把所有错误
+		// 一律翻成 ErrKeyTaken，transport 再翻成 409「属性键已被使用」，于是库挂了
+		// 或者请求被取消时用户看到的是一句完全不相干的重复键提示，真正的 500 被藏起来。
+		if isUniqueViolation(err) {
+			return nil, ErrKeyTaken
+		}
+		return nil, err
 	}
 	return p, nil
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505).
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (s *Service) UpdateProperty(ctx context.Context, ownerID int64, id int64, name, dataType string, options []any, required bool) (*repository.PropertyDef, error) {
@@ -130,6 +152,22 @@ func slugify(s string) string {
 		}
 	}
 	return strings.Trim(b.String(), "_")
+}
+
+// generatedPropKey builds an ASCII key when slugify has nothing left (pure
+// CJK names). fnv-1a of the display name is short, stable, and collision-
+// resistant enough for a per-user property list.
+func generatedPropKey(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	var h uint64 = 14695981039346656037
+	for _, r := range name {
+		h ^= uint64(r)
+		h *= 1099511628211
+	}
+	return fmt.Sprintf("p_%x", h)
 }
 
 // Views ---------------------------------------------------------------------
@@ -325,7 +363,8 @@ func (s *Service) RunQueryOpts(ctx context.Context, ownerID int64, filters []vie
 	offset := (page - 1) * pageSize
 	args2 := append(append([]any{}, args...), pageSize, offset)
 	rows, err := q.Query(ctx, `SELECT a.id, a.company_name, a.position, a.job_url, a.location, a.remote_policy,
-		a.employment_type, a.salary_min, a.salary_max, a.salary_currency, a.channel, a.status, a.priority,
+		a.employment_type, a.salary_min, a.salary_max, a.salary_currency, a.channel, a.status,
+		COALESCE(a.substatus, ''), a.priority,
 		a.tags, a.custom_values, a.saved_at, a.submitted_at, a.first_response_at, a.deadline, a.accepted_at,
 		a.rejected_at, a.reason, a.next_action, a.next_action_due_at, a.archived_at, a.deleted_at,
 		a.version, a.created_at, a.updated_at, a.notes
@@ -349,6 +388,7 @@ func (s *Service) RunQueryOpts(ctx context.Context, ownerID int64, filters []vie
 			currency     string
 			channel      string
 			status       string
+			substatus    string
 			priority     string
 			tags         []string
 			custom       json.RawMessage
@@ -370,7 +410,7 @@ func (s *Service) RunQueryOpts(ctx context.Context, ownerID int64, filters []vie
 		)
 		if err := rows.Scan(&id, &companyName, &position, &jobURL, &location,
 			&remotePolicy, &empType, &salaryMin, &salaryMax, &currency,
-			&channel, &status, &priority, &tags, &custom, &savedAt, &submittedAt,
+			&channel, &status, &substatus, &priority, &tags, &custom, &savedAt, &submittedAt,
 			&firstResp, &deadline, &acceptedAt, &rejectedAt, &reason,
 			&nextAction, &nextDueAt, &archivedAt, &deletedAt, &version,
 			&createdAt, &updatedAt, &notes); err != nil {
@@ -382,7 +422,7 @@ func (s *Service) RunQueryOpts(ctx context.Context, ownerID int64, filters []vie
 			"id": id, "company_name": companyName, "position": position, "job_url": jobURL,
 			"location": location, "remote_policy": remotePolicy, "employment_type": empType,
 			"salary_min": salaryMin, "salary_max": salaryMax, "salary_currency": currency,
-			"channel": channel, "status": status, "priority": priority, "tags": tags,
+			"channel": channel, "status": status, "substatus": substatus, "priority": priority, "tags": tags,
 			"custom_values": json.RawMessage(custom), "notes": notes,
 			"saved_at": savedAt, "submitted_at": submittedAt, "first_response_at": firstResp,
 			"deadline": dayString(deadline), "accepted_at": acceptedAt, "rejected_at": rejectedAt,
@@ -408,12 +448,15 @@ func (s *Service) RunQueryOpts(ctx context.Context, ownerID int64, filters []vie
 				}
 			}
 			loc, _ := timeutil.SafeLocation(opts.Timezone)
-			// Stage history is an enrichment: never fail the page over it.
-			if stage, err := s.stageHistory.StageHistoryFor(ctx, ownerID, ids, loc, submitted); err == nil {
+			// Stage history + progress_since are enrichments: never fail the page over them.
+			if stage, since, err := s.stageHistory.ListTimeline(ctx, ownerID, ids, loc, submitted); err == nil {
 				for _, m := range items {
 					if id, ok := m["id"].(int64); ok {
 						if sh, ok := stage[id]; ok && len(sh) > 0 {
 							m["stage_history"] = sh
+						}
+						if day, ok := since[id]; ok && day != "" {
+							m["progress_since"] = day
 						}
 					}
 				}

@@ -82,6 +82,11 @@ export function AppDetailContent({
     queryFn: () => api.get<{ items: Note[] }>(`/api/v1/applications/${appId}/notes`),
   })
 
+  // refetch 失败时 react-query 仍保留上一次的 data，只是把 status 置成 error。
+  // 只看 isError 的话，一次后台 refetch 失败（加完备注后 notesQ 重取、或 10s
+  // staleTime 过后重开抽屉）就会把一个已经加载好的标签页换成「加载失败」。
+  const failed = (q: { isError: boolean; data: unknown }) => q.isError && q.data === undefined
+
   const app = appQ.data
   const events = eventsQ.data?.items ?? []
   const milestones = milestonesQ.data?.items ?? []
@@ -228,32 +233,56 @@ export function AppDetailContent({
         </Card>
       )}
 
-      {tab === 'overview' && (
-        <OverviewTab
-          app={app}
-          interviews={interviews}
-          assessments={assessments}
-          notes={notes}
-          filesCount={files.length}
-          refetchAll={() => {
-            qc.invalidateQueries({ queryKey: ['app', appId] })
-            qc.invalidateQueries({ queryKey: ['events', appId] })
-            qc.invalidateQueries({ queryKey: ['milestones', appId] })
-            qc.invalidateQueries({ queryKey: ['interviews', appId] })
-            qc.invalidateQueries({ queryKey: ['assessments', appId] })
-          }}
-        />
-      )}
-      {tab === 'files' && <FilesTab appId={app.id} files={files} interviews={interviews} />}
-      {tab === 'timeline' && (
-        <TimelineTab
-          appId={app.id}
-          events={events}
-          milestones={milestones}
-          status={app.status}
-          substatus={app.substatus}
-        />
-      )}
+      {tab === 'overview' &&
+        (failed(interviewsQ) || failed(assessmentsQ) || failed(notesQ) ? (
+          <QueryError
+            label="概览"
+            onRetry={() => {
+              void interviewsQ.refetch()
+              void assessmentsQ.refetch()
+              void notesQ.refetch()
+            }}
+          />
+        ) : (
+          <OverviewTab
+            app={app}
+            interviews={interviews}
+            assessments={assessments}
+            notes={notes}
+            filesCount={files.length}
+            refetchAll={() => {
+              qc.invalidateQueries({ queryKey: ['app', appId] })
+              qc.invalidateQueries({ queryKey: ['events', appId] })
+              qc.invalidateQueries({ queryKey: ['milestones', appId] })
+              qc.invalidateQueries({ queryKey: ['interviews', appId] })
+              qc.invalidateQueries({ queryKey: ['assessments', appId] })
+            }}
+          />
+        ))}
+      {tab === 'files' &&
+        (failed(filesQ) ? (
+          <QueryError label="附件" onRetry={() => void filesQ.refetch()} />
+        ) : (
+          <FilesTab appId={app.id} files={files} interviews={interviews} />
+        ))}
+      {tab === 'timeline' &&
+        (failed(eventsQ) || failed(milestonesQ) ? (
+          <QueryError
+            label="时间线"
+            onRetry={() => {
+              void eventsQ.refetch()
+              void milestonesQ.refetch()
+            }}
+          />
+        ) : (
+          <TimelineTab
+            appId={app.id}
+            events={events}
+            milestones={milestones}
+            status={app.status}
+            substatus={app.substatus}
+          />
+        ))}
     </>
   )
 
@@ -299,6 +328,17 @@ export function AppDetailContent({
 
 export function Drawer({ appId, onClose }: { appId: number; onClose: () => void }) {
   return <AppDetailContent appId={appId} onClose={onClose} />
+}
+
+function QueryError({ label, onRetry }: { label: string; onRetry: () => void }) {
+  return (
+    <Card padding="14px">
+      <ErrorText>{label}加载失败</ErrorText>
+      <Button variant="secondary" size="sm" onClick={onRetry} style={{ marginTop: 10 }}>
+        重试
+      </Button>
+    </Card>
+  )
 }
 
 /**

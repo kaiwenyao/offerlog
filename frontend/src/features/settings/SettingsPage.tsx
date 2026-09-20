@@ -171,32 +171,48 @@ function RemindersPanel({ me }: { me: Me | null }) {
     queryFn: () => api.get<Preferences>('/api/v1/preferences'),
   })
   const [err, setErr] = useState('')
-  const [savingKey, setSavingKey] = useState('')
+  // 已点下但服务端还没确认的字段 → 用户点的值。必须是一张表而不是单个 savingKey：
+  // 只记一个 key 的话，连点 A 再点 B 会让 A 立刻退回服务端旧值（看着就是「点了
+  // 没反应」，正好是这段队列要治的症状）。
+  const [pending, setPending] = useState<Record<string, boolean | number>>({})
 
   const prefs = q.data
 
-  const save = useMutation({
-    mutationFn: (patch: Partial<Record<string, boolean | number>>) => api.put('/api/v1/preferences', patch),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['preferences'] })
-      setSavingKey('')
-    },
-    onError: (e: unknown) => {
-      setErr(e instanceof ApiError ? e.message : '保存失败')
-      setSavingKey('')
-    },
-  })
+  // 每个开关各自发一整行 PUT，必须排队：并发的两个 PUT 各自带着进事务之前的
+  // 快照，后到的那个会把先到的字段盖回去。
+  const inflight = useRef(Promise.resolve())
 
   const toggle = (key: string, next: boolean | number) => {
-    setSavingKey(key)
     setErr('')
-    save.mutate({ [key]: next } as never)
+    setPending((p) => ({ ...p, [key]: next }))
+    inflight.current = inflight.current
+      .then(() => api.put('/api/v1/preferences', { [key]: next }))
+      // 等 refetch 真的回来再撤掉乐观值：PUT 已返回、['preferences'] 还没刷新的
+      // 那一瞬间，控件会闪一下旧值。
+      .then(
+        () => qc.invalidateQueries({ queryKey: ['preferences'] }),
+        (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+      )
+      .then(() =>
+        setPending((p) => {
+          const rest = { ...p }
+          delete rest[key]
+          return rest
+        }),
+      )
+      // 链尾要自己收口：留一条 rejected 的尾巴，在下一次 toggle 接上 catch 之前
+      // 就是一条 unhandled promise rejection（用户不再点第二下时永远接不上）。
+      .catch(() => undefined)
   }
 
+  /** 服务端值 + 未确认的乐观值。 */
+  const valueOf = <T extends boolean | number>(key: string, server: T): T =>
+    key in pending ? (pending[key] as T) : server
+
   const remindRows: Array<{ key: string; label: string; hint: string; value: boolean; control: 'switch' }> = [
-    { key: 'remind_overdue', label: '逾期待办提醒', hint: REMINDER_HINTS.overdue, value: prefs?.remind_overdue ?? true, control: 'switch' },
-    { key: 'remind_interview', label: '面试前一天提示', hint: REMINDER_HINTS.interview, value: prefs?.remind_interview ?? true, control: 'switch' },
-    { key: 'remind_weekly', label: '周报汇总', hint: REMINDER_HINTS.weekly, value: prefs?.remind_weekly ?? false, control: 'switch' },
+    { key: 'remind_overdue', label: '逾期待办提醒', hint: REMINDER_HINTS.overdue, value: valueOf('remind_overdue', prefs?.remind_overdue ?? true), control: 'switch' },
+    { key: 'remind_interview', label: '面试前一天提示', hint: REMINDER_HINTS.interview, value: valueOf('remind_interview', prefs?.remind_interview ?? true), control: 'switch' },
+    { key: 'remind_weekly', label: '周报汇总', hint: REMINDER_HINTS.weekly, value: valueOf('remind_weekly', prefs?.remind_weekly ?? false), control: 'switch' },
   ]
 
   if (q.isLoading) return null
@@ -218,7 +234,7 @@ function RemindersPanel({ me }: { me: Me | null }) {
               <span style={{ display: 'block', fontSize: 14 }}>{r.label}</span>
               <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{r.hint}</span>
             </span>
-            {savingKey === r.key ? (
+            {r.key in pending ? (
               <Spinner size={14} />
             ) : (
               <Switch ariaLabel={r.label} checked={r.value} onChange={(next) => toggle(r.key, next)} />
@@ -232,7 +248,7 @@ function RemindersPanel({ me }: { me: Me | null }) {
               首页“本周进展”与统计的周窗口按此起算
             </span>
           </span>
-          {savingKey === 'week_start' ? (
+          {'week_start' in pending ? (
             <Spinner size={14} />
           ) : (
             <Select
@@ -242,7 +258,7 @@ function RemindersPanel({ me }: { me: Me | null }) {
                 { value: '0', label: '周日' },
                 { value: '6', label: '周六' },
               ]}
-              value={String(prefs?.week_start ?? 1)}
+              value={String(valueOf('week_start', prefs?.week_start ?? 1))}
               onChange={(e) => toggle('week_start', Number(e.target.value))}
               fullWidth={false}
               style={{ width: 110 }}
@@ -256,13 +272,13 @@ function RemindersPanel({ me }: { me: Me | null }) {
               {REMINDER_HINTS.stale}（0 = 关闭）
             </span>
           </span>
-          {savingKey === 'remind_stale_days' ? (
+          {'remind_stale_days' in pending ? (
             <Spinner size={14} />
           ) : (
             <Select
               aria-label="未回复提醒天数"
               options={[0, 7, 14, 21, 30].map((n) => ({ value: String(n), label: n === 0 ? '关闭' : `${n} 天` }))}
-              value={String(prefs?.remind_stale_days ?? 14)}
+              value={String(valueOf('remind_stale_days', prefs?.remind_stale_days ?? 14))}
               onChange={(e) => toggle('remind_stale_days', Number(e.target.value))}
               fullWidth={false}
               style={{ width: 110 }}

@@ -40,6 +40,10 @@ export function TodayPage() {
     qc.invalidateQueries({ queryKey: ['actions'] })
     qc.invalidateQueries({ queryKey: ['calendar'] })
     qc.invalidateQueries({ queryKey: ['notifications'] })
+    // 完成 / 延期会重写 applications.next_action(_due_at)，数据库页的「下一步 /
+    // 截止」两列读的正是它：不失效 apps 的话，在 10s staleTime 内切到数据库页
+    // 看到的还是刚刚那条已经完成的待办。
+    qc.invalidateQueries({ queryKey: ['apps'] })
   }
 
   const doneMut = useMutation({
@@ -102,8 +106,10 @@ export function TodayPage() {
 
   const week = useMemo(() => (summary ? buildWeek(summary) : []), [summary])
 
-  if (summaryQ.isLoading) return <PageSpinner />
-  if (summaryQ.isError) {
+  if (summaryQ.isLoading && !summary) return <PageSpinner />
+  // refetch 失败时 react-query 仍保留 data，但 isError 为真。有缓存就继续
+  // 画看板，只在顶部提示；整页换成错误卡会把好好的内容瞬间抹掉。
+  if (summaryQ.isError && !summary) {
     return (
       <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <Card padding="18px">
@@ -126,6 +132,14 @@ export function TodayPage() {
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {summaryQ.isError && (
+        <Card padding="12px 14px">
+          <ErrorText>刷新失败，正在显示上次加载的内容。</ErrorText>
+          <Button variant="ghost" size="sm" onClick={() => summaryQ.refetch()} style={{ marginTop: 8 }}>
+            重试
+          </Button>
+        </Card>
+      )}
       {toast && (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
           <span className="grow">

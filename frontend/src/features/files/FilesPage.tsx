@@ -60,7 +60,10 @@ export function FilesPage() {
     }
   }, '松开鼠标，上传到文件库')
 
-  const files = useMemo(() => q.data?.items ?? [], [q.data])
+  const files = useMemo(
+    () => (q.data?.items ?? []).filter((f) => f.status !== 'deleted' && f.status !== 'failed'),
+    [q.data],
+  )
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: files.length }
     for (const f of files) map[f.category] = (map[f.category] ?? 0) + 1

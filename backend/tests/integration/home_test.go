@@ -212,3 +212,30 @@ func TestHomeSummaryUpcomingAssessmentsAndWeekChips(t *testing.T) {
 		t.Fatalf("week chips = %+v, want both OA and OA截止", s.WeekItems)
 	}
 }
+
+func TestHomeUpcomingOAExcludesCompletedAndPast(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	var tz string
+	_ = db.Pool().QueryRow(ctx, `SELECT timezone FROM users WHERE id=$1`, owner).Scan(&tz)
+	loc, _ := time.LoadLocation(tz)
+	repo := home.New(db)
+	now := time.Now().In(loc)
+
+	app := mustCreate(t, svc, owner, "StaleOACo", "Role")
+	past := now.Add(-7 * 24 * time.Hour)
+	future := now.Add(2 * time.Hour)
+	if _, err := db.Pool().Exec(ctx, `INSERT INTO assessment_rounds(application_id, owner_id, kind, name, progress, planned_at)
+		VALUES($1,$2,'online_test','过期已完成','completed',$3),
+		      ($1,$2,'online_test','过期未完成','preparing',$3),
+		      ($1,$2,'online_test','将来的一轮','preparing',$4)`, app.ID, owner, past, future); err != nil {
+		t.Fatal(err)
+	}
+	s, err := repo.Get(ctx, owner, tz, time.Monday, now, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.UpcomingAssessments) != 1 || s.UpcomingAssessments[0].Name != "将来的一轮" {
+		t.Fatalf("upcoming OA = %+v, want only the future preparing round", s.UpcomingAssessments)
+	}
+}

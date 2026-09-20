@@ -323,6 +323,8 @@ export function DatabasePage() {
     [rows, viewId],
   )
 
+  const [actionErr, setActionErr] = useState('')
+
   const bulkMut = useMutation({
     mutationFn: () => {
       const body: Record<string, unknown> = { ids: [...selectedIds] }
@@ -331,16 +333,31 @@ export function DatabasePage() {
       return api.post('/api/v1/applications/bulk', body)
     },
     onSuccess: () => {
+      setActionErr('')
       qc.invalidateQueries({ queryKey: ['apps'] })
       setSelRows(new Set())
       setBulkTag('')
       setBulkPriority('')
     },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '批量操作失败，请重试'),
   })
 
   const restoreMut = useMutation({
     mutationFn: (id: number) => api.post(`/api/v1/applications/${id}/restore`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['apps'] }),
+    onSuccess: () => {
+      setActionErr('')
+      qc.invalidateQueries({ queryKey: ['apps'] })
+    },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '恢复失败，请重试'),
+  })
+
+  const unarchiveMut = useMutation({
+    mutationFn: (id: number) => api.post(`/api/v1/applications/${id}/unarchive`),
+    onSuccess: () => {
+      setActionErr('')
+      qc.invalidateQueries({ queryKey: ['apps'] })
+    },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '取消归档失败，请重试'),
   })
 
   const toggleRow = (id: number) => {
@@ -512,9 +529,11 @@ export function DatabasePage() {
             <Button variant="ghost" size="sm" onClick={() => setSelRows(new Set())}>
               取消
             </Button>
+            {actionErr && <ErrorText>{actionErr}</ErrorText>}
           </div>
         </Card>
       )}
+      {actionErr && selectedIds.size === 0 && <ErrorText>{actionErr}</ErrorText>}
 
       {weekFailed ? (
         <Card padding="18px">
@@ -565,10 +584,12 @@ export function DatabasePage() {
           rows={rows}
           selected={selectedIds}
           trashMode={trashMode}
+          archivedMode={viewId === ARCHIVED_VIEW && !trashMode}
           onToggle={toggleRow}
           onToggleAll={toggleAll}
           onOpen={setSelApp}
           onRestore={(id) => restoreMut.mutate(id)}
+          onUnarchive={(id) => unarchiveMut.mutate(id)}
         />
       )}
 
@@ -594,23 +615,27 @@ function TableView({
   rows,
   selected,
   trashMode,
+  archivedMode,
   onToggle,
   onToggleAll,
   onOpen,
   onRestore,
+  onUnarchive,
 }: {
   rows: AppRow[]
   selected: Set<number>
   trashMode: boolean
+  archivedMode: boolean
   onToggle: (id: number) => void
   onToggleAll: (checked: boolean) => void
   onOpen: (id: number) => void
   onRestore: (id: number) => void
+  onUnarchive: (id: number) => void
 }) {
   const allChecked = rows.length > 0 && rows.every((r) => selected.has(r.id))
   // 列宽：默认按本页内容量出来的自适应宽度（公司与岗位不再被 150px 截断），
   // 用户拖过手柄的列用显式宽度覆盖，flex 列（下一步）吃掉卡片剩余宽度。
-  const keys = useMemo(() => visibleColumnKeys(trashMode), [trashMode])
+  const keys = useMemo(() => visibleColumnKeys(trashMode, archivedMode), [trashMode, archivedMode])
   const [overrides, setOverrides] = useState<ColWidths>(readColWidths)
   const [dragKey, setDragKey] = useState<DbColumnKey | null>(null)
   const [cardWidth, setCardWidth] = useState(0)
@@ -901,11 +926,17 @@ function TableView({
                   >
                     {priorityLabel(a.priority)}
                   </td>
-                  {trashMode && (
+                  {(trashMode || archivedMode) && (
                     <td onClick={(e) => e.stopPropagation()}>
-                      <Button variant="ghost" size="sm" onClick={() => onRestore(a.id)}>
-                        恢复
-                      </Button>
+                      {trashMode ? (
+                        <Button variant="ghost" size="sm" onClick={() => onRestore(a.id)}>
+                          恢复
+                        </Button>
+                      ) : (
+                        <Button variant="ghost" size="sm" onClick={() => onUnarchive(a.id)}>
+                          取消归档
+                        </Button>
+                      )}
                     </td>
                   )}
                 </tr>

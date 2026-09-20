@@ -104,3 +104,14 @@ func (r *Repo) StageHistoryFor(ctx context.Context, ownerID int64, appIDs []int6
 	}
 	return buildStageHistoryFromPoints(happenedBy(points, time.Now()), loc, submittedAt), nil
 }
+
+// ListTimeline returns stage_history and progress_since in one pass so the
+// views query (and any other list surface) can enrich a page without a
+// second trip over the same stage points.
+func (r *Repo) ListTimeline(ctx context.Context, ownerID int64, appIDs []int64, loc *time.Location, submittedAt map[int64]*time.Time) (map[int64]map[string]string, map[int64]string, error) {
+	s, err := r.TimelineSummaryFor(ctx, ownerID, appIDs, loc, submittedAt)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.StageHistory, s.ProgressSince, nil
+}

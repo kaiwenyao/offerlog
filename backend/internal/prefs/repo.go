@@ -35,6 +35,14 @@ func New(db *database.DB) *Repo { return &Repo{db: db} }
 
 func (r *Repo) Pool() *database.DB { return r.db }
 
+// LockUser serializes preference writes for one user inside the current
+// transaction (covers both the no-row INSERT and the existing-row UPDATE
+// cases — SELECT FOR UPDATE cannot lock a row that does not exist yet).
+func (r *Repo) LockUser(ctx context.Context, q database.Querier, userID int64) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(842156::bigint * 1000000000 + $1)`, userID)
+	return err
+}
+
 // UpsertTx writes the preference row inside an existing transaction (the same
 // shape as Upsert but on a Querier so PUT /preferences can persist the users
 // profile row and the preferences row atomically).
@@ -67,12 +75,20 @@ func (r *Repo) Upsert(ctx context.Context, p *Preferences) error {
 // returns the effective defaults (so /auth/me and settings agree before the
 // user saves anything).
 func (r *Repo) Get(ctx context.Context, userID int64) (*Preferences, error) {
-	var p Preferences
-	err := r.db.Pool().QueryRow(ctx, `SELECT user_id, display_name, timezone, week_start,
+	return r.GetTx(ctx, r.db, userID)
+}
+
+// GetTx is Get on an arbitrary Querier (pool or open transaction).
+func (r *Repo) GetTx(ctx context.Context, q database.Querier, userID int64) (*Preferences, error) {
+	return scanPrefs(q.QueryRow(ctx, `SELECT user_id, display_name, timezone, week_start,
 		remind_overdue, remind_interview, remind_stale_days, remind_weekly, locale, created_at, updated_at
-		FROM user_preferences WHERE user_id=$1`, userID).
-		Scan(&p.UserID, &p.DisplayName, &p.Timezone, &p.WeekStart, &p.RemindOverdue,
-			&p.RemindInterview, &p.RemindStaleDays, &p.RemindWeekly, &p.Locale, &p.CreatedAt, &p.UpdatedAt)
+		FROM user_preferences WHERE user_id=$1`, userID))
+}
+
+func scanPrefs(row interface{ Scan(dest ...any) error }) (*Preferences, error) {
+	var p Preferences
+	err := row.Scan(&p.UserID, &p.DisplayName, &p.Timezone, &p.WeekStart, &p.RemindOverdue,
+		&p.RemindInterview, &p.RemindStaleDays, &p.RemindWeekly, &p.Locale, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

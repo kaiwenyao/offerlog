@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { api, logout } from '../lib/api'
+import { ApiError, api, logout } from '../lib/api'
 import type { FileItem, HomeSummary, Me } from '../lib/types'
 import { Icon, SealMark, type IconName } from '../components/Icon'
 import { BlueprintCorners, Button } from '../ds'
@@ -75,7 +75,7 @@ function useSidebarCounts() {
   const unread = useUnreadCount()
   return {
     apps: home.data?.active ?? home.data?.total ?? 0,
-    files: (files.data?.items ?? []).length,
+    files: (files.data?.items ?? []).filter((f) => f.status !== 'deleted' && f.status !== 'failed').length,
     open: home.data?.todos.open ?? 0,
     unread,
   }
@@ -93,6 +93,8 @@ export function AppLayout({ me }: { me: Me | null }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutErr, setLogoutErr] = useState('')
   const counts = useSidebarCounts()
   const meta = pageMeta(loc.pathname)
 
@@ -122,7 +124,19 @@ export function AppLayout({ me }: { me: Me | null }) {
   }, [])
 
   const doLogout = async () => {
-    await logout()
+    setLogoutErr('')
+    setLoggingOut(true)
+    try {
+      await logout()
+    } catch (e) {
+      // 会话 cookie 是 httpOnly 的，前端根本清不掉——退出只能由后端完成。所以
+      // 这里不能「当作退出成功」然后 reload：reload 之后 /auth/me 照样认得那个
+      // cookie，用户以为已经退出、实际还登录着（共享电脑上尤其危险）。宁可把失败
+      // 摆出来让他重试。
+      setLoggingOut(false)
+      setLogoutErr(e instanceof ApiError ? e.message : '退出失败，请重试')
+      return
+    }
     nav('/')
     window.location.reload()
   }
@@ -201,18 +215,24 @@ export function AppLayout({ me }: { me: Me | null }) {
               <button
                 type="button"
                 onClick={doLogout}
+                disabled={loggingOut}
                 title="退出登录"
                 style={{
                   all: 'unset',
-                  cursor: 'pointer',
+                  cursor: loggingOut ? 'default' : 'pointer',
                   fontSize: 11,
                   color: 'var(--neutral-600)',
                   flex: '0 0 auto',
                 }}
               >
-                退出
+                {loggingOut ? '退出中…' : '退出'}
               </button>
             </div>
+            {logoutErr && (
+              <div role="alert" style={{ fontSize: 11, color: 'var(--danger)', marginTop: 6 }}>
+                {logoutErr}
+              </div>
+            )}
           </div>
         </aside>
 

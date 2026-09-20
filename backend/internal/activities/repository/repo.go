@@ -427,7 +427,7 @@ func (r *Repo) DeleteAction(ctx context.Context, q database.Querier, ownerID, id
 // ClearLegacyNextActionForApp removes an application's legacy next_action mirror
 // (and its due columns) once that application has no action row left at all.
 //
-// 与 ClearLegacyNextActionWhenSettled 的分工：那条挂在「完成」路径上（靠 action
+// 与 SyncNextActionMirrorForAction 的分工：那条挂在「完成」路径上（靠 action
 // 反查岗位，且只看未完成的待办）；这条挂在「删除」路径上——行删了就查不到它属于
 // 哪个岗位，所以由调用方先取 application_id 再传进来。
 //
@@ -472,7 +472,7 @@ func (r *Repo) DeleteActionAndSettle(ctx context.Context, ownerID, id int64) err
 			// 跨岗位待办（application_id IS NULL）没有镜像可清。
 			return nil
 		}
-		return r.ClearLegacyNextActionForApp(ctx, tx, ownerID, *appID)
+		return r.SyncNextActionMirror(ctx, tx, ownerID, *appID)
 	})
 }
 
@@ -485,39 +485,66 @@ func (r *Repo) MarkActionDone(ctx context.Context, q database.Querier, ownerID, 
 	return err
 }
 
-// ClearLegacyNextActionWhenSettled removes the application's legacy next_action
-// mirror once it has no open actions left.
-//
-// 方案 §5.3：独立待办是唯一真相，岗位行上的 next_action 只是历史镜像
-// （迁移 00002 把老数据搬进 actions）。镜像不跟着关就会出现自相矛盾的界面：
-// 详情说「待办 (0)」，下面却还挂着一条不可操作的旧记录——因为它把镜像当成了
-// 迁移遗留。所以最后一个未完成待办被完成时镜像必须一起清空；还有未完成待办时
-// 绝不能动它（NOT EXISTS 子句）。
-func (r *Repo) ClearLegacyNextActionWhenSettled(ctx context.Context, q database.Querier, ownerID, actionID int64) error {
-	_, err := q.Exec(ctx, `UPDATE applications ap SET next_action='', next_action_due_at=NULL,
-		next_action_due_ts=NULL, version=version+1, updated_at=now()
-		WHERE ap.owner_id=$1
-		  AND ap.id=(SELECT a.application_id FROM actions a WHERE a.id=$2 AND a.owner_id=$1)
-		  AND NOT EXISTS (SELECT 1 FROM actions x
-		        WHERE x.application_id=ap.id AND x.owner_id=$1 AND x.done_at IS NULL)`,
-		ownerID, actionID)
+// SyncNextActionMirror rewrites the application's legacy next_action /
+// next_action_due_at snapshot from the earliest still-open action. No open
+// action → clear the snapshot. The table 「下一步 / 截止」 columns read this
+// snapshot, so postpone / completing one of several todos used to leave a
+// stale title and date on the row.
+func (r *Repo) SyncNextActionMirror(ctx context.Context, q database.Querier, ownerID, appID int64) error {
+	var title string
+	var dueDate, dueTs *time.Time
+	err := q.QueryRow(ctx, `SELECT title, due_date, due_ts FROM actions
+		WHERE application_id=$1 AND owner_id=$2 AND done_at IS NULL
+		ORDER BY COALESCE(due_date, due_ts) NULLS LAST, id
+		LIMIT 1`, appID, ownerID).Scan(&title, &dueDate, &dueTs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = q.Exec(ctx, `UPDATE applications SET next_action='', next_action_due_at=NULL,
+			next_action_due_ts=NULL, version=version+1, updated_at=now()
+			WHERE owner_id=$1 AND id=$2`, ownerID, appID)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `UPDATE applications SET next_action=$3, next_action_due_at=$4,
+		next_action_due_ts=$5, version=version+1, updated_at=now()
+		WHERE owner_id=$1 AND id=$2`, ownerID, appID, title, dueDate, dueTs)
 	return err
 }
 
-// MarkActionDoneAndSettle marks the action (un)done and, on completion, clears
-// the legacy next_action mirror when no open action is left. Both statements run
-// in one transaction: a half-applied pair is exactly the contradiction the mirror
-// caused in the first place. Reopening an action deliberately does NOT restore
-// the mirror — the standalone action is the truth, the mirror stays retired.
+// SyncNextActionMirrorForAction 找到这条待办所属的岗位，再刷新它的 next_action
+// 镜像：还有未完成的就改指过去，一条不剩就清空。
+func (r *Repo) SyncNextActionMirrorForAction(ctx context.Context, q database.Querier, ownerID, actionID int64) error {
+	var appID *int64
+	err := q.QueryRow(ctx, `SELECT application_id FROM actions WHERE id=$1 AND owner_id=$2`,
+		actionID, ownerID).Scan(&appID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	// 判空必须排在判错之后：扫描出错时 appID 同样是 nil，跟「跨岗位待办」挤在
+	// 一个条件里就会把真错误当成「没有镜像可清」静默咽下去，接口还回 200。
+	if err != nil {
+		return err
+	}
+	if appID == nil {
+		// 跨岗位待办（application_id IS NULL）没有镜像可清。
+		return nil
+	}
+	return r.SyncNextActionMirror(ctx, q, ownerID, *appID)
+}
+
+// MarkActionDoneAndSettle marks the action (un)done and then refreshes the
+// legacy next_action mirror. Both statements run in one transaction: a
+// half-applied pair is exactly the contradiction the mirror caused in the first
+// place. 取消完成同样要同步 —— 镜像取的是「最早的未完成待办」，重开的那条可能
+// 正是最早的一条，不同步的话表里的下一步/截止就一直指着后面那条（只有一条待办
+// 时则永远空着）。
 func (r *Repo) MarkActionDoneAndSettle(ctx context.Context, ownerID, id int64, done bool) error {
 	return r.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.MarkActionDone(ctx, tx, ownerID, id, done); err != nil {
 			return err
 		}
-		if !done {
-			return nil
-		}
-		return r.ClearLegacyNextActionWhenSettled(ctx, tx, ownerID, id)
+		return r.SyncNextActionMirrorForAction(ctx, tx, ownerID, id)
 	})
 }
 

@@ -3,8 +3,9 @@
 // 原始 bug：新建待办会把标题同步到 applications.next_action；完成后这个字段还在，
 // 详情发现「没有未完成待办」就把镜像当成迁移遗留再显示一遍，于是出现
 // 「待办 (0)，下面却还有一条不可操作的待办」。修复后：完成最后一个未完成待办时
-// 镜像清空（next_action_due_at 一并清），还有未完成待办时绝不动它；撤销完成
-// （reopen）不会把镜像复活——独立待办才是唯一真相。
+// 镜像清空（next_action_due_at 一并清），还有未完成待办时把镜像切到剩下那条
+// （标题 + 截止日期一起改，不能继续指向刚完成的）；撤销完成（reopen）同样要
+// 重新同步——镜像取的是「最早的未完成待办」，重开的那条可能正是最早的一条。
 package integration
 
 import (
@@ -71,10 +72,10 @@ func TestCompletingLastActionClearsLegacyNextAction(t *testing.T) {
 	srv := newActivityServer(t, db, owner)
 	defer srv.Close()
 
-	// 还有一条未完成待办：镜像必须原样保留（不能误清）。
+	// 还有一条未完成待办：镜像必须切到剩下那条，不能继续指向刚完成的「跟进 HR」。
 	postActionDone(t, srv.URL, first, true)
-	if action, due := legacyMirror(t, db, app.ID); action == "" || due == nil {
-		t.Fatalf("还有未完成待办时必须保留镜像, got action=%q due=%v", action, due)
+	if action, due := legacyMirror(t, db, app.ID); action != "准备二面" || due != nil {
+		t.Fatalf("完成其中一条后镜像应指向剩下的待办, got action=%q due=%v", action, due)
 	}
 
 	// 完成最后一条：镜像一起清空，详情才不会再把它当「旧记录」显示。
@@ -87,10 +88,11 @@ func TestCompletingLastActionClearsLegacyNextAction(t *testing.T) {
 		t.Fatalf("完成最后一个待办后 next_action_due_at 应为 NULL, got %v", *due)
 	}
 
-	// 撤销完成不复活镜像：独立待办本身已经回来了，镜像不该再成为第二个真相。
+	// 撤销完成要重新同步：重开的这条又是唯一的未完成待办，表里的下一步必须跟上，
+	// 否则列表一直空着而详情里明明有一条待办。
 	postActionDone(t, srv.URL, second, false)
-	if action, _ := legacyMirror(t, db, app.ID); action != "" {
-		t.Fatalf("reopen 不应复活镜像, got %q", action)
+	if action, _ := legacyMirror(t, db, app.ID); action != "准备二面" {
+		t.Fatalf("reopen 后镜像应指回重开的待办, got %q", action)
 	}
 }
 

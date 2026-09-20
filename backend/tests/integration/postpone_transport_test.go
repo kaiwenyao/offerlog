@@ -39,6 +39,40 @@ func newActivityServer(t *testing.T, db *database.DB, owner int64) *httptest.Ser
 	return httptest.NewServer(r)
 }
 
+func TestPostponeRewritesApplicationDueMirror(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "MirrorDueCo", "Role")
+	var actionID int64
+	if err := db.Pool().QueryRow(ctx, `INSERT INTO actions(application_id, owner_id, title, due_date, done_at, remind_me, priority, source)
+		VALUES($1,$2,'跟进 HR','2026-09-21', NULL, FALSE, 'medium','manual') RETURNING id`, app.ID, owner).Scan(&actionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool().Exec(ctx, `UPDATE applications SET next_action='跟进 HR', next_action_due_at='2026-09-21' WHERE id=$1`, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	srv := newActivityServer(t, db, owner)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/actions/"+itoa(actionID)+"/postpone", bytes.NewBufferString(`{"due_date":"2026-09-22"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("postpone status = %d, want 200", res.StatusCode)
+	}
+	var due string
+	if err := db.Pool().QueryRow(ctx, `SELECT to_char(next_action_due_at,'YYYY-MM-DD') FROM applications WHERE id=$1`, app.ID).Scan(&due); err != nil {
+		t.Fatal(err)
+	}
+	if due != "2026-09-22" {
+		t.Fatalf("application next_action_due_at = %q, want 2026-09-22", due)
+	}
+}
+
 func TestPostponeBlankDateClearsDue(t *testing.T) {
 	db, svc, _, owner := setup(t)
 	ctx := context.Background()
@@ -224,4 +258,50 @@ func TestDeleteActionClearsOverdueReminder(t *testing.T) {
 	}
 	_ = svc
 	_ = actionID
+}
+
+// Regression: PATCH /actions/:id 改标题 / 改日期时也要重写 next_action 镜像。
+//
+// 原来只有 postpone / 完成 / 删除三条路径同步镜像，编辑靠前端一段补偿 PATCH：它
+// 先 GET 岗位、镜像恰好等于旧标题才写回。于是改一条「不是当前镜像」的待办（三条里
+// 的第二条）时，表格的「下一步」列会一直停在旧值。
+func TestUpdateActionRewritesNextActionMirror(t *testing.T) {
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "MirrorPatchCo", "Role")
+	// 两条待办：first 更早（有截止日），所以它才是镜像指向的那条。
+	first := insertAction(t, db, app.ID, owner, "跟进 HR", ptr("2026-09-21"))
+	second := insertAction(t, db, app.ID, owner, "准备二面", nil)
+	if _, err := db.Pool().Exec(ctx,
+		`UPDATE applications SET next_action='跟进 HR', next_action_due_at='2026-09-21' WHERE id=$1`, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	srv := newActivityServer(t, db, owner)
+	defer srv.Close()
+
+	patch := func(id int64, body string) {
+		t.Helper()
+		req, _ := http.NewRequest("PATCH", srv.URL+"/api/v1/actions/"+itoa(id), bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("PATCH action=%d -> %d, want 200", id, res.StatusCode)
+		}
+	}
+
+	// 改镜像指向的那条：标题和日期都要跟着走。
+	patch(first, `{"title":"跟进 HR（二轮）","due_date":"2026-09-23"}`)
+	if action, due := legacyMirror(t, db, app.ID); action != "跟进 HR（二轮）" || due == nil || *due != "2026-09-23" {
+		t.Fatalf("改镜像那条后镜像没跟上, got action=%q due=%v", action, due)
+	}
+
+	// 改「不是当前镜像」的那条，且把它的截止日提到最前：镜像必须改指到它。
+	patch(second, `{"title":"准备二面","due_date":"2026-09-22"}`)
+	if action, due := legacyMirror(t, db, app.ID); action != "准备二面" || due == nil || *due != "2026-09-22" {
+		t.Fatalf("编辑后它成了最早的未完成待办，镜像应改指到它, got action=%q due=%v", action, due)
+	}
 }
