@@ -117,7 +117,7 @@ func TestInitialEventsReplayKeepsStageAndSubmission(t *testing.T) {
 	}
 
 	// Act
-	d := replayStagePoints(points)
+	d := replayStagePoints(points, saved.AddDate(0, 0, 1))
 
 	// Assert
 	if d.status != domain.StatusInterviewing {

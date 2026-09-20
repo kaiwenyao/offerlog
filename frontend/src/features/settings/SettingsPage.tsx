@@ -5,7 +5,7 @@ import type { Me, Preferences } from '../../lib/types'
 import { Button, Card, Input, PanelTitle, Select, Switch } from '../../ds'
 import { ErrorText, ConfirmDialog, Num, Spinner } from '../../components/ui'
 import { listTimezones } from '../../lib/tz'
-import { importResultCopy } from './importCopy'
+import { importPreviewCopy, importResultCopy } from './importCopy'
 
 const PROPERTY_TYPES = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'url', 'image']
 
@@ -187,7 +187,7 @@ function RemindersPanel({ me }: { me: Me | null }) {
     },
   })
 
-  const toggle = (key: string, next: boolean | number, label: string) => {
+  const toggle = (key: string, next: boolean | number) => {
     setSavingKey(key)
     setErr('')
     save.mutate({ [key]: next } as never)
@@ -221,7 +221,7 @@ function RemindersPanel({ me }: { me: Me | null }) {
             {savingKey === r.key ? (
               <Spinner size={14} />
             ) : (
-              <Switch ariaLabel={r.label} checked={r.value} onChange={(next) => toggle(r.key, next, r.label)} />
+              <Switch ariaLabel={r.label} checked={r.value} onChange={(next) => toggle(r.key, next)} />
             )}
           </div>
         ))}
@@ -243,7 +243,7 @@ function RemindersPanel({ me }: { me: Me | null }) {
                 { value: '6', label: '周六' },
               ]}
               value={String(prefs?.week_start ?? 1)}
-              onChange={(e) => toggle('week_start', Number(e.target.value), 'week_start')}
+              onChange={(e) => toggle('week_start', Number(e.target.value))}
               fullWidth={false}
               style={{ width: 110 }}
             />
@@ -256,14 +256,18 @@ function RemindersPanel({ me }: { me: Me | null }) {
               {REMINDER_HINTS.stale}（0 = 关闭）
             </span>
           </span>
-          <Select
-            aria-label="未回复提醒天数"
-            options={[0, 7, 14, 21, 30].map((n) => ({ value: String(n), label: n === 0 ? '关闭' : `${n} 天` }))}
-            value={String(prefs?.remind_stale_days ?? 14)}
-            onChange={(e) => toggle('remind_stale_days', Number(e.target.value), 'stale')}
-            fullWidth={false}
-            style={{ width: 110 }}
-          />
+          {savingKey === 'remind_stale_days' ? (
+            <Spinner size={14} />
+          ) : (
+            <Select
+              aria-label="未回复提醒天数"
+              options={[0, 7, 14, 21, 30].map((n) => ({ value: String(n), label: n === 0 ? '关闭' : `${n} 天` }))}
+              value={String(prefs?.remind_stale_days ?? 14)}
+              onChange={(e) => toggle('remind_stale_days', Number(e.target.value))}
+              fullWidth={false}
+              style={{ width: 110 }}
+            />
+          )}
         </div>
       </div>
       <p style={{ margin: '12px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
@@ -291,11 +295,7 @@ function DataPanel() {
     },
     onSuccess: (pv, f) => {
       setInfoTone('ok')
-      setInfo(
-        `预检完成：共 ${pv.total_rows} 行，有效 ${pv.valid_rows} 行，错误 ${pv.errors.length} 行，` +
-          `疑似重复 ${pv.duplicate_candidates.length} 行。` +
-          (pv.errors.length ? ' 可下载逐行错误报告或修正 CSV 后重试。' : ''),
-      )
+      setInfo(importPreviewCopy(pv.total_rows, pv.valid_rows, pv.errors.length, pv.duplicate_candidates.length))
       // 用发起这次预检的那个 File，而不是回读 input.files[0]——input 的值在
       // 选完之后就被清掉了（否则同名文件选第二次不触发 change）。
       setBatch({ id: pv.batch_id, file: f })
@@ -334,7 +334,8 @@ function DataPanel() {
     <Card padding="18px">
       <PanelTitle style={{ marginBottom: 6 }}>数据</PanelTitle>
       <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-        导出为 CSV 或从其它追踪表导入，导入前会做预检（字段映射 + 类型错误 + 重复候选）；重复项默认新建，不覆盖已有记录。
+        导出为 CSV 或从其它追踪表导入，导入前会做预检（字段映射 + 类型错误 + 重复候选）。重复候选会拿
+        公司 + 岗位 + 链接跟库里已有的岗位比对；重复项默认新建、不覆盖已有记录，所以确认导入前请先看一眼这个数字。
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         <Button variant="secondary" size="sm" onClick={() => window.open('/api/v1/exports/applications.csv', '_blank')}>
@@ -371,6 +372,19 @@ function DataPanel() {
         >
           {info}
         </p>
+      )}
+
+      {preview.data && preview.data.duplicate_candidates.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-muted)' }}>
+            疑似重复的行（{preview.data.duplicate_candidates.length}）
+          </summary>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
+            公司 + 岗位 + 链接与已有记录（或这份文件里靠前的一行）相同：第{' '}
+            {preview.data.duplicate_candidates.slice(0, 50).join('、')} 行
+            {preview.data.duplicate_candidates.length > 50 ? ' …' : ''}
+          </p>
+        </details>
       )}
 
       {preview.data && preview.data.errors.length > 0 && (

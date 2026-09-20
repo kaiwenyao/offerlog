@@ -159,9 +159,15 @@ async function addEvent(page, kind, opts = {}) {
   // 8c. 补录一个更早的「初筛」：时间线重排，但当前状态**不变**（它排在面试之前）。
   const backfillChip = await addEvent(page, 'screen', { at: '2026-09-05T10:00' });
   console.log('8c backfilling an earlier event keeps the status at 面试:', backfillChip);
-  const orderTxt = (await page.locator('.drawer').textContent()) || '';
-  console.log('8c timeline re-sorted (09/05 before 09/20):',
-    orderTxt.indexOf('09/05') < orderTxt.indexOf('09/20'));
+  // 只看时间线的行，别拿整个抽屉的文本找日期：建档行钉在最前面，它的时间就是
+  // 「今天」，所以 indexOf('09/20') 永远命中建档那一行，这个断言以前恒为 false。
+  const rowText = await page
+    .locator('.drawer .timeline-rail')
+    .evaluateAll((els) => els.map((el) => (el.parentElement?.textContent || '').replace(/\s+/g, ' ')));
+  const iBackfilled = rowText.findIndex((t) => t.includes('09/05'));
+  const iInterview = rowText.findIndex((t) => /→\s*面试/.test(t));
+  console.log('8c timeline re-sorted (补录的 09/05 排在面试之前):',
+    iBackfilled >= 0 && iInterview >= 0 && iBackfilled < iInterview);
 
   // 9. 移除最后一个事件 → 状态退回上一格（不会停在一个已不存在的阶段里）。
   //    移除是破坏性的（事件删了会连带重算岗位状态），所以现在会先弹二次确认：

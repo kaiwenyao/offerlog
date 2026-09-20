@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	apprepo "offerlog/backend/internal/applications/repository"
 	"offerlog/backend/internal/bootstrap"
 	"offerlog/backend/internal/platform/config"
 	"offerlog/backend/internal/platform/jobs"
@@ -46,6 +47,7 @@ func main() {
 	store := app.Jobs
 	reg := worker.NewRegistry()
 	gen := reminders.New(app.DB)
+	apps := apprepo.New(app.DB)
 
 	// reminder generation runs on a daily schedule; each pass inserts
 	// idempotent in-app notifications per user preference.
@@ -56,6 +58,21 @@ func main() {
 			return err
 		}
 		slog.Info("reminder pass", "inserted", n)
+		return nil
+	})
+	// Stage catch-up: a timeline point dated in the future does not decide the
+	// current stage (applications/repository.hasHappened), so a record whose
+	// newest point was 「下周一面」 needs one pass after that day arrives to move
+	// into 面试中 on its own. The window covers a whole pause between daily
+	// passes plus slack.
+	reg.Register("restage", func(ctx context.Context, store worker.Store, job *jobs.Job) error {
+		n, err := apps.RecomputeDueSince(ctx, 48*time.Hour)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			slog.Info("stage catch-up", "recomputed", n)
+		}
 		return nil
 	})
 	// file cleanup registered by the worker ticker below (not a queued job yet).
@@ -97,6 +114,11 @@ func main() {
 					slog.Warn("enqueue reminders", "error", err)
 				} else {
 					lastKey = day
+				}
+				// Same cadence, separate job: the stage catch-up must still run
+				// on a day whose reminder pass fails (and vice versa).
+				if err := store.Enqueue(ctx, "restage", "restage:"+day, map[string]any{}, time.Now()); err != nil {
+					slog.Warn("enqueue restage", "error", err)
 				}
 			}
 			select {

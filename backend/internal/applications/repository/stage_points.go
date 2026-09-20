@@ -10,7 +10,12 @@
 //
 // 于是推导规则只有一条、且看图即可预期：
 //
-//	当前状态 = 时间线上最后一个阶段落点的状态
+//	当前状态 = 时间线上最后一个**已经发生**的阶段落点的状态
+//
+// 「已经发生」= occurred_at 不在未来（时间未定的落点算已发生，面板也把它画在最后
+// 一格）。未来的落点只是计划：它照常画在时间线上，但不能抢在之后记录的真实事件
+// 前面决定状态——否则记了「12/25 一面」再记「今天被拒」，岗位会一直停在面试中。
+// 时间到了之后由 worker 的每日 RecomputeDueSince 扫描补算。
 //
 // 这与旧的 ResyncStatusFromEvents 有一处**有意的语义差异**：旧实现按 sequence
 // （录入顺序）回放，因为当时「补录」只能通过状态机、录入顺序才是权威。新模型
@@ -21,6 +26,8 @@ package repository
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"offerlog/backend/internal/applications/domain"
 	"offerlog/backend/internal/platform/database"
@@ -103,13 +110,32 @@ type derived struct {
 	submitted, rejected, accept *time.Time
 }
 
+// hasHappened reports whether a stage point may decide the CURRENT stage.
+//
+// A point dated in the future has not happened yet: recording「12/25 一面」is a
+// plan, and the timeline order alone would let it outrank everything the user
+// records afterwards — 今天记「被拒」，状态却还停在「面试中」，而且终态的备注也
+// 进不了「原因」卡片（replay 只在最后一格是终态时写 reason）。未来的落点照常画在
+// 时间线上，只是不参与「现在走到哪了」的推导；时间到了之后由 worker 的每日
+// RecomputeDueSince 扫描把它补算进来。
+//
+// 时间未定（OccurredAt == nil）仍然算数：面板本来就把它画在最后一格，所见即所得。
+func (p *StagePoint) hasHappened(now time.Time) bool {
+	return p.OccurredAt == nil || !p.OccurredAt.After(now)
+}
+
 // replayStagePoints walks the timeline and reads off the snapshot facts. The
 // date facts take the FIRST time each status was reached (a rollback out of
 // 已投递 and back must not rewrite 投递时间), and a point with no business time
-// supplies no date at all rather than a fabricated one.
-func replayStagePoints(points []*StagePoint) derived {
+// supplies no date at all rather than a fabricated one. Points dated in the
+// future are skipped entirely (see hasHappened): they neither move the stage
+// nor supply 投递 / 被拒 / 接受 的日期.
+func replayStagePoints(points []*StagePoint, now time.Time) derived {
 	d := derived{status: domain.StatusSaved}
 	for _, p := range points {
+		if !p.hasHappened(now) {
+			continue
+		}
 		d.status = p.Status
 		d.substatus = p.Substatus
 		d.reason = ""
@@ -149,7 +175,7 @@ func (r *Repo) RecomputeStatus(ctx context.Context, q database.Querier, appID, o
 	if err != nil {
 		return err
 	}
-	d := replayStagePoints(points)
+	d := replayStagePoints(points, time.Now())
 
 	// A focus reference (and the substatus derived from it) only survives while
 	// the record still sits in that activity's stage.
@@ -171,6 +197,21 @@ func (r *Repo) RecomputeStatus(ctx context.Context, q database.Querier, appID, o
 		WHERE id = $5 AND owner_id = $7`,
 		d.status, d.submitted, d.rejected, d.accept, appID, nullIfEmpty(focusKind), ownerID, d.reason, d.substatus)
 	return err
+}
+
+// happenedBy drops the points that have not happened yet, so every derived
+// read model (stage rail, 「X 进入」, and the stage snapshot itself) agrees on
+// what the record has actually been through. Without it a record whose only
+// future point is「12/25 一面」would show 「待投递」in the status chip and a
+// filled 面试 pip with a December arrival date in the same row.
+func happenedBy(points []*StagePoint, now time.Time) []*StagePoint {
+	out := make([]*StagePoint, 0, len(points))
+	for _, p := range points {
+		if p.hasHappened(now) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // buildStageHistoryFromPoints records the earliest calendar day (user zone) at
@@ -251,4 +292,84 @@ func buildProgressSinceFromPoints(points []*StagePoint, loc *time.Location) map[
 		}
 	}
 	return out
+}
+
+// RecomputeDueSince re-derives the snapshot of every application that owns a
+// stage point which has BECOME past inside the given window, and whose stored
+// stage no longer matches what the timeline now says. Returns how many rows it
+// actually changed.
+//
+// Why it exists: RecomputeStatus only runs when the timeline is written, and it
+// deliberately ignores points dated in the future (see hasHappened). Without a
+// catch-up pass, 「12/25 一面」 recorded in advance would never move the record
+// into 面试中 — the stored status would sit at the previous stage until the user
+// happened to touch the timeline again. The worker calls this once per day, so
+// the window only has to cover the gap between passes (plus slack for a paused
+// process).
+//
+// The staleness check matters as much as the recompute: RecomputeStatus bumps
+// `version`, which is the optimistic-locking token PATCH /applications/:id
+// checks. A daily pass that rewrote every recently-touched row would hand a
+// 409 to anyone who happened to have an edit form open, so rows that are
+// already correct are left completely alone.
+func (r *Repo) RecomputeDueSince(ctx context.Context, window time.Duration) (int, error) {
+	now := time.Now()
+	rows, err := r.db.Pool().Query(ctx, `SELECT DISTINCT p.owner_id, p.application_id
+		FROM application_stage_points p
+		JOIN applications a ON a.id = p.application_id AND a.owner_id = p.owner_id
+		WHERE p.occurred_at IS NOT NULL AND p.occurred_at <= $1 AND p.occurred_at > $2
+		  AND a.deleted_at IS NULL
+		ORDER BY p.owner_id, p.application_id`, now, now.Add(-window))
+	if err != nil {
+		return 0, err
+	}
+	type target struct{ ownerID, appID int64 }
+	var targets []target
+	for rows.Next() {
+		var t target
+		if err := rows.Scan(&t.ownerID, &t.appID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		targets = append(targets, t)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	n := 0
+	for _, t := range targets {
+		stale, err := r.stageIsStale(ctx, t.appID, t.ownerID, now)
+		if err != nil {
+			return n, err
+		}
+		if !stale {
+			continue
+		}
+		err = r.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+			return r.RecomputeStatus(ctx, tx, t.appID, t.ownerID)
+		})
+		if err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// stageIsStale reports whether the stored stage disagrees with a fresh replay.
+// Read outside a transaction on purpose: the overwhelming majority of
+// candidates are already correct, and the write path re-reads under the tx.
+func (r *Repo) stageIsStale(ctx context.Context, appID, ownerID int64, now time.Time) (bool, error) {
+	var stored string
+	if err := r.db.Pool().QueryRow(ctx, `SELECT status FROM applications WHERE id=$1 AND owner_id=$2`,
+		appID, ownerID).Scan(&stored); err != nil {
+		return false, err
+	}
+	points, err := r.ListStagePoints(ctx, r.db.Pool(), appID, ownerID)
+	if err != nil {
+		return false, err
+	}
+	return replayStagePoints(points, now).status != stored, nil
 }

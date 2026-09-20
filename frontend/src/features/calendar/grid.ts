@@ -13,7 +13,35 @@ import { toDayString } from '../../lib/api'
 
 export type ViewMode = 'week' | 'month' | 'agenda'
 
+/** Weekday names indexed the way JS does it: 0 = 周日 … 6 = 周六. */
+export const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+/** Monday-first labels — the default grid header (week_start = 1). */
 export const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+
+/**
+ * 每周起始日偏好（0 = 周日 … 6 = 周六）。设置页把它存在服务端，首页的「本周工序」
+ * 一直是按它排的；日历与「本周面试」以前写死周一，于是把起始日改成周日之后，
+ * 首页的 7 列和日历的 7 列差了一天。
+ */
+export const DEFAULT_WEEK_START = 1
+
+/** Clamp an arbitrary stored value into 0..6, falling back to Monday. */
+export function normalizeWeekStart(v: number | null | undefined): number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 6 ? v : DEFAULT_WEEK_START
+}
+
+/** The 7 weekday labels in grid order for the given week start. */
+export function weekdayLabels(weekStart: number = DEFAULT_WEEK_START): string[] {
+  const start = normalizeWeekStart(weekStart)
+  return Array.from({ length: 7 }, (_, i) => WEEKDAY_NAMES[(start + i) % 7])
+}
+
+/** JS weekday (0 = Sunday) of a YYYY-MM-DD key. */
+export function weekdayOf(key: string): number {
+  const [y, m, d] = key.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay()
+}
 
 // ---------------------------------------------------------------------------
 // Calendar-day keys (YYYY-MM-DD) and pure day-string arithmetic
@@ -37,11 +65,16 @@ export function addDaysToKey(key: string, n: number): string {
   return t.toISOString().slice(0, 10)
 }
 
-/** The Monday key of the week containing key. */
+/** The key of the week's first day for the given week start (0=周日..6=周六). */
+export function weekStartKeyOf(key: string, weekStart: number = DEFAULT_WEEK_START): string {
+  const start = normalizeWeekStart(weekStart)
+  const offset = (weekdayOf(key) - start + 7) % 7
+  return addDaysToKey(key, -offset)
+}
+
+/** The Monday key of the week containing key (weekStartKeyOf with 周一 start). */
 export function mondayKeyOf(key: string): string {
-  const [y, m, d] = key.split('-').map(Number)
-  const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7 // Mon=0
-  return addDaysToKey(key, -dow)
+  return weekStartKeyOf(key, 1)
 }
 
 /** Key of the first day of the month containing key. */
@@ -71,7 +104,7 @@ function eventDay(e: CalendarEvent, zone?: string): string | null {
   return dayKeyInZone(e.start, zone)
 }
 
-/** 7 Monday-start columns; weekStartKey is the Monday key. */
+/** 7 columns starting at weekStartKey (the week's first day in the user zone). */
 export function weekColumns(events: CalendarEvent[], weekStartKey: string, zone?: string): DayCell[] {
   const today = todayKeyInZone(zone)
   return WEEKDAYS.map((_, i) => {
@@ -99,10 +132,15 @@ export function splitMonthCell(
   return { shown: events.slice(0, n), hidden: events.slice(n) }
 }
 
-/** 6-week month grid starting at the Monday on/before monthKey's 1st. */
-export function monthGrid(events: CalendarEvent[], monthKey: string, zone?: string): DayCell[][] {
+/** 6-week month grid starting at the week start on/before monthKey's 1st. */
+export function monthGrid(
+  events: CalendarEvent[],
+  monthKey: string,
+  zone?: string,
+  weekStart: number = DEFAULT_WEEK_START,
+): DayCell[][] {
   const firstKey = monthKeyOf(monthKey)
-  const gridStartKey = mondayKeyOf(firstKey)
+  const gridStartKey = weekStartKeyOf(firstKey, weekStart)
   const today = todayKeyInZone(zone)
   const weeks: DayCell[][] = []
   for (let w = 0; w < 6; w++) {

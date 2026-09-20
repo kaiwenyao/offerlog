@@ -4,7 +4,8 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
 import { api, ApiError, dayToInstant, fmtDate, fmtDay, localDateTimeToInstant, toDayString } from '../../lib/api'
 import { effectiveZone } from '../../lib/tz'
 import type { AppRow, CalendarEvent, SavedView } from '../../lib/types'
-import { addDaysToKey, mondayKeyOf } from '../calendar/grid'
+import { addDaysToKey, weekStartKeyOf } from '../calendar/grid'
+import { useWeekStart } from '../../lib/weekStart'
 import { comboLabel, FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
 import { Badge, Button, Card, Input, Select, Tabs, Tag } from '../../ds'
 import { CompanyMark } from '../../components/Icon'
@@ -138,11 +139,55 @@ export function DatabasePage() {
   // 跨会话保留；不进 URL 参数，因为它是个人偏好而不是可分享的导航状态。
   const [sort, setSort] = useState<SortClause>(() => loadDbSort(localStorage.getItem(DB_SORT_STORAGE_KEY)))
 
+  // 视图与布局是**导航状态**，不是个人偏好：不写回 URL 的话，切到「已归档」再
+  // 刷新就回到了「全部机会」，也没法把当前这一屏复制给别人（侧栏的快捷视图反而
+  // 是带参数的，两边行为对不上）。用 replace 写，不往后退栈里塞垃圾。
+  //
+  // selfWrite 记下「我自己刚写成什么样」，好让下面那个同步 effect 认出这次
+  // params 变化不是一次外部导航：否则带着 ?q= 时点一下视图 chip 会被当成新的
+  // 搜索意图，顺手清掉快捷筛选、退出回收站、关掉抽屉。
+  // 存字符串而不是布尔量：万一某次写入没有真的产生 location 变化，一个挂着的
+  // 布尔量会把**下一次**真正的外部导航一起吞掉。
+  const selfWrite = useRef<string | null>(null)
+  const writeParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      const next = new URLSearchParams(params)
+      for (const [k, v] of Object.entries(patch)) {
+        if (v == null) next.delete(k)
+        else next.set(k, v)
+      }
+      selfWrite.current = next.toString()
+      setParams(next, { replace: true })
+    },
+    [params, setParams],
+  )
+
+  const selectView = (id: number) => {
+    setViewId(id)
+    setTrashMode(false)
+    setPage(1)
+    // 只切换筛选，不动布局：这些 chip 是「筛选」而不是布局开关，用户当前停留在
+    // 表格 / 看板 / 列表哪个布局就保持哪个（需求：点筛选不要把人拽到看板）。
+    // 布局只能由布局 Tabs（或带 layout 参数的显式导航）改变。
+    writeParams({ view: String(id) })
+  }
+
+  const selectLayout = (next: Layout) => {
+    setLayout(next)
+    writeParams({ layout: next })
+  }
+
   // Header search / saved views / the header's ＋ 记一个岗位 button all
   // navigate here with query params. 依赖里带上 loc.key：导航到**完全相同的
   // URL**（例如搜索同一个词两次）时 params 引用不变，但每次导航 location.key
   // 都会变——否则那一次同步会被整个跳过。
   useEffect(() => {
+    // 自己写回去的 view / layout：状态已经是最新的，不要再当成外部导航处理。
+    if (selfWrite.current !== null && selfWrite.current === params.toString()) {
+      selfWrite.current = null
+      return
+    }
+    selfWrite.current = null
     // `q === null`（URL 里没有 ?q=，比如「清除筛选」或移除搜索 chip 后回到
     // /database）也要把搜索词清空——否则组件里还留着旧词，列表依旧被过滤，
     // 看起来就像清除按钮没生效。
@@ -184,11 +229,15 @@ export function DatabasePage() {
   )
 
   // 「本周面试」的筛选靠本周有面试日程的岗位 id 集合，而那套 id 只能从日历接口按
-  // 周窗口拿到。窗口与日历页同一口径：用户时区的周一 00:00 → 下周一 00:00（
-  // dayToInstant 按用户区本地午夜换算，绝不用浏览器时区）。
+  // 周窗口拿到。窗口与日历页同一口径：用户时区、按账号「每周起始日」偏好的
+  // 本周 00:00 → 下周同一天 00:00（dayToInstant 按用户区本地午夜换算，绝不用
+  // 浏览器时区）。
   const zone = effectiveZone()
   const today = toDayString(new Date().toISOString(), zone) ?? ''
-  const weekStart = mondayKeyOf(today)
+  // 起始日跟账号偏好走，和首页「本周工序」、日历周视图同一口径（写死周一时，
+  // 把偏好改成周日的用户会看到三处「本周」互相差一天）。
+  const weekStartDay = useWeekStart()
+  const weekStart = weekStartKeyOf(today, weekStartDay)
   const weekWindow = useMemo(() => {
     const instantOf = (key: string): string => {
       const ms = dayToInstant(key, zone)
@@ -338,7 +387,7 @@ export function DatabasePage() {
         <Tabs
           items={LAYOUT_TABS}
           value={layout}
-          onChange={(v) => setLayout(v as Layout)}
+          onChange={(v) => selectLayout(v as Layout)}
           size="sm"
           ariaLabel="视图布局"
         />
@@ -348,15 +397,7 @@ export function DatabasePage() {
           <Tag
             key={v.id}
             selected={viewId === v.id && !trashMode}
-            onClick={() => {
-              setViewId(v.id)
-              setTrashMode(false)
-              setPage(1)
-              // 只切换筛选，不动布局：这些 chip 是「筛选」而不是布局开关，用户
-              // 当前停留在表格 / 看板 / 列表哪个布局就保持哪个（需求：点筛选
-              // 不要把人拽到看板）。布局只能由布局 Tabs（或带 layout 参数的
-              // 显式导航）改变。
-            }}
+            onClick={() => selectView(v.id)}
           >
             {v.name}
           </Tag>
@@ -371,12 +412,12 @@ export function DatabasePage() {
           onClick={() => {
             // 进/出回收站都回到第 1 页：两个集合的行序无关，沿用旧页码只会
             // 落到一个空页上，看起来像「回收站是空的」。
-            setTrashMode((v) => {
-              // 「恢复」按钮只画在表格布局里。停在看板 / 列表上点进回收站，会看到
-              // 一堆已删除的卡片却没有任何恢复入口——所以进回收站就切回表格。
-              if (!v) setLayout('table')
-              return !v
-            })
+            const entering = !trashMode
+            setTrashMode(entering)
+            // 「恢复」按钮只画在表格布局里。停在看板 / 列表上点进回收站，会看到
+            // 一堆已删除的卡片却没有任何恢复入口——所以进回收站就切回表格。
+            // （写 URL 的副作用放在事件处理里，不放进 setState 的 updater。）
+            if (entering) selectLayout('table')
             setPage(1)
           }}
         >
