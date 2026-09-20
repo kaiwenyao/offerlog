@@ -387,8 +387,11 @@ function TodoRow({
         </span>
         <span style={{ display: 'block', fontSize: 13, marginTop: 2 }}>{item.title}</span>
       </span>
+      {/* 必须显式传时区：due 可能是一个瞬间（due_ts），fmtDay 不给 zone 就按
+          浏览器时区算日历日——而上面那行 overdue 用的是用户配置时区，两者会在
+          「浏览器与账号时区不同」的人身上给出差一天的日期和红字。 */}
       <Num color={overdue ? 'var(--danger)' : 'var(--text-muted)'}>
-        {overdue ? `逾期 ${fmtDay(due)}` : fmtDay(due)}
+        {overdue ? `逾期 ${fmtDay(due, effectiveZone())}` : fmtDay(due, effectiveZone())}
       </Num>
       {overdue && !derived && (
         <Button variant="ghost" size="sm" disabled={busy} onClick={onPostpone} title="延期一天">

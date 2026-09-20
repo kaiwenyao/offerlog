@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api, dayToInstant, fmtDateTime } from '../../lib/api'
@@ -13,14 +13,17 @@ import {
   dayKeyInZone,
   monthGrid,
   monthKeyOf,
-  mondayKeyOf,
   splitMonthCell,
   stepLabels,
   todayKeyInZone,
   weekColumns,
-  WEEKDAYS,
+  weekdayLabels,
+  WEEKDAY_NAMES,
+  weekdayOf,
+  weekStartKeyOf,
   type ViewMode,
 } from './grid'
+import { useWeekStart } from '../../lib/weekStart'
 
 function toneOf(e: CalendarEvent): string {
   if (e.cancelled) return 'var(--neutral)'
@@ -65,19 +68,22 @@ function fmtMonthKey(key: string): string {
   const m = Number(key.slice(5, 7))
   return `${y} 年 ${m} 月`
 }
-/** Weekday label index 0=Mon..6=Sun for a day key. */
-function weekdayIdxOf(key: string): number {
-  const t = new Date(`${key}T00:00:00Z`)
-  return (t.getUTCDay() + 6) % 7
+/** 某一天的中文星期名（与每周起始日无关，它就是那天本身）。 */
+function weekdayNameOf(key: string): string {
+  return WEEKDAY_NAMES[weekdayOf(key)]
 }
 
 export function CalendarPage() {
   const nav = useNavigate()
   const zone = effectiveZone()
+  // 每周起始日跟着账号偏好走（0 = 周日 … 6 = 周六）：首页的「本周工序」一直是
+  // 这么排的，日历以前写死周一，改成周日之后两边的「本周」差一天。
+  const weekStart = useWeekStart()
   const [view, setView] = useState<ViewMode>('week')
-  // Anchor is a day KEY in the active zone. Week view navigates by Monday
-  // weeks; month view by month keys; agenda by the current week.
-  const [weekKey, setWeekKey] = useState(() => mondayKeyOf(todayKeyInZone(zone)))
+  // Anchor is a day KEY in the active zone. Week view navigates by whole weeks
+  // anchored on the user's week-start day; month view by month keys; agenda by
+  // the current week.
+  const [weekKey, setWeekKey] = useState(() => weekStartKeyOf(todayKeyInZone(zone), weekStart))
   const [monthKey, setMonthKey] = useState(() => monthKeyOf(todayKeyInZone(zone)))
   // 月视图折叠的日程：点「+N 展开」把它单独摊开，不用切视图再重新定位到那天。
   const [expandedDay, setExpandedDay] = useState<{ key: string; events: CalendarEvent[] } | null>(null)
@@ -94,17 +100,27 @@ export function CalendarPage() {
       return { from: instantOf(weekKey), to: instantOf(addDaysToKey(weekKey, 7)) }
     }
     if (view === 'month') {
-      const gridStart = mondayKeyOf(monthKey)
+      const gridStart = weekStartKeyOf(monthKey, weekStart)
       return { from: instantOf(gridStart), to: instantOf(addDaysToKey(gridStart, 42)) }
     }
     // agenda: current Monday week −90d … +30d, computed as pure day keys in
     // the user zone and converted to user-local-midnight instants — the window
     // must never be derived from the browser zone (that drifted the `to` edge
     // and silently cut +29/+30-day events).
-    const monday = mondayKeyOf(todayKeyInZone(zone))
-    const { fromKey, toKey } = agendaWindowKeys(monday)
+    const anchor = weekStartKeyOf(todayKeyInZone(zone), weekStart)
+    const { fromKey, toKey } = agendaWindowKeys(anchor)
     return { from: instantOf(fromKey), to: instantOf(toKey) }
-  }, [view, weekKey, monthKey, zone])
+  }, [view, weekKey, monthKey, zone, weekStart])
+
+  // 偏好是异步到的（首屏先用默认的周一），拿到之后把锚点挪到正确的起始日，否则
+  // 首屏那一周会停在周一开头、和表头标签对不上。
+  //
+  // 重新锚定到「今天所在的那一周」，而不是拿旧锚点原地换算：周一起始的本周与
+  // 周日起始的本周本来就是两个不同的区间（周日那天分属两边），拿旧锚点换算会把
+  // 人送到上一周去——首屏尤其明显，一进日历就看不到今天。
+  useEffect(() => {
+    setWeekKey(weekStartKeyOf(todayKeyInZone(zone), weekStart))
+  }, [weekStart, zone])
 
   const q = useQuery({
     queryKey: ['calendar', view, from.toISOString(), to.toISOString()],
@@ -117,7 +133,10 @@ export function CalendarPage() {
 
   const events = q.data?.items ?? []
 
-  const weeks = useMemo(() => (view === 'month' ? monthGrid(events, monthKey, zone) : []), [view, events, monthKey, zone])
+  const weeks = useMemo(
+    () => (view === 'month' ? monthGrid(events, monthKey, zone, weekStart) : []),
+    [view, events, monthKey, zone, weekStart],
+  )
   const days = useMemo(() => (view === 'week' ? weekColumns(events, weekKey, zone) : []), [view, events, weekKey, zone])
   const agendaGroups = useMemo(() => (view === 'agenda' ? agenda(events, new Date(), zone) : []), [view, events, zone])
 
@@ -146,7 +165,7 @@ export function CalendarPage() {
   }
   const goToday = () => {
     const today = todayKeyInZone(zone)
-    setWeekKey(mondayKeyOf(today))
+    setWeekKey(weekStartKeyOf(today, weekStart))
     setMonthKey(monthKeyOf(today))
   }
 
@@ -201,7 +220,7 @@ export function CalendarPage() {
       ) : view === 'week' ? (
         <WeekView days={days} onOpen={(id) => nav(`/apps/${id}`)} />
       ) : view === 'month' ? (
-        <MonthView weeks={weeks} onOpen={(id) => nav(`/apps/${id}`)} onShowDay={setExpandedDay} />
+        <MonthView weeks={weeks} weekStart={weekStart} onOpen={(id) => nav(`/apps/${id}`)} onShowDay={setExpandedDay} />
       ) : (
         <AgendaView groups={agendaGroups} onOpen={(id) => nav(`/apps/${id}`)} />
       )}
@@ -240,7 +259,7 @@ function DayEventsModal({
   onClose: () => void
 }) {
   const { hidden } = splitMonthCell(events)
-  const weekday = WEEKDAYS[weekdayIdxOf(dayKey)]
+  const weekday = weekdayNameOf(dayKey)
   return (
     <Modal
       title={`${dayKey.slice(0, 4)}-${dayKey.slice(5, 7)}-${dayKey.slice(8, 10)} ${weekday} · ${events.length} 项日程`}
@@ -348,7 +367,7 @@ function WeekView({ days, onOpen }: { days: ReturnType<typeof weekColumns>; onOp
           >
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 11, letterSpacing: '.1em', color: 'var(--neutral-600)' }}>
-                {WEEKDAYS[weekdayIdxOf(d.key)]}
+                {weekdayNameOf(d.key)}
               </span>
               <span
                 style={{
@@ -378,17 +397,20 @@ function WeekView({ days, onOpen }: { days: ReturnType<typeof weekColumns>; onOp
 
 function MonthView({
   weeks,
+  weekStart,
   onOpen,
   onShowDay,
 }: {
   weeks: ReturnType<typeof monthGrid>
+  /** 表头的 7 个星期名要跟网格同一个起始日，否则整排标签错位。 */
+  weekStart: number
   onOpen: (id: number) => void
   /** 展平折叠的日程：月视图同日超过 3 项时「+N」可点，弹出当日全部日程。 */
   onShowDay: (cell: { key: string; events: CalendarEvent[] }) => void
 }) {
   return (
     <div className="mesh" style={{ gridTemplateColumns: 'repeat(7,minmax(0,1fr))' }}>
-      {WEEKDAYS.map((d) => (
+      {weekdayLabels(weekStart).map((d) => (
         <div
           key={d}
           className="micro"

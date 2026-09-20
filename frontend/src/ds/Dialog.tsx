@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { BlueprintCorners } from './Card'
+import { lockScroll } from './scrollLock'
 
 export interface DialogProps {
   open?: boolean
@@ -19,28 +20,30 @@ export interface DialogProps {
 export function Dialog({ open = true, title, description, onClose, footer, width = 440, children }: DialogProps) {
   const panel = useRef<HTMLDivElement>(null)
 
+  // onClose 几乎都是调用方现场写的箭头函数，父组件每渲染一次它就换一个引用。
+  // 把它放进依赖里，Esc 监听会被反复重建（无所谓），但**聚焦那一行也会重跑**
+  // ——父组件因为别的原因重渲染时，光标就从「岗位」跳回「公司」。监听读 ref，
+  // effect 只在打开时跑一次。
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') closeRef.current()
     }
     document.addEventListener('keydown', onKey)
     // 排除关闭按钮：它在 DOM 里排在标题和表单之前，不排除的话每个弹窗打开时
     // 焦点都会落在 ✕ 上，CreateDialog 的 autoFocus(公司) 就永远拿不到焦点。
     panel.current?.querySelector<HTMLElement>('input,select,textarea,button:not([data-dialog-close])')?.focus()
     return () => document.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [open])
 
   // 背景不跟着滚：没有这一行时，在 backdrop 上滚轮滚的是后面那张长列表，关掉
-  // 弹窗才发现位置跑了。嵌套弹窗各自加一层 class，最后一层卸载时才解锁。
+  // 弹窗才发现位置跑了。计数锁负责嵌套（抽屉 + 弹窗 + 确认框各占一层）。
   useEffect(() => {
     if (!open) return
-    document.body.classList.add('ol-modal-open')
-    return () => {
-      if (document.querySelectorAll('.modal-backdrop').length <= 1) {
-        document.body.classList.remove('ol-modal-open')
-      }
-    }
+    return lockScroll()
   }, [open])
 
   if (!open) return null

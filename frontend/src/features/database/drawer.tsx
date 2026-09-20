@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDay } from '../../lib/api'
 import type { AppEvent, AppRow, AssessmentRound, FileItem, Interview, Milestone, Note } from '../../lib/types'
 import { Badge, Button, Card, IconButton, Tabs } from '../../ds'
+import { lockScroll } from '../../ds/scrollLock'
 import { CompanyMark, Icon } from '../../components/Icon'
 import { ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
 import { FilesTab, OverviewTab } from './tabs'
@@ -46,13 +47,12 @@ export function AppDetailContent({
       onClose()
     }
     document.addEventListener('keydown', onKey)
-    // 抽屉也是浮层：背景列表不该跟着滚轮一起滚（与 ds/Dialog 同一把锁）。
-    document.body.classList.add('ol-modal-open')
+    // 抽屉也是浮层：背景列表不该跟着滚轮一起滚（与 ds/Dialog 同一把计数锁——
+    // 抽屉里的弹窗关掉时不会把抽屉自己的那一层也解开）。
+    const unlock = lockScroll()
     return () => {
       document.removeEventListener('keydown', onKey)
-      if (document.querySelectorAll('.modal-backdrop').length === 0) {
-        document.body.classList.remove('ol-modal-open')
-      }
+      unlock()
     }
   }, [embedded, onClose])
 
@@ -173,9 +173,13 @@ export function AppDetailContent({
           appId={app.id}
           app={app}
           onEdit={() => setEditing(true)}
-          onChanged={() => {
+          // 只有「离开当前列表」的操作才关闭这一层：归档 / 移到回收站之后这条
+          // 记录确实不在默认视图里了，继续开着抽屉指向一条看不见的行没有意义。
+          // 取消归档 / 恢复相反——用户刚把它捞回来，这时候被弹回 /database
+          // （整页详情上 onClose 就是导航）只会让人重新找一遍。
+          onChanged={(left) => {
             qc.invalidateQueries()
-            onClose()
+            if (left) onClose()
           }}
         />
         {!embedded && (
@@ -310,18 +314,19 @@ function RowMenu({
   appId: number
   app: AppRow
   onEdit: () => void
-  onChanged: () => void
+  /** `left` = 这条记录离开了默认视图（归档 / 移到回收站），调用方可以关掉这一层。 */
+  onChanged: (left: boolean) => void
 }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [err, setErr] = useState('')
 
   const run = useMutation({
-    mutationFn: (fn: () => Promise<unknown>) => fn(),
-    onSuccess: () => {
+    mutationFn: ({ fn }: { fn: () => Promise<unknown>; left: boolean }) => fn(),
+    onSuccess: (_data, vars) => {
       setOpen(false)
       qc.invalidateQueries({ queryKey: ['app', appId] })
-      onChanged()
+      onChanged(vars.left)
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '操作失败'),
   })
@@ -354,14 +359,14 @@ function RowMenu({
             {!app.archived ? (
               <button
                 className="menu-item"
-                onClick={() => run.mutate(() => api.post(`/api/v1/applications/${appId}/archive`))}
+                onClick={() => run.mutate({ fn: () => api.post(`/api/v1/applications/${appId}/archive`), left: true })}
               >
                 <Icon name="archive" size={15} /> 归档
               </button>
             ) : (
               <button
                 className="menu-item"
-                onClick={() => run.mutate(() => api.post(`/api/v1/applications/${appId}/unarchive`))}
+                onClick={() => run.mutate({ fn: () => api.post(`/api/v1/applications/${appId}/unarchive`), left: false })}
               >
                 <Icon name="archive" size={15} /> 取消归档
               </button>
@@ -369,14 +374,14 @@ function RowMenu({
             {!app.deleted ? (
               <button
                 className="menu-item danger"
-                onClick={() => run.mutate(() => api.del(`/api/v1/applications/${appId}`))}
+                onClick={() => run.mutate({ fn: () => api.del(`/api/v1/applications/${appId}`), left: true })}
               >
                 <Icon name="trash" size={15} /> 移到回收站
               </button>
             ) : (
               <button
                 className="menu-item"
-                onClick={() => run.mutate(() => api.post(`/api/v1/applications/${appId}/restore`))}
+                onClick={() => run.mutate({ fn: () => api.post(`/api/v1/applications/${appId}/restore`), left: false })}
               >
                 <Icon name="restore" size={15} /> 恢复
               </button>
