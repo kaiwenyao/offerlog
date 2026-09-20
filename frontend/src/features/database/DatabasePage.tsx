@@ -6,7 +6,7 @@ import { effectiveZone } from '../../lib/tz'
 import type { AppRow, CalendarEvent, SavedView } from '../../lib/types'
 import { addDaysToKey, mondayKeyOf } from '../calendar/grid'
 import { comboLabel, FLOW_PIPS, priorityLabel, statusMeta } from '../../lib/status'
-import { Button, Card, Input, Select, Tabs, Tag } from '../../ds'
+import { Badge, Button, Card, Input, Select, Tabs, Tag } from '../../ds'
 import { CompanyMark } from '../../components/Icon'
 import { StageRail } from '../../components/StageRail'
 import { Dot, EmptyHint, ErrorText, Modal, Num, PageSpinner, Spinner, StatusChip } from '../../components/ui'
@@ -788,6 +788,11 @@ function TableView({
                       <span className="ellipsis" style={{ fontSize: 14, fontWeight: 500 }} title={a.company_name}>
                         {a.company_name}
                       </span>
+                      {a.archived && (
+                        <Badge tone="neutral" style={{ height: 16, padding: '0 6px', fontSize: 10, flex: '0 0 auto' }}>
+                          已归档
+                        </Badge>
+                      )}
                     </span>
                   </td>
                   <td>

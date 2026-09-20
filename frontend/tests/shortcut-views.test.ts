@@ -126,9 +126,39 @@ describe('buildFilters with shortcut views', () => {
     expect(filters[2]).toEqual(chip)
   })
 
-  it('leaves ordinary views untouched (no shortcut conditions leak in)', () => {
-    const saved = BUILTIN.find((v) => v.id === -3)!
-    expect(buildFilters(saved, '', [], ctx)).toEqual([saved.filter_ast])
+  it('hides archived rows on builtin views (归档不等于什么都没做)', () => {
+    const all = BUILTIN.find((v) => v.id === -1)!
+    expect(buildFilters(all, '', [], ctx)).toEqual([{ field: 'archived', op: 'eq', value: false }])
+    const inProgress = BUILTIN.find((v) => v.id === -3)!
+    expect(buildFilters(inProgress, '', [], ctx)).toEqual([
+      inProgress.filter_ast,
+      { field: 'archived', op: 'eq', value: false },
+    ])
+  })
+
+  it('does not double-add archived=false when the shortcut already excludes it', () => {
+    const view = SHORTCUT_VIEWS.find((v) => v.id === FOLLOW_UP_VIEW)
+    const filters = buildFilters(view, '', [], ctx)
+    expect(filters.filter((f) => JSON.stringify(f) === JSON.stringify({ field: 'archived', op: 'eq', value: false }))).toHaveLength(1)
+  })
+
+  it('does not override a saved view that already filters on archived', () => {
+    const saved = {
+      ...BUILTIN[0],
+      id: 12,
+      is_builtin: false,
+      filter_ast: {
+        op: 'and',
+        conditions: [
+          { field: 'status', op: 'eq', value: 'interviewing' },
+          { field: 'archived', op: 'eq', value: true },
+        ],
+      },
+    }
+    expect(buildFilters(saved, '', [], ctx)).toEqual([
+      { field: 'status', op: 'eq', value: 'interviewing' },
+      { field: 'archived', op: 'eq', value: true },
+    ])
   })
 })
 

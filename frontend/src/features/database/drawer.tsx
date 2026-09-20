@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDay } from '../../lib/api'
 import type { AppEvent, AppRow, AssessmentRound, FileItem, Interview, Milestone, Note } from '../../lib/types'
-import { Button, Card, IconButton, Tabs } from '../../ds'
+import { Badge, Button, Card, IconButton, Tabs } from '../../ds'
 import { CompanyMark, Icon } from '../../components/Icon'
 import { ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
 import { FilesTab, OverviewTab } from './tabs'
@@ -156,6 +156,7 @@ export function AppDetailContent({
       <span style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
         {/* 顶部显示具体进度（方案 §5），子状态为空时退回大阶段标签。 */}
         <StatusChip status={app.status} substatus={app.substatus} />
+        {app.archived && <Badge tone="neutral">已归档</Badge>}
         <IconButton label="编辑基础信息" size="sm" variant="ghost" onClick={() => setEditing(true)}>
           <Icon name="edit" size={16} />
         </IconButton>
@@ -339,7 +340,15 @@ function RowMenu({
             style={{ position: 'absolute', right: 0, top: '100%', zIndex: 56, minWidth: 170 }}
           >
             {err && <ErrorText>{err}</ErrorText>}
-            <button className="menu-item" onClick={onEdit}>
+            <button
+              className="menu-item"
+              onClick={() => {
+                // 必须先关菜单：否则 position:fixed 的关闭遮罩还留在 DOM 里，
+                // 编辑弹窗关掉后下一次点击会被它吃掉（只用来关菜单）。
+                setOpen(false)
+                onEdit()
+              }}
+            >
               <Icon name="edit" size={15} /> 编辑基础信息
             </button>
             {!app.archived ? (
