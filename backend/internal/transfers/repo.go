@@ -34,12 +34,15 @@ type FieldMap map[string]string
 
 // ImportPreview is the dry-run result shown before commit.
 type ImportPreview struct {
-	BatchID             int64      `json:"batch_id"`
-	TotalRows           int        `json:"total_rows"`
-	ValidRows           int        `json:"valid_rows"`
-	Errors              []RowError `json:"errors"`
-	DuplicateCandidates []int64    `json:"duplicate_candidates"`
-	Columns             []string   `json:"columns"`
+	BatchID   int64      `json:"batch_id"`
+	TotalRows int        `json:"total_rows"`
+	ValidRows int        `json:"valid_rows"`
+	Errors    []RowError `json:"errors"`
+	// DuplicateCandidates lists the CSV LINE NUMBERS (same numbering as
+	// Errors[].Row: header = 1) whose 公司 / 岗位 / 链接 already exist — either
+	// earlier in this same file, or on a live record in the database.
+	DuplicateCandidates []int64  `json:"duplicate_candidates"`
+	Columns             []string `json:"columns"`
 }
 
 type RowError struct {
@@ -147,6 +150,41 @@ func validateRow(row map[string]string) *RowError {
 	return nil
 }
 
+// existingImportKeys loads the dedupe keys of every live application the owner
+// already has, so the preview can answer the question users actually ask —
+// 「这份表里有多少条我已经记过了？」
+//
+// The previous check only compared rows against EACH OTHER inside the uploaded
+// file, so re-importing a CSV this app itself exported (export → 改几行 → 导回，
+// the most common round trip) reported 「疑似重复 0 行」 and then silently
+// doubled every position. Archived rows count: they are still the user's
+// records, just hidden. Trashed ones do not.
+func (r *Repo) existingImportKeys(ctx context.Context, ownerID int64) (map[string]bool, error) {
+	rows, err := r.db.Pool().Query(ctx, `SELECT company_name, position, job_url
+		FROM applications WHERE owner_id=$1 AND deleted_at IS NULL`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var company, position, url string
+		if err := rows.Scan(&company, &position, &url); err != nil {
+			return nil, err
+		}
+		out[importDedupeKey(company, position, url)] = true
+	}
+	return out, rows.Err()
+}
+
+// importDedupeKey is the one definition of 「同一个岗位」 for the import preview:
+// 公司 + 岗位 + 链接, trimmed and case-folded so 「字节跳动 」 and 「字节跳动」 are
+// not two different companies.
+func importDedupeKey(company, position, url string) string {
+	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+	return norm(company) + "|" + norm(position) + "|" + norm(url)
+}
+
 // ParseCSV parses rows and builds a preview without touching the DB.
 func (r *Repo) ParseCSV(ctx context.Context, ownerID int64, filename string, data io.Reader) (*ImportPreview, error) {
 	rd := csv.NewReader(data)
@@ -183,7 +221,12 @@ func (r *Repo) ParseCSV(ctx context.Context, ownerID int64, filename string, dat
 
 	valid := 0
 	var dupIDs []int64
-	seen := map[string]bool{}
+	// 既查库、又查文件内部：两种「重复」对用户是同一件事。查库失败不该让整次预检
+	// 失败——退回到只查文件内部，比什么都不给强。
+	seen, err := r.existingImportKeys(ctx, ownerID)
+	if err != nil {
+		seen = map[string]bool{}
+	}
 	for i, rec := range recs {
 		rowNo := i + 2 // header is row 1
 		row := map[string]string{}
@@ -200,10 +243,11 @@ func (r *Repo) ParseCSV(ctx context.Context, ownerID int64, filename string, dat
 		company := strings.TrimSpace(row["company_name"])
 		position := strings.TrimSpace(row["position"])
 		valid++
-		// duplicate candidate: same (company, position, url) pair already seen
-		key := company + "|" + position + "|" + row["job_url"]
+		// duplicate candidate: this (company, position, url) already exists in
+		// the database, or appeared earlier in this same file.
+		key := importDedupeKey(company, position, row["job_url"])
 		if seen[key] {
-			dupIDs = append(dupIDs, int64(i))
+			dupIDs = append(dupIDs, int64(rowNo))
 		}
 		seen[key] = true
 	}
