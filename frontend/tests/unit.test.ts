@@ -29,6 +29,7 @@ import { buildWeek } from '../src/features/today/week'
 import { agenda, agendaWindowKeys, mondayKeyOf, splitMonthCell, weekColumns } from '../src/features/calendar/grid'
 import { mergeTimeline } from '../src/features/database/timeline'
 import { applicationSearchQuery, moveHighlight, paletteEmptyCopy, paletteRows } from '../src/features/search/paletteNav'
+import { importResultCopy } from '../src/features/settings/importCopy'
 import {
   BUILTIN,
   buildFilters,
@@ -771,5 +772,18 @@ describe('时间线合并排序（用户添加的事件，迁移 00005 / 00006�
       { type: 'milestone', m: ms(2, 'oa', '2026-09-05T09:00:00Z', 'OA') },
     ])
     expect(out.map((x) => (x.type === 'event' ? `e${x.e.id}` : `m${x.m.id}`))).toEqual(['e1', 'm2', 'm4', 'm5'])
+  })
+})
+
+describe('importResultCopy', () => {
+  it('omits the skipped clause when nothing was skipped', () => {
+    expect(importResultCopy(12, 0)).toContain('成功写入 12 条。')
+    expect(importResultCopy(12, 0)).not.toContain('跳过')
+  })
+
+  it('names the skipped rows so 预检 and 导入 cannot contradict each other', () => {
+    const copy = importResultCopy(1, 10)
+    expect(copy).toContain('成功写入 1 条')
+    expect(copy).toContain('跳过 10 条')
   })
 })

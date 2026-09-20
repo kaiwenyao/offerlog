@@ -68,12 +68,14 @@ func (h *Handler) commit(c *gin.Context) {
 		return
 	}
 	defer f.Close()
-	n, err := h.repo.CommitImport(c.Request.Context(), user.ID, batchID, f)
+	n, skipped, err := h.repo.CommitImport(c.Request.Context(), user.ID, batchID, f)
 	if err != nil {
 		httpx.WriteErr(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"inserted": n, "batch_id": batchID})
+	// `skipped` is the rows the preview had already rejected. Reporting it is
+	// what keeps 「有效 N 行」 and 「写入 N 条」 from contradicting each other.
+	c.JSON(http.StatusOK, gin.H{"inserted": n, "skipped": skipped, "batch_id": batchID})
 }
 
 func (h *Handler) errors(c *gin.Context) {
@@ -103,7 +105,7 @@ func (h *Handler) exportCSV(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="applications.csv"`)
 	w := csv.NewWriter(c.Writer)
-	_ = w.Write([]string{"公司", "岗位", "链接", "地点", "远程", "类型", "渠道", "状态", "优先级", "标签", "截止日期", "投递时间", "薪资下限", "薪资上限", "币种", "备注", "归档"})
+	_ = w.Write(transfers.ExportHeader())
 	for _, r := range rows {
 		rec := make([]string, len(r))
 		for i, v := range r {

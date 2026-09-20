@@ -395,7 +395,7 @@ paths:
   /imports/preview:
     post: { summary: CSV 预检（映射/类型错误/重复候选） }
   /imports/{batch_id}/commit:
-    post: { summary: 幂等提交 }
+    post: { summary: "幂等提交；按预检同一套规则跳过错误行，返回 {inserted, skipped}" }
   /exports/applications.csv:
     get: { summary: CSV 导出（公式注入转义） }
   /health/live:
