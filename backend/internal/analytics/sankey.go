@@ -51,7 +51,8 @@ const DefinitionVersion = 3
 //
 //	全部机会 → 已投递 / 未投递 → 已投递按实际走过的阶段展开 → 终态挂在链尾
 //
-// Every application is a leaf exactly once. The middle layer reuses the
+// Every application is a leaf exactly once (未投递, still_<status>, or a
+// terminal). The middle layer reuses the
 // 待投递 metric definition verbatim (toApplyFactSQL in repo.go): 未投递 =
 // still saved/preparing with neither a submission nor a response fact.
 // Records past the preparing phase ride the submitted branch even when
@@ -125,6 +126,12 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 			linkCount[[2]string{prev, next}]++
 			prev = next
 		}
+		// In-progress rows need their own leaf. Sharing s_assessment between
+		// "still in OA" and "OA → rejected" would leave the former as residual
+		// inflow: no detail-table row, and leaf inflow < cohort (review P1).
+		if len(path) > 0 && !domain.IsTerminal(a.status) {
+			linkCount[[2]string{prev, stillNodeName(path[len(path)-1])}]++
+		}
 	}
 
 	nodes := []Node{
@@ -169,7 +176,7 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 		Nodes: nodes, Links: links, CohortCount: cohort,
 		AsOf: now.UTC().Format(time.RFC3339), DefinitionVersion: DefinitionVersion,
 		Mode:  "current",
-		Notes: "当前快照：全部机会先分为已投递 / 未投递（与「待投递」指标同口径）；已投递按实际走过的招聘阶段展开，终态挂在最后一程，未走过的阶段不出现。未投递不再细分。",
+		Notes: "当前快照：全部机会先分为已投递 / 未投递（与「待投递」指标同口径）；已投递按实际走过的招聘阶段展开，终态挂在最后一程，仍在该阶段接到「当前：…」叶子。未走过的阶段不出现。未投递不再细分。",
 	}, nil
 }
 
@@ -286,8 +293,18 @@ func currentProgressPath(stages []string, current string) []string {
 	return out
 }
 
-func stageNode(name string) Node {
-	st := strings.TrimPrefix(name, "s_")
+const stillPrefix = "still_"
+
+func stillNodeName(st string) string { return stillPrefix + st }
+
+func statusFromNode(name string) string {
+	if strings.HasPrefix(name, stillPrefix) {
+		return strings.TrimPrefix(name, stillPrefix)
+	}
+	return strings.TrimPrefix(name, "s_")
+}
+
+func stageLabel(st string) string {
 	label := StatusName[st]
 	if label == "" {
 		label = st
@@ -297,10 +314,25 @@ func stageNode(name string) Node {
 	if st == domain.StatusApplied {
 		label = "已投递 · 等待反馈"
 	}
+	return label
+}
+
+func stageNode(name string) Node {
+	label := stageLabel(statusFromNode(name))
+	if strings.HasPrefix(name, stillPrefix) {
+		label = "当前：" + label
+	}
 	return Node{Name: name, Label: label}
 }
 
 func stageSortKey(name string) int {
+	if strings.HasPrefix(name, stillPrefix) {
+		st := strings.TrimPrefix(name, stillPrefix)
+		if r, ok := pipelineProcessRank[st]; ok {
+			return 30 + r
+		}
+		return 40
+	}
 	st := strings.TrimPrefix(name, "s_")
 	if r, ok := pipelineProcessRank[st]; ok {
 		return r

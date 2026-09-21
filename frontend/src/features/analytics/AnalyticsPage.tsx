@@ -40,9 +40,9 @@ const NODE_COLORS: Record<string, string> = {
 
 function nodeColor(name: string): string {
   if (NODE_COLORS[name]) return NODE_COLORS[name]
-  // History-mode node ids are prefixed (cur_, end_, s_, …) — strip to the
-  // status suffix. "not_submitted" is handled by the full-name lookup above
-  // so the underscore in "not" does not leak into the suffix.
+  // Prefixed ids (s_, still_, cur_, end_) strip to the status suffix.
+  // "not_submitted" is handled by the full-name lookup above so the
+  // underscore in "not" does not leak into the suffix.
   const suffix = name.includes('_') ? name.slice(name.indexOf('_') + 1) : name
   return NODE_COLORS[suffix] ?? DROPPED
 }
@@ -232,7 +232,7 @@ function SankeyPanel({
 
       <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>
         {mode === 'current'
-          ? '第一层全部机会，第二层只分已投递 / 未投递（与「待投递」指标同口径）。已投递按实际走过的招聘阶段展开，终态挂在最后一程（笔试后被拒会经过笔试作业）；未走过的阶段不出现。未投递不再展开。下钻数量与列表一致。'
+          ? '第一层全部机会，第二层只分已投递 / 未投递（与「待投递」指标同口径）。已投递按实际走过的招聘阶段展开，终态挂在最后一程（笔试后被拒会经过笔试作业）；仍在该阶段接到「当前：…」叶子。未走过的阶段不出现。未投递不再展开。下钻数量与列表一致。'
           : '从每条申请的有效事件重建真实路径；节点 =（步骤, 状态）；终点 = 截至当前状态；超过 12 步折叠。导入记录显示“导入起点 → 已知当前状态”。'}
       </p>
 

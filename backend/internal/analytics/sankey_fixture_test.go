@@ -365,10 +365,58 @@ func TestSankeyACurrentAssessmentIsLeaf(t *testing.T) {
 	if links[[2]string{"s_applied", "s_assessment"}] != 1 {
 		t.Fatalf("applied → assessment = %d, want 1", links[[2]string{"s_applied", "s_assessment"}])
 	}
+	if links[[2]string{"s_assessment", "still_assessment"}] != 1 {
+		t.Fatalf("assessment → still_assessment = %d, want 1", links[[2]string{"s_assessment", "still_assessment"}])
+	}
 	for k, v := range links {
-		if k[0] == "s_assessment" && v > 0 {
-			t.Fatalf("still-in-OA row must stop at assessment, found %s → %s = %d", k[0], k[1], v)
+		if k[0] == "still_assessment" && v > 0 {
+			t.Fatalf("current-stage sink must be a leaf, found %s → %s = %d", k[0], k[1], v)
 		}
+		if k[0] == "s_assessment" && k[1] != "still_assessment" && v > 0 {
+			t.Fatalf("still-in-OA row must not leave assessment except to the current sink, found %s → %s = %d", k[0], k[1], v)
+		}
+	}
+}
+
+func TestSankeyACurrentAndRejectedShareAssessment(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
+	owner := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner)
+
+	now := time.Now()
+	sub := now.AddDate(0, 0, -2)
+	if err := seedAppWithStages(ctx, db, owner, domain.StatusAssessment, &sub,
+		[]string{domain.StatusApplied, domain.StatusAssessment}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedAppWithStages(ctx, db, owner, domain.StatusRejected, &sub,
+		[]string{domain.StatusApplied, domain.StatusAssessment, domain.StatusRejected}); err != nil {
+		t.Fatal(err)
+	}
+
+	sk, err := New(db).SankeyA(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := linkIndex(sk)
+	if links[[2]string{"s_assessment", "still_assessment"}] != 1 {
+		t.Fatalf("still in OA = %d, want 1", links[[2]string{"s_assessment", "still_assessment"}])
+	}
+	if links[[2]string{"s_assessment", "s_rejected"}] != 1 {
+		t.Fatalf("OA → rejected = %d, want 1", links[[2]string{"s_assessment", "s_rejected"}])
+	}
+	if got := leafInflow(sk); got != 2 {
+		t.Fatalf("leaf inflow = %d, want cohort 2 (still-in-OA must have its own leaf)", got)
+	}
+	var stillLabel string
+	for _, n := range sk.Nodes {
+		if n.Name == "still_assessment" {
+			stillLabel = n.Label
+		}
+	}
+	if stillLabel != "当前：笔试作业" {
+		t.Fatalf("still_assessment label = %q, want 当前：笔试作业", stillLabel)
 	}
 }
 
