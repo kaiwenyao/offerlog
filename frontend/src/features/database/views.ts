@@ -260,6 +260,58 @@ export function archivedSearchHref(search: string): string {
   return `/database?${q.toString()}`
 }
 
+/**
+ * 数据库页 URL 里的视图 id。没带 `view`（裸 /database、「清除筛选」）就是「全部机会」，
+ * 这样刷新 / 分享 / 前进后退看到的和地址栏一致。
+ */
+export function viewIdFromParams(params: URLSearchParams): number {
+  const v = params.get('view')
+  if (v === null || v === '') return -1
+  const n = Number(v)
+  return Number.isFinite(n) ? n : -1
+}
+
+/**
+ * 拿掉搜索词 `q`，保留 view / layout。搜索 chip 的 × 应该只取消搜索，
+ * 不能把人从「已归档」踢回「全部机会」。
+ */
+export function hrefWithoutSearch(search: string): string {
+  const p = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
+  p.delete('q')
+  const qs = p.toString()
+  return qs ? `/database?${qs}` : '/database'
+}
+
+/**
+ * 抽屉开/关只改 pathname，当前的 view / layout / q 留在 search 里。
+ * 用同一条路由 `/database/:id?`，组件不会因为开抽屉而重挂。
+ */
+export function databaseDrawerPath(appId: number | null, search = ''): { pathname: string; search: string } {
+  return {
+    pathname: appId == null ? '/database' : `/database/${appId}`,
+    search,
+  }
+}
+
+const DATABASE_LIST_OR_DRAWER = /^\/database(?:\/\d+)?$/
+
+export function isDatabaseListOrDrawer(pathname: string): boolean {
+  return DATABASE_LIST_OR_DRAWER.test(pathname)
+}
+
+/**
+ * 只是在列表和抽屉之间切 pathname（query 没变）。这种导航不该重置页码 / 筛选。
+ */
+export function isDrawerOnlyNavigation(
+  fromPath: string,
+  toPath: string,
+  fromSearch: string,
+  toSearch: string,
+): boolean {
+  if (fromSearch !== toSearch || fromPath === toPath) return false
+  return isDatabaseListOrDrawer(fromPath) && isDatabaseListOrDrawer(toPath)
+}
+
 export interface BoardBucket {
   title: string
   dot: string

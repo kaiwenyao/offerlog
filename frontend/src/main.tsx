@@ -129,8 +129,7 @@ export default function App() {
         <Routes>
           <Route element={<AppLayout me={me} />}>
             <Route path="/" element={<TodayPage />} />
-            <Route path="/database" element={<DatabasePage />} />
-            <Route path="/database/:id" element={<DatabasePage />} />
+            <Route path="/database/:id?" element={<DatabasePage />} />
             <Route path="/apps/:id" element={<DetailPage />} />
             <Route path="/calendar" element={<CalendarPage />} />
             <Route

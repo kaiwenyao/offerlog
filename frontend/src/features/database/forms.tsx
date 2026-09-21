@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../lib/api'
 import { toInstantInUserZone, toLocalDateTimeInput } from '../../lib/tz'
 import type { ActionItem, AppRow, AssessmentRound, Interview, Milestone, Note } from '../../lib/types'
@@ -14,7 +14,7 @@ import {
 } from '../../lib/milestones'
 import { Button, Checkbox, Input, Select, Textarea } from '../../ds'
 import { ErrorText, Modal, Spinner } from '../../components/ui'
-import { buildApplicationPatch, editFieldsFromApp, type ApplicationEditFields } from './edit'
+import { buildApplicationPatch, editFieldsFromApp, rebaseEditFields, type ApplicationEditFields } from './edit'
 import {
   actionEditFields,
   assessmentEditFields,
@@ -36,6 +36,12 @@ export const FORMATS = [
   { value: 'onsite', label: '到面' },
   { value: 'takehome', label: '作业' },
 ]
+
+/** 面试形式的展示文案：表单存的是 phone/video/…，详情和首页要显示中文。 */
+export function formatLabel(format: string | null | undefined): string {
+  if (!format) return ''
+  return FORMATS.find((f) => f.value === format)?.label ?? format
+}
 
 export function InterviewForm({
   appId,
@@ -487,18 +493,48 @@ export function ApplicationEditForm({
   onClose: () => void
   onDone: () => void
 }) {
-  const [fields, setFields] = useState<ApplicationEditFields>(() => editFieldsFromApp(app))
+  const qc = useQueryClient()
+  const initial = editFieldsFromApp(app)
+  const [fields, setFields] = useState<ApplicationEditFields>(initial)
+  const [baseline, setBaseline] = useState<ApplicationEditFields>(initial)
   const [err, setErr] = useState('')
+  const [pulling, setPulling] = useState(false)
 
   const set = <K extends keyof ApplicationEditFields>(key: K, value: ApplicationEditFields[K]) =>
     setFields((f) => ({ ...f, [key]: value }))
 
   const canSave = fields.company_name.trim() !== '' && fields.position.trim() !== ''
 
+  // 409 之后必须把 ['app', id] 换成最新行，并且把没改过的字段接到新值上：
+  // version 来自这份缓存，不失效的话再点多少次都是同一条冲突；不 rebase 的话
+  // PATCH 会把别人改过、自己没动的字段用旧值写回去。
+  const pullLatest = async (): Promise<boolean> => {
+    setPulling(true)
+    try {
+      const fresh = await api.get<AppRow>(`/api/v1/applications/${app.id}`)
+      qc.setQueryData(['app', app.id], fresh)
+      const incoming = editFieldsFromApp(fresh)
+      setFields((current) => rebaseEditFields(current, baseline, incoming))
+      setBaseline(incoming)
+      return true
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : '刷新失败')
+      return false
+    } finally {
+      setPulling(false)
+    }
+  }
+
   const mut = useMutation({
     mutationFn: (body: Record<string, unknown>) => api.patch(`/api/v1/applications/${app.id}`, body),
     onSuccess: onDone,
-    onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),
+    onError: (e: unknown) => {
+      setErr(e instanceof ApiError ? e.message : '保存失败')
+      if (e instanceof ApiError && (e.status === 409 || e.code === 'version_conflict')) {
+        void qc.invalidateQueries({ queryKey: ['app', app.id] })
+        void pullLatest()
+      }
+    },
   })
 
   return (
@@ -511,10 +547,20 @@ export function ApplicationEditForm({
           <Button variant="ghost" size="sm" onClick={onClose}>
             取消
           </Button>
+          {err && (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={pulling || mut.isPending}
+              onClick={() => void pullLatest().then((ok) => ok && setErr(''))}
+            >
+              {pulling ? '刷新中…' : '刷新'}
+            </Button>
+          )}
           <Button
             variant="primary"
             size="sm"
-            disabled={!canSave || mut.isPending}
+            disabled={!canSave || mut.isPending || pulling}
             onClick={() => {
               setErr('')
               try {

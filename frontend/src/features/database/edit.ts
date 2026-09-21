@@ -80,3 +80,34 @@ export function buildApplicationPatch(app: AppRow, f: ApplicationEditFields): Re
     notes: f.notes,
   }
 }
+
+const EDIT_FIELD_KEYS: Array<keyof ApplicationEditFields> = [
+  'company_name',
+  'position',
+  'location',
+  'job_url',
+  'remote_policy',
+  'priority',
+  'channel',
+  'deadline',
+  'salary_min',
+  'salary_max',
+  'salary_currency',
+  'notes',
+]
+
+/**
+ * 409 之后把别人改过、自己没动的字段接到最新行上，自己改过的留下。
+ * 只换 version、整表按旧值再 PATCH，会把别人的改动写回去，乐观锁等于没锁。
+ */
+export function rebaseEditFields(
+  current: ApplicationEditFields,
+  baseline: ApplicationEditFields,
+  incoming: ApplicationEditFields,
+): ApplicationEditFields {
+  const next = { ...incoming }
+  for (const key of EDIT_FIELD_KEYS) {
+    if (current[key] !== baseline[key]) next[key] = current[key]
+  }
+  return next
+}

@@ -8,6 +8,7 @@ import { Button, Card, PanelTitle } from '../../ds'
 import { Dot, EmptyHint, ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
 import { effectiveZone } from '../../lib/tz'
 import { buildWeek, CHIP_TONES, groupActions, type TodoItem } from './week'
+import { formatLabel } from '../database/forms'
 
 /** Panels are edge-to-edge frames; the corner marks must not be clipped. */
 const PANEL: React.CSSProperties = { padding: 0 }
@@ -447,7 +448,7 @@ function UpcomingInterviews({
       at: i.scheduled_at,
       applicationId: i.application_id,
       head: `${i.company_name} · ${i.round_name || '面试'}`,
-      detail: `${fmtDateTime(i.scheduled_at)} · ${i.format || '待定'}${i.location ? ` · ${i.location}` : ''}`,
+      detail: `${fmtDateTime(i.scheduled_at)} · ${formatLabel(i.format) || '待定'}${i.location ? ` · ${i.location}` : ''}`,
     })),
     ...assessments.map((a) => ({
       key: `a-${a.id}`,

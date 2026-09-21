@@ -31,6 +31,9 @@ import {
   SHORTCUT_VIEWS,
   WEEK_INTERVIEWS_VIEW,
   archivedSearchHref,
+  databaseDrawerPath,
+  isDrawerOnlyNavigation,
+  viewIdFromParams,
   boardBuckets,
   buildFilters,
   DB_SORT_FIELDS,
@@ -124,11 +127,10 @@ export function DatabasePage() {
   const nav = useNavigate()
   const qc = useQueryClient()
 
-  const [viewId, setViewId] = useState(() => Number(params.get('view')) || -1)
+  const [viewId, setViewId] = useState(() => viewIdFromParams(params))
   const [layout, setLayout] = useState<Layout>(() => (params.get('layout') as Layout) || 'table')
   const [search, setSearch] = useState(() => params.get('q') ?? '')
   const [page, setPage] = useState(1)
-  const [selApp, setSelApp] = useState<number | null>(routeApp ? Number(routeApp) : null)
   const [showCreate, setShowCreate] = useState(false)
   const [extraFilters, setExtraFilters] = useState<FilterNode[]>([])
   const [trashMode, setTrashMode] = useState(false)
@@ -138,6 +140,17 @@ export function DatabasePage() {
   // 用户自选排序（最后更新时间 / 创建岗位时间），偏好存在 localStorage，
   // 跨会话保留；不进 URL 参数，因为它是个人偏好而不是可分享的导航状态。
   const [sort, setSort] = useState<SortClause>(() => loadDbSort(localStorage.getItem(DB_SORT_STORAGE_KEY)))
+
+  const routeId = Number(routeApp)
+  const selApp = routeApp !== undefined && Number.isFinite(routeId) ? routeId : null
+  const openApp = useCallback(
+    (id: number) => nav(databaseDrawerPath(id, loc.search), { replace: selApp !== null }),
+    [nav, loc.search, selApp],
+  )
+  const closeApp = useCallback(
+    () => nav(databaseDrawerPath(null, loc.search), { replace: true }),
+    [nav, loc.search],
+  )
 
   // 视图与布局是**导航状态**，不是个人偏好：不写回 URL 的话，切到「已归档」再
   // 刷新就回到了「全部机会」，也没法把当前这一屏复制给别人（侧栏的快捷视图反而
@@ -149,6 +162,7 @@ export function DatabasePage() {
   // 存字符串而不是布尔量：万一某次写入没有真的产生 location 变化，一个挂着的
   // 布尔量会把**下一次**真正的外部导航一起吞掉。
   const selfWrite = useRef<string | null>(null)
+  const locSnap = useRef({ pathname: loc.pathname, search: loc.search })
   const writeParams = useCallback(
     (patch: Record<string, string | null>) => {
       const next = new URLSearchParams(params)
@@ -182,28 +196,32 @@ export function DatabasePage() {
   // URL**（例如搜索同一个词两次）时 params 引用不变，但每次导航 location.key
   // 都会变——否则那一次同步会被整个跳过。
   useEffect(() => {
+    const prev = locSnap.current
+    locSnap.current = { pathname: loc.pathname, search: loc.search }
+    // 开/关/换抽屉只改 pathname，query 没变。loc.key 却会变，不能当成一次
+    // 搜索/视图导航——否则第 2 页点开一条会跳回第 1 页，带 q 时还会清掉快捷筛选。
+    if (isDrawerOnlyNavigation(prev.pathname, loc.pathname, prev.search, loc.search)) return
     // 自己写回去的 view / layout：状态已经是最新的，不要再当成外部导航处理。
     if (selfWrite.current !== null && selfWrite.current === params.toString()) {
       selfWrite.current = null
       return
     }
     selfWrite.current = null
-    // `q === null`（URL 里没有 ?q=，比如「清除筛选」或移除搜索 chip 后回到
-    // /database）也要把搜索词清空——否则组件里还留着旧词，列表依旧被过滤，
-    // 看起来就像清除按钮没生效。
+    // `q === null`（URL 里没有 ?q=，比如「清除筛选」或移除搜索 chip）也要把
+    // 搜索词清空——否则组件里还留着旧词，列表依旧被过滤，看起来就像清除按钮
+    // 没生效。
     const q = params.get('q')
     setSearch(q ?? '')
-    const v = params.get('view')
-    if (v !== null) setViewId(Number(v))
-    else if (q !== null) setViewId(-1)
-    // 携带 q 的导航（⌘K 面板选岗位/公司、顶栏搜索）是全局搜索意图：回到
-    // 「全部机会」并清掉快捷筛选、退出回收站、关掉旧抽屉。否则在「进行中」
-    // 视图上搜一个已结束岗位会空列表，抽屉还盖在新结果上（PR #32 review P1）。
-    // 不带 q 的导航（清除筛选、侧栏已保存视图）仍保留这些本地状态。
+    // 视图以 URL 为准：没带 `view` 就是「全部机会」。以前 q === null 时不重置
+    // viewId，于是点搜索 chip 的 × 跳到 /database 后界面还停在「已归档」，F5
+    // 同一条链接却变成 11 条「全部机会」。
+    setViewId(viewIdFromParams(params))
+    // 携带 q 的导航（⌘K 面板选岗位/公司、顶栏搜索）是全局搜索意图：清掉快捷
+    // 筛选、退出回收站。抽屉开不开跟 pathname（/database vs /database/:id）走，
+    // 顶栏搜索本身就会导航到 /database?q=…，不必在这里另 setSelApp。
     if (q !== null) {
       setExtraFilters([])
       setTrashMode(false)
-      setSelApp(null)
     }
     const l = params.get('layout') as Layout | null
     if (l) setLayout(l)
@@ -485,7 +503,15 @@ export function DatabasePage() {
       {search && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
           搜索：
-          <Tag selected onRemove={() => nav('/database')}>
+          <Tag
+            selected
+            onRemove={() => {
+              // 只拿掉搜索词，当前视图留在 URL 里。nav('/database') 会把
+              // ?view= 一起丢掉，界面却还停在原来的 chip 上。
+              setSearch('')
+              writeParams({ q: null })
+            }}
+          >
             {search}
           </Tag>
         </div>
@@ -576,9 +602,9 @@ export function DatabasePage() {
           ) : null}
         </EmptyHint>
       ) : layout === 'board' ? (
-        <BoardView groups={boardGroups} onOpen={setSelApp} />
+        <BoardView groups={boardGroups} onOpen={openApp} />
       ) : layout === 'list' ? (
-        <ListView rows={rows} onOpen={setSelApp} />
+        <ListView rows={rows} onOpen={openApp} />
       ) : (
         <TableView
           rows={rows}
@@ -587,7 +613,7 @@ export function DatabasePage() {
           archivedMode={viewId === ARCHIVED_VIEW && !trashMode}
           onToggle={toggleRow}
           onToggleAll={toggleAll}
-          onOpen={setSelApp}
+          onOpen={openApp}
           onRestore={(id) => restoreMut.mutate(id)}
           onUnarchive={(id) => unarchiveMut.mutate(id)}
         />
@@ -606,7 +632,7 @@ export function DatabasePage() {
       )}
 
       {showCreate && <CreateDialog onClose={() => setShowCreate(false)} onCreated={() => setShowCreate(false)} />}
-      {selApp !== null && <Drawer appId={selApp} onClose={() => setSelApp(null)} />}
+      {selApp !== null && <Drawer appId={selApp} onClose={closeApp} />}
     </section>
   )
 }
@@ -1091,6 +1117,9 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
     }) => api.post('/api/v1/applications', b),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['apps'] })
+      // 侧栏「求职数据库」徽标读的是 ['home']，不是 ['apps']。layout 常驻且
+      // refetchOnWindowFocus 关着，不失效这块缓存的话计数会一直停在旧值。
+      qc.invalidateQueries({ queryKey: ['home'] })
       onCreated()
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '创建失败'),
