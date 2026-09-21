@@ -1174,7 +1174,10 @@ func (h *Handler) createAction(c *gin.Context) {
 		DueTs: req.DueTs, DoneAt: req.DoneAt, RemindMe: req.RemindMe, RemindAt: req.RemindAt,
 		Priority: req.Priority,
 	}
-	if err := h.repo.CreateAction(c.Request.Context(), h.repo.Pool(), a); err != nil {
+	// 新建同样要重写镜像：update / delete / postpone / done 都已经走
+	// SyncNextActionMirror，唯独这条路径漏了。前端曾经用 PATCH 岗位来补偿，
+	// 但会无条件写成刚建的那条，把更早到期的未完成待办从表格上盖掉。
+	if err := h.repo.CreateActionAndSettle(c.Request.Context(), a); err != nil {
 		httpx.WriteErr(c, err)
 		return
 	}

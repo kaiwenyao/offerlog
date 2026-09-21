@@ -401,6 +401,22 @@ func (r *Repo) CreateAction(ctx context.Context, q database.Querier, a *Action) 
 		Scan(&a.ID, &a.CreatedAt)
 }
 
+// CreateActionAndSettle inserts the action and rewrites the application's
+// next_action mirror from the earliest still-open todo. POST create used to
+// skip this — the table 「下一步 / 截止」 then showed whatever the client last
+// wrote, usually the just-created row instead of the earliest due.
+func (r *Repo) CreateActionAndSettle(ctx context.Context, a *Action) error {
+	return r.db.RunInTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := r.CreateAction(ctx, tx, a); err != nil {
+			return err
+		}
+		if a.ApplicationID == nil {
+			return nil
+		}
+		return r.SyncNextActionMirror(ctx, tx, a.OwnerID, *a.ApplicationID)
+	})
+}
+
 func (r *Repo) UpdateAction(ctx context.Context, q database.Querier, a *Action) error {
 	prio := a.Priority
 	if prio == "" {

@@ -154,6 +154,24 @@ export function trashQueryPath(page: number, pageSize: number): string {
 }
 
 /**
+ * 回收站里真正「已应用」的快捷筛选。回收站走 trashQueryPath，不经 buildFilters，
+ * extraFilters 完全用不上。chip 选中态、计数「已应用 N 个条件」、空列表文案
+ * 都必须读这个结果——否则高亮还在、文案写着已筛选，列表却一条都不过滤。
+ */
+export function appliedExtraFilters(trashMode: boolean, extra: FilterNode[]): FilterNode[] {
+  return trashMode ? [] : extra
+}
+
+/**
+ * 改了工作集（新增 / 恢复 / 取消归档）之后必须失效的 React Query key。
+ * 侧栏徽标读的是 ['home']，不是 ['apps']：layout 常驻、staleTime 30s、
+ * refetchOnWindowFocus 关着，不失效这块缓存的话计数会一直停在旧值。
+ */
+export function workingSetQueryKeys(): Array<readonly string[]> {
+  return [['apps'], ['home']]
+}
+
+/**
  * 选择集与当前查询结果的交集。
  *
  * 批量选择的 id 是按「当时屏幕上看到的那批行」勾的；翻页 / 切视图 / 加筛选 / 进
