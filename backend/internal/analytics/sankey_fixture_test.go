@@ -1,6 +1,6 @@
 // Verifies plan §12.2 case 1 on a clean dataset with exactly the benchmark
-// distribution: the current-mode sankey conserves flow (each application is
-// a leaf exactly once) and drilldown equals the list ids.
+// distribution: residual (in − out) on every node except the root totals the
+// cohort, and drilldown equals the list ids.
 //
 // Also pins the v2 classification: 未投递 must reuse the 待投递 metric
 // definition (repo.Counts), so an in-progress row without submitted_at
@@ -78,7 +78,7 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 		t.Fatalf("cohort = %d, want 10", sk.CohortCount)
 	}
 	// conservation: 全部机会 → (未投递 3 | 已投递 7)
-	var allToNS, allToSub, subSplit int64
+	var allToNS, allToSub int64
 	for _, l := range sk.Links {
 		if l.Source == "all" && l.Target == "not_submitted" {
 			allToNS = l.Value
@@ -86,25 +86,21 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 		if l.Source == "all" && l.Target == "submitted" {
 			allToSub = l.Value
 		}
-		if l.Source == "submitted" {
-			subSplit += l.Value
-		}
 	}
 	if allToNS != 3 || allToSub != 7 {
 		t.Fatalf("layer1 = %d not-submitted / %d submitted, want 3/7", allToNS, allToSub)
-	}
-	// 未投递 is a leaf: the submitted branch must carry all further detail.
-	if subSplit != 7 {
-		t.Fatalf("submitted subdivision total = %d, want 7", subSplit)
 	}
 	for _, n := range sk.Nodes {
 		if strings.HasPrefix(n.Name, "ns_") {
 			t.Fatalf("not-submitted branch should not be subdivided, found node %q", n.Name)
 		}
+		if n.Name == "s_applied" || n.Name == "s_preparing" || strings.HasPrefix(n.Name, "still_") {
+			t.Fatalf("absorbed/still node should not appear, found %q", n.Name)
+		}
 	}
-	// each application is a leaf exactly once: leaf inflow totals the cohort
-	if got := leafInflow(sk); got != 10 {
-		t.Fatalf("leaf inflow total %d, want cohort 10", got)
+	// residual (in − out) on every node except the root totals the cohort
+	if got := residualSum(sk); got != 10 {
+		t.Fatalf("residual sum %d, want cohort 10", got)
 	}
 	if sk.DefinitionVersion != DefinitionVersion {
 		t.Fatalf("definition_version = %d, want %d", sk.DefinitionVersion, DefinitionVersion)
@@ -166,10 +162,14 @@ func TestSankeyAUnsubmittedMatchesToApplyMetric(t *testing.T) {
 	if allToNS != 1 || allToSub != 3 {
 		t.Fatalf("layer1 = %d not-submitted / %d submitted, want 1/3", allToNS, allToSub)
 	}
-	for _, want := range []string{"s_applied", "s_assessment", "s_preparing"} {
-		if split[want] != 1 {
-			t.Fatalf("submitted branch %s = %d, want 1", want, split[want])
-		}
+	if split["s_assessment"] != 1 {
+		t.Fatalf("submitted → assessment = %d, want 1", split["s_assessment"])
+	}
+	if split["s_applied"] != 0 || split["s_preparing"] != 0 {
+		t.Fatalf("applied/preparing must stay on 已投递, got applied=%d preparing=%d", split["s_applied"], split["s_preparing"])
+	}
+	if got := residualSum(sk); got != 4 {
+		t.Fatalf("residual sum %d, want cohort 4", got)
 	}
 }
 
@@ -302,8 +302,8 @@ func TestSankeyARejectAfterAssessmentFlowsThroughAssessment(t *testing.T) {
 		t.Fatal(err)
 	}
 	links := linkIndex(sk)
-	if links[[2]string{"s_applied", "s_assessment"}] != 1 {
-		t.Fatalf("applied → assessment = %d, want 1", links[[2]string{"s_applied", "s_assessment"}])
+	if links[[2]string{"submitted", "s_assessment"}] != 1 {
+		t.Fatalf("submitted → assessment = %d, want 1", links[[2]string{"submitted", "s_assessment"}])
 	}
 	if links[[2]string{"s_assessment", "s_rejected"}] != 1 {
 		t.Fatalf("assessment → rejected = %d, want 1", links[[2]string{"s_assessment", "s_rejected"}])
@@ -311,8 +311,13 @@ func TestSankeyARejectAfterAssessmentFlowsThroughAssessment(t *testing.T) {
 	if links[[2]string{"submitted", "s_rejected"}] != 0 {
 		t.Fatalf("submitted → rejected = %d, want 0 (must walk through 笔试)", links[[2]string{"submitted", "s_rejected"}])
 	}
-	if leafInflow(sk) != 1 {
-		t.Fatalf("leaf inflow = %d, want 1", leafInflow(sk))
+	for _, n := range sk.Nodes {
+		if n.Name == "s_applied" || strings.HasPrefix(n.Name, "still_") {
+			t.Fatalf("unexpected node %q", n.Name)
+		}
+	}
+	if residualSum(sk) != 1 {
+		t.Fatalf("residual sum %d, want 1", residualSum(sk))
 	}
 }
 
@@ -334,12 +339,12 @@ func TestSankeyARejectWithoutAssessmentStaysDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	links := linkIndex(sk)
-	if links[[2]string{"s_applied", "s_rejected"}] != 1 {
-		t.Fatalf("applied → rejected = %d, want 1", links[[2]string{"s_applied", "s_rejected"}])
+	if links[[2]string{"submitted", "s_rejected"}] != 1 {
+		t.Fatalf("submitted → rejected = %d, want 1", links[[2]string{"submitted", "s_rejected"}])
 	}
 	for _, n := range sk.Nodes {
-		if n.Name == "s_assessment" {
-			t.Fatal("skipped 笔试 must not invent an assessment node")
+		if n.Name == "s_assessment" || n.Name == "s_applied" {
+			t.Fatalf("skipped / absorbed stage must not appear, found %q", n.Name)
 		}
 	}
 }
@@ -362,18 +367,17 @@ func TestSankeyACurrentAssessmentIsLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 	links := linkIndex(sk)
-	if links[[2]string{"s_applied", "s_assessment"}] != 1 {
-		t.Fatalf("applied → assessment = %d, want 1", links[[2]string{"s_applied", "s_assessment"}])
-	}
-	if links[[2]string{"s_assessment", "still_assessment"}] != 1 {
-		t.Fatalf("assessment → still_assessment = %d, want 1", links[[2]string{"s_assessment", "still_assessment"}])
+	if links[[2]string{"submitted", "s_assessment"}] != 1 {
+		t.Fatalf("submitted → assessment = %d, want 1", links[[2]string{"submitted", "s_assessment"}])
 	}
 	for k, v := range links {
-		if k[0] == "still_assessment" && v > 0 {
-			t.Fatalf("current-stage sink must be a leaf, found %s → %s = %d", k[0], k[1], v)
+		if k[0] == "s_assessment" && v > 0 {
+			t.Fatalf("still-in-OA row must stop at assessment, found %s → %s = %d", k[0], k[1], v)
 		}
-		if k[0] == "s_assessment" && k[1] != "still_assessment" && v > 0 {
-			t.Fatalf("still-in-OA row must not leave assessment except to the current sink, found %s → %s = %d", k[0], k[1], v)
+	}
+	for _, n := range sk.Nodes {
+		if n.Name == "s_applied" || strings.HasPrefix(n.Name, "still_") {
+			t.Fatalf("unexpected node %q", n.Name)
 		}
 	}
 }
@@ -400,23 +404,19 @@ func TestSankeyACurrentAndRejectedShareAssessment(t *testing.T) {
 		t.Fatal(err)
 	}
 	links := linkIndex(sk)
-	if links[[2]string{"s_assessment", "still_assessment"}] != 1 {
-		t.Fatalf("still in OA = %d, want 1", links[[2]string{"s_assessment", "still_assessment"}])
-	}
 	if links[[2]string{"s_assessment", "s_rejected"}] != 1 {
 		t.Fatalf("OA → rejected = %d, want 1", links[[2]string{"s_assessment", "s_rejected"}])
 	}
-	if got := leafInflow(sk); got != 2 {
-		t.Fatalf("leaf inflow = %d, want cohort 2 (still-in-OA must have its own leaf)", got)
+	if links[[2]string{"submitted", "s_assessment"}] != 2 {
+		t.Fatalf("both rows must enter assessment, got %d", links[[2]string{"submitted", "s_assessment"}])
 	}
-	var stillLabel string
 	for _, n := range sk.Nodes {
-		if n.Name == "still_assessment" {
-			stillLabel = n.Label
+		if strings.HasPrefix(n.Name, "still_") {
+			t.Fatalf("current-stage sink must not appear, found %q", n.Name)
 		}
 	}
-	if stillLabel != "当前：笔试作业" {
-		t.Fatalf("still_assessment label = %q, want 当前：笔试作业", stillLabel)
+	if residualSum(sk) != 2 {
+		t.Fatalf("residual sum %d, want cohort 2 (1 still in OA + 1 rejected)", residualSum(sk))
 	}
 }
 
@@ -505,7 +505,7 @@ func linkIndex(sk *Sankey) map[[2]string]int64 {
 	return m
 }
 
-func leafInflow(sk *Sankey) int64 {
+func residualSum(sk *Sankey) int64 {
 	outflow := map[string]int64{}
 	inflow := map[string]int64{}
 	for _, l := range sk.Links {
@@ -514,8 +514,12 @@ func leafInflow(sk *Sankey) int64 {
 	}
 	var sum int64
 	for _, n := range sk.Nodes {
-		if outflow[n.Name] == 0 {
-			sum += inflow[n.Name]
+		if n.Name == "all" {
+			continue
+		}
+		r := inflow[n.Name] - outflow[n.Name]
+		if r > 0 {
+			sum += r
 		}
 	}
 	return sum
