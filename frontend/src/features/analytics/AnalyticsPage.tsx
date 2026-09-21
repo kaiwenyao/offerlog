@@ -232,14 +232,14 @@ function SankeyPanel({
 
       <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>
         {mode === 'current'
-          ? '第一层全部机会，第二层只分已投递 / 未投递（与「待投递」指标同口径），第三层仅对已投递按当前状态细分（未投递不再展开）。当前快照，不声称展示历史顺序或转化率。下钻数量与列表一致。'
+          ? '第一层全部机会，第二层只分已投递 / 未投递（与「待投递」指标同口径）。已投递按实际走过的招聘阶段展开，终态挂在最后一程（笔试后被拒会经过笔试作业）；未走过的阶段不出现。未投递不再展开。下钻数量与列表一致。'
           : '从每条申请的有效事件重建真实路径；节点 =（步骤, 状态）；终点 = 截至当前状态；超过 12 步折叠。导入记录显示“导入起点 → 已知当前状态”。'}
       </p>
 
       <div style={{ position: 'relative', marginTop: 14 }}>
         <div
           ref={box}
-          style={{ width: '100%', height: 360 }}
+          style={{ width: '100%', height: 420 }}
           role="img"
           aria-label="桑基图，另有下方明细表可核对"
         />
@@ -249,7 +249,7 @@ function SankeyPanel({
           </div>
         )}
         {/* 以前只处理了 summary 的失败：桑基图挂掉时 data 是 undefined、loading
-            又已经是 false，画布上就只剩一块 360px 的空白，没有文案也没有重试。 */}
+            又已经是 false，画布上就只剩一块空白，没有文案也没有重试。 */}
         {!loading && failed && (
           <div
             style={{
@@ -302,11 +302,11 @@ function buildOption(d: SankeyData): echarts.EChartsOption {
         type: 'sankey',
         data: d.nodes.map((n) => ({
           name: n.name,
-          // 未投递 is a layer-2 leaf: left to justify it lands in the last
-          // column and its ribbon cuts straight through the middle layer,
-          // overlapping the 已投递 node and the status ribbons. Pin it to the
-          // split layer the caption promises.
-          depth: n.name === 'not_submitted' ? 1 : undefined,
+          // Pin the 未投递 / 已投递 split to layer 2. Left to justify, a
+          // leaf 未投递 lands in the last column and its ribbon cuts through
+          // the stage chain. Process/terminal nodes keep auto depth so
+          // skipped stages (投递后直接被拒) visually cross the 笔试 column.
+          depth: n.name === 'all' ? 0 : n.name === 'not_submitted' || n.name === 'submitted' ? 1 : undefined,
           itemStyle: { color: resolve(nodeColor(n.name)), borderWidth: 0, borderRadius: 0 },
         })),
         links: d.links.map((l) => ({ source: l.source, target: l.target, value: l.value })),

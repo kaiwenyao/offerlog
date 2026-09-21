@@ -39,19 +39,24 @@ type Sankey struct {
 // definition (repo.Counts) so the chart cannot contradict the cards or the
 // list rendered on the same page — 内推 / 猎头 rows in screening/assessment/
 // interviewing legitimately carry no submitted_at but are past 未投递.
-const DefinitionVersion = 2
+//
+// v3: the submitted branch is no longer a flat split by current status.
+// Each submitted row walks the process stages it actually reached (from
+// application_stage_points), then hangs a terminal outcome off the last
+// stage — so 「笔试后被拒」flows through 笔试作业 instead of collapsing
+// onto 已投递 → 被拒绝. Skipped stages are not invented.
+const DefinitionVersion = 3
 
-// SankeyA builds the fixed three-layer "current progress" graph:
+// SankeyA builds the "current progress" graph:
 //
-//	全部机会 → 已投递 / 未投递 → 已投递按当前状态细分
+//	全部机会 → 已投递 / 未投递 → 已投递按实际走过的阶段展开 → 终态挂在链尾
 //
-// Every application appears once per layer. The middle layer reuses the
+// Every application is a leaf exactly once. The middle layer reuses the
 // 待投递 metric definition verbatim (toApplyFactSQL in repo.go): 未投递 =
 // still saved/preparing with neither a submission nor a response fact.
 // Records past the preparing phase ride the submitted branch even when
 // submitted_at is NULL (内推 / 猎头直接约面 rows legitimately carry no
-// submitted_at). 未投递 is a leaf — only the submitted branch is
-// subdivided by its current status.
+// submitted_at). 未投递 is a leaf — only the submitted branch expands.
 func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, error) {
 	where, args := r.whereClause(req)
 	rows, err := r.db.Pool().Query(ctx, `SELECT id, status,
@@ -62,11 +67,13 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 	}
 	defer rows.Close()
 
-	// Submitted branch: current-status counts. Not-submitted records go
-	// straight into the 未投递 leaf.
-	byStatus := map[string]int64{}
+	type appRow struct {
+		id     int64
+		status string
+	}
+	var submitted []appRow
 	var cohort, notSub int64
-	seen := map[string]bool{}
+	seen := map[int64]bool{}
 	for rows.Next() {
 		var id int64
 		var st string
@@ -74,64 +81,241 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 		if err := rows.Scan(&id, &st, &notSubRow); err != nil {
 			return nil, err
 		}
-		key := fmt.Sprintf("%d", id)
-		if seen[key] {
+		if seen[id] {
 			continue
 		}
-		seen[key] = true
+		seen[id] = true
 		cohort++
 		if notSubRow {
 			notSub++
 			continue
 		}
-		byStatus[st]++
+		submitted = append(submitted, appRow{id: id, status: st})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	sub := cohort - notSub
 
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	ids := make([]int64, len(submitted))
+	for i, a := range submitted {
+		ids[i] = a.id
+	}
+	pointsByApp, err := r.happenedStagesFor(ctx, ids, now)
+	if err != nil {
+		return nil, err
+	}
+
 	const nsName, sName = "not_submitted", "submitted"
+	linkCount := map[[2]string]int64{
+		// layer 1: 全部机会 → 未投递 / 已投递. Zero-value edges keep an empty
+		// branch visible instead of dropping its node.
+		{"all", nsName}: notSub,
+		{"all", sName}:  sub,
+	}
+	for _, a := range submitted {
+		path := currentProgressPath(pointsByApp[a.id], a.status)
+		prev := sName
+		for _, st := range path {
+			next := "s_" + st
+			linkCount[[2]string{prev, next}]++
+			prev = next
+		}
+	}
+
 	nodes := []Node{
 		{Name: "all", Label: "全部机会"},
 		{Name: nsName, Label: "未投递"},
 		{Name: sName, Label: "已投递"},
 	}
-	links := []Link{
-		// layer 1: 全部机会 → 未投递 / 已投递. Zero-value edges keep an empty
-		// branch visible instead of dropping its node.
-		{Source: "all", Target: nsName, Value: notSub},
-		{Source: "all", Target: sName, Value: sub},
+	nodeSeen := map[string]bool{"all": true, nsName: true, sName: true}
+	var extra []string
+	for k := range linkCount {
+		for _, name := range []string{k[0], k[1]} {
+			if nodeSeen[name] {
+				continue
+			}
+			nodeSeen[name] = true
+			extra = append(extra, name)
+		}
+	}
+	sort.Slice(extra, func(i, j int) bool {
+		ri, rj := stageSortKey(extra[i]), stageSortKey(extra[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return extra[i] < extra[j]
+	})
+	for _, name := range extra {
+		nodes = append(nodes, stageNode(name))
 	}
 
-	// layer 2 → 3: subdivide the submitted branch by current status, sorted
-	// for a stable render.
-	statuses := make([]string, 0, len(byStatus))
-	for st := range byStatus {
-		statuses = append(statuses, st)
+	links := make([]Link, 0, len(linkCount))
+	for k, v := range linkCount {
+		links = append(links, Link{Source: k[0], Target: k[1], Value: v})
 	}
-	sort.Strings(statuses)
-	for _, st := range statuses {
-		name := "s_" + st
-		label := StatusName[st]
-		if label == "" {
-			label = st
+	sort.Slice(links, func(i, j int) bool {
+		if links[i].Source == links[j].Source {
+			return links[i].Target < links[j].Target
 		}
-		// 已投递 → 已投递 reads like a self-loop; disambiguate the plain
-		// applied status under the submitted branch.
-		if st == domain.StatusApplied {
-			label = "已投递 · 等待反馈"
-		}
-		nodes = append(nodes, Node{Name: name, Label: label})
-		links = append(links, Link{Source: sName, Target: name, Value: byStatus[st]})
-	}
+		return links[i].Source < links[j].Source
+	})
 
 	return &Sankey{
 		Nodes: nodes, Links: links, CohortCount: cohort,
-		AsOf: req.Now.UTC().Format(time.RFC3339), DefinitionVersion: DefinitionVersion,
+		AsOf: now.UTC().Format(time.RFC3339), DefinitionVersion: DefinitionVersion,
 		Mode:  "current",
-		Notes: "当前快照：全部机会先分为已投递 / 未投递（与「待投递」指标同口径）；已投递再按当前状态细分，未投递不再细分。不声称展示历史顺序。",
+		Notes: "当前快照：全部机会先分为已投递 / 未投递（与「待投递」指标同口径）；已投递按实际走过的招聘阶段展开，终态挂在最后一程，未走过的阶段不出现。未投递不再细分。",
 	}, nil
+}
+
+// pipelineProcessRank is the current-progress column order. Matches
+// domain.flowOrder minus 建档 saved (always dropped — it is the create
+// event, not a recruiting stage) and accepted (a sink, not a column).
+// Rank-order edges are a DAG, so ECharts cannot see 面试 → 初筛 → 面试.
+var pipelineProcessRank = map[string]int{
+	domain.StatusPreparing:    1,
+	domain.StatusApplied:      2,
+	domain.StatusAssessment:   3,
+	domain.StatusScreening:    4,
+	domain.StatusInterviewing: 5,
+	domain.StatusOffer:        6,
+}
+
+func happened(now time.Time, occurred *time.Time) bool {
+	return occurred == nil || !occurred.After(now)
+}
+
+// happenedStagesFor loads already-happened stage points for the submitted
+// cohort in one round-trip. Future-dated plans are skipped so the path
+// cannot contradict applications.status (RecomputeStatus uses the same
+// hasHappened rule).
+func (r *Repo) happenedStagesFor(ctx context.Context, ids []int64, now time.Time) (map[int64][]string, error) {
+	out := map[int64][]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.Pool().Query(ctx, `SELECT application_id, status, occurred_at
+		FROM application_stage_points
+		WHERE application_id = ANY($1::bigint[])
+		ORDER BY application_id, pinned_first DESC, occurred_at ASC NULLS LAST, (source = 'milestone') ASC, source_id ASC`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var st string
+		var occurred *time.Time
+		if err := rows.Scan(&id, &st, &occurred); err != nil {
+			return nil, err
+		}
+		if !happened(now, occurred) {
+			continue
+		}
+		out[id] = append(out[id], st)
+	}
+	return out, rows.Err()
+}
+
+// currentProgressPath turns one application's happened statuses into the
+// submitted-branch walk: unique process stages in pipeline order, then the
+// current terminal (if any). In-progress rows stop at the current stage
+// (later-rank visits from a rollback are dropped — those belong on 历史路径).
+func currentProgressPath(stages []string, current string) []string {
+	seen := map[string]bool{}
+	var process []string
+	var prev string
+	for _, st := range stages {
+		if st == "" || st == prev {
+			continue
+		}
+		prev = st
+		if st == domain.StatusSaved {
+			continue
+		}
+		if _, ok := pipelineProcessRank[st]; !ok {
+			continue
+		}
+		if seen[st] {
+			continue
+		}
+		seen[st] = true
+		process = append(process, st)
+	}
+	sort.Slice(process, func(i, j int) bool {
+		return pipelineProcessRank[process[i]] < pipelineProcessRank[process[j]]
+	})
+
+	if domain.IsTerminal(current) {
+		if len(process) == 0 {
+			return []string{current}
+		}
+		return append(process, current)
+	}
+
+	maxRank, ok := pipelineProcessRank[current]
+	if !ok {
+		if len(process) == 0 {
+			if current == "" {
+				return nil
+			}
+			return []string{current}
+		}
+		return process
+	}
+	var out []string
+	for _, st := range process {
+		if pipelineProcessRank[st] <= maxRank {
+			out = append(out, st)
+		}
+	}
+	if !seen[current] {
+		out = append(out, current)
+		sort.Slice(out, func(i, j int) bool {
+			return pipelineProcessRank[out[i]] < pipelineProcessRank[out[j]]
+		})
+	}
+	if len(out) == 0 {
+		return []string{current}
+	}
+	return out
+}
+
+func stageNode(name string) Node {
+	st := strings.TrimPrefix(name, "s_")
+	label := StatusName[st]
+	if label == "" {
+		label = st
+	}
+	// 已投递 → 已投递 reads like a self-loop; disambiguate the plain
+	// applied status under the submitted branch.
+	if st == domain.StatusApplied {
+		label = "已投递 · 等待反馈"
+	}
+	return Node{Name: name, Label: label}
+}
+
+func stageSortKey(name string) int {
+	st := strings.TrimPrefix(name, "s_")
+	if r, ok := pipelineProcessRank[st]; ok {
+		return r
+	}
+	switch st {
+	case domain.StatusAccepted:
+		return 10
+	case domain.StatusRejected:
+		return 11
+	case domain.StatusWithdrawn:
+		return 12
+	case domain.StatusClosed:
+		return 13
+	}
+	return 20
 }
 
 // --- Sankey B: real historical paths ---

@@ -1,6 +1,6 @@
 // Verifies plan §12.2 case 1 on a clean dataset with exactly the benchmark
-// distribution: the current-mode sankey conserves flow at every layer and all
-// final nodes total the cohort, and drilldown equals the list ids.
+// distribution: the current-mode sankey conserves flow (each application is
+// a leaf exactly once) and drilldown equals the list ids.
 //
 // Also pins the v2 classification: 未投递 must reuse the 待投递 metric
 // definition (repo.Counts), so an in-progress row without submitted_at
@@ -93,7 +93,7 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 	if allToNS != 3 || allToSub != 7 {
 		t.Fatalf("layer1 = %d not-submitted / %d submitted, want 3/7", allToNS, allToSub)
 	}
-	// 未投递 is a leaf: the submitted branch must carry all layer-3 detail.
+	// 未投递 is a leaf: the submitted branch must carry all further detail.
 	if subSplit != 7 {
 		t.Fatalf("submitted subdivision total = %d, want 7", subSplit)
 	}
@@ -102,23 +102,12 @@ func TestSankeyConservationBenchmarkFixture(t *testing.T) {
 			t.Fatalf("not-submitted branch should not be subdivided, found node %q", n.Name)
 		}
 	}
-	// every leaf sums to the cohort: 未投递 3 + submitted statuses 7 = 10
-	var finals int64
-	for _, n := range sk.Nodes {
-		if n.Name == "all" || n.Name == "not_submitted" || n.Name == "submitted" {
-			continue
-		}
-		for _, l := range sk.Links {
-			if l.Target == n.Name {
-				finals += l.Value
-			}
-		}
+	// each application is a leaf exactly once: leaf inflow totals the cohort
+	if got := leafInflow(sk); got != 10 {
+		t.Fatalf("leaf inflow total %d, want cohort 10", got)
 	}
-	if finals != 7 {
-		t.Fatalf("final nodes total %d, want 7", finals)
-	}
-	if allToNS+finals != 10 {
-		t.Fatalf("leaves %d + 未投递 %d, want cohort 10", finals, allToNS)
+	if sk.DefinitionVersion != DefinitionVersion {
+		t.Fatalf("definition_version = %d, want %d", sk.DefinitionVersion, DefinitionVersion)
 	}
 }
 
@@ -295,6 +284,94 @@ func TestCountsMedianIgnoresRepliesWithoutSubmissionAnchor(t *testing.T) {
 	}
 }
 
+func TestSankeyARejectAfterAssessmentFlowsThroughAssessment(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
+	owner := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner)
+
+	now := time.Now()
+	sub := now.AddDate(0, 0, -3)
+	if err := seedAppWithStages(ctx, db, owner, domain.StatusRejected, &sub,
+		[]string{domain.StatusApplied, domain.StatusAssessment, domain.StatusRejected}); err != nil {
+		t.Fatal(err)
+	}
+
+	sk, err := New(db).SankeyA(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := linkIndex(sk)
+	if links[[2]string{"s_applied", "s_assessment"}] != 1 {
+		t.Fatalf("applied → assessment = %d, want 1", links[[2]string{"s_applied", "s_assessment"}])
+	}
+	if links[[2]string{"s_assessment", "s_rejected"}] != 1 {
+		t.Fatalf("assessment → rejected = %d, want 1", links[[2]string{"s_assessment", "s_rejected"}])
+	}
+	if links[[2]string{"submitted", "s_rejected"}] != 0 {
+		t.Fatalf("submitted → rejected = %d, want 0 (must walk through 笔试)", links[[2]string{"submitted", "s_rejected"}])
+	}
+	if leafInflow(sk) != 1 {
+		t.Fatalf("leaf inflow = %d, want 1", leafInflow(sk))
+	}
+}
+
+func TestSankeyARejectWithoutAssessmentStaysDirect(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
+	owner := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner)
+
+	now := time.Now()
+	sub := now.AddDate(0, 0, -2)
+	if err := seedAppWithStages(ctx, db, owner, domain.StatusRejected, &sub,
+		[]string{domain.StatusApplied, domain.StatusRejected}); err != nil {
+		t.Fatal(err)
+	}
+
+	sk, err := New(db).SankeyA(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := linkIndex(sk)
+	if links[[2]string{"s_applied", "s_rejected"}] != 1 {
+		t.Fatalf("applied → rejected = %d, want 1", links[[2]string{"s_applied", "s_rejected"}])
+	}
+	for _, n := range sk.Nodes {
+		if n.Name == "s_assessment" {
+			t.Fatal("skipped 笔试 must not invent an assessment node")
+		}
+	}
+}
+
+func TestSankeyACurrentAssessmentIsLeaf(t *testing.T) {
+	ctx := context.Background()
+	db := sankeyTestDB(t)
+	owner := createBenchUser(t, db)
+	defer cleanupBench(ctx, db, owner)
+
+	now := time.Now()
+	sub := now.AddDate(0, 0, -1)
+	if err := seedAppWithStages(ctx, db, owner, domain.StatusAssessment, &sub,
+		[]string{domain.StatusApplied, domain.StatusAssessment}); err != nil {
+		t.Fatal(err)
+	}
+
+	sk, err := New(db).SankeyA(ctx, &SnapshotRequest{OwnerID: owner, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := linkIndex(sk)
+	if links[[2]string{"s_applied", "s_assessment"}] != 1 {
+		t.Fatalf("applied → assessment = %d, want 1", links[[2]string{"s_applied", "s_assessment"}])
+	}
+	for k, v := range links {
+		if k[0] == "s_assessment" && v > 0 {
+			t.Fatalf("still-in-OA row must stop at assessment, found %s → %s = %d", k[0], k[1], v)
+		}
+	}
+}
+
 func createBenchUser(t *testing.T, db *database.DB) int64 {
 	t.Helper()
 	var id int64
@@ -335,4 +412,63 @@ func seedApp(ctx context.Context, db *database.DB, owner int64, status string, s
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// seedAppWithStages writes a real timeline so Sankey A can reconstruct the
+// process stages (seedApp's single created→current event has no intermediates).
+func seedAppWithStages(ctx context.Context, db *database.DB, owner int64, current string, sub *time.Time, stages []string) error {
+	tx, err := db.Pool().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var cid int64
+	name := "Co" + time.Now().Format("150405.000000000")
+	if err := tx.QueryRow(ctx, `INSERT INTO companies(owner_id, name) VALUES($1,$2) RETURNING id`,
+		owner, name).Scan(&cid); err != nil {
+		return err
+	}
+	var aid int64
+	if err := tx.QueryRow(ctx, `INSERT INTO applications(owner_id, company_id, company_name, position, status, submitted_at, custom_values, saved_at)
+		VALUES($1,$2,'C','P',$3,$4,'{}',now()) RETURNING id`, owner, cid, current, sub).Scan(&aid); err != nil {
+		return err
+	}
+	base := time.Now().Add(-time.Hour)
+	for i, st := range stages {
+		eventType := "created"
+		var from any
+		if i > 0 {
+			eventType = "status_change"
+			from = stages[i-1]
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO application_events(application_id, owner_id, sequence, event_type, from_status, to_status, occurred_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7)`, aid, owner, i+1, eventType, from, st, base.Add(time.Duration(i)*time.Minute)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func linkIndex(sk *Sankey) map[[2]string]int64 {
+	m := map[[2]string]int64{}
+	for _, l := range sk.Links {
+		m[[2]string{l.Source, l.Target}] = l.Value
+	}
+	return m
+}
+
+func leafInflow(sk *Sankey) int64 {
+	outflow := map[string]int64{}
+	inflow := map[string]int64{}
+	for _, l := range sk.Links {
+		outflow[l.Source] += l.Value
+		inflow[l.Target] += l.Value
+	}
+	var sum int64
+	for _, n := range sk.Nodes {
+		if outflow[n.Name] == 0 {
+			sum += inflow[n.Name]
+		}
+	}
+	return sum
 }
