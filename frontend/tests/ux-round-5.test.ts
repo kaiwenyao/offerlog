@@ -6,6 +6,7 @@ import {
   ARCHIVED_VIEW,
   databaseDrawerPath,
   hrefWithoutSearch,
+  isDrawerOnlyNavigation,
   viewIdFromParams,
 } from '../src/features/database/views'
 
@@ -75,5 +76,24 @@ describe('databaseDrawerPath: 抽屉跟 URL 走', () => {
     const search = `?view=${ARCHIVED_VIEW}`
     expect(databaseDrawerPath(42, search)).toEqual({ pathname: '/database/42', search })
     expect(databaseDrawerPath(null, search)).toEqual({ pathname: '/database', search })
+  })
+})
+
+describe('isDrawerOnlyNavigation: 开抽屉不该重置列表状态', () => {
+  it('is true when only the app id in the path changes', () => {
+    const q = '?view=-103'
+    expect(isDrawerOnlyNavigation('/database', '/database/1900', q, q)).toBe(true)
+    expect(isDrawerOnlyNavigation('/database/1900', '/database', q, q)).toBe(true)
+    expect(isDrawerOnlyNavigation('/database/1900', '/database/42', q, q)).toBe(true)
+  })
+
+  it('is false when the query string changes (search / view / layout)', () => {
+    expect(isDrawerOnlyNavigation('/database/1900', '/database', '?view=-103', '?q=腾讯')).toBe(false)
+    expect(isDrawerOnlyNavigation('/database', '/database', '', '?q=字节')).toBe(false)
+  })
+
+  it('is false for unrelated routes', () => {
+    expect(isDrawerOnlyNavigation('/database', '/calendar', '', '')).toBe(false)
+    expect(isDrawerOnlyNavigation('/apps/1', '/database', '', '')).toBe(false)
   })
 })

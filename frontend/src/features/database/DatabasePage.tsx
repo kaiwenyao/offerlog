@@ -32,6 +32,7 @@ import {
   WEEK_INTERVIEWS_VIEW,
   archivedSearchHref,
   databaseDrawerPath,
+  isDrawerOnlyNavigation,
   viewIdFromParams,
   boardBuckets,
   buildFilters,
@@ -143,10 +144,13 @@ export function DatabasePage() {
   const routeId = Number(routeApp)
   const selApp = routeApp !== undefined && Number.isFinite(routeId) ? routeId : null
   const openApp = useCallback(
-    (id: number) => nav(databaseDrawerPath(id, loc.search)),
+    (id: number) => nav(databaseDrawerPath(id, loc.search), { replace: selApp !== null }),
+    [nav, loc.search, selApp],
+  )
+  const closeApp = useCallback(
+    () => nav(databaseDrawerPath(null, loc.search), { replace: true }),
     [nav, loc.search],
   )
-  const closeApp = useCallback(() => nav(databaseDrawerPath(null, loc.search)), [nav, loc.search])
 
   // 视图与布局是**导航状态**，不是个人偏好：不写回 URL 的话，切到「已归档」再
   // 刷新就回到了「全部机会」，也没法把当前这一屏复制给别人（侧栏的快捷视图反而
@@ -158,6 +162,7 @@ export function DatabasePage() {
   // 存字符串而不是布尔量：万一某次写入没有真的产生 location 变化，一个挂着的
   // 布尔量会把**下一次**真正的外部导航一起吞掉。
   const selfWrite = useRef<string | null>(null)
+  const locSnap = useRef({ pathname: loc.pathname, search: loc.search })
   const writeParams = useCallback(
     (patch: Record<string, string | null>) => {
       const next = new URLSearchParams(params)
@@ -191,6 +196,11 @@ export function DatabasePage() {
   // URL**（例如搜索同一个词两次）时 params 引用不变，但每次导航 location.key
   // 都会变——否则那一次同步会被整个跳过。
   useEffect(() => {
+    const prev = locSnap.current
+    locSnap.current = { pathname: loc.pathname, search: loc.search }
+    // 开/关/换抽屉只改 pathname，query 没变。loc.key 却会变，不能当成一次
+    // 搜索/视图导航——否则第 2 页点开一条会跳回第 1 页，带 q 时还会清掉快捷筛选。
+    if (isDrawerOnlyNavigation(prev.pathname, loc.pathname, prev.search, loc.search)) return
     // 自己写回去的 view / layout：状态已经是最新的，不要再当成外部导航处理。
     if (selfWrite.current !== null && selfWrite.current === params.toString()) {
       selfWrite.current = null

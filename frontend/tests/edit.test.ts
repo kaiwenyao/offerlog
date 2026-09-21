@@ -5,7 +5,7 @@
 //   * 薪资留空发 null（清空），不是 0；负数 / 非数字 / 下限高于上限直接拒绝；
 //   * 一定带上 version——PATCH 走乐观锁，缺了会被后端当成 0 而必然 409。
 import { describe, expect, it } from 'vitest'
-import { buildApplicationPatch, editFieldsFromApp } from '../src/features/database/edit'
+import { buildApplicationPatch, editFieldsFromApp, rebaseEditFields } from '../src/features/database/edit'
 import type { AppRow } from '../src/lib/types'
 
 function app(over: Partial<AppRow> = {}): AppRow {
@@ -99,5 +99,34 @@ describe('buildApplicationPatch', () => {
     expect(body.job_url).toBe('')
     expect(body.location).toBe('')
     expect(body.channel).toBe('')
+  })
+})
+
+describe('rebaseEditFields: 409 之后只保住自己改过的字段', () => {
+  // PATCH 会把整张表单发出去。只换 version、字段还停在打开时的旧值，
+  // 别人改过、自己没动的字段会被写回去，乐观锁等于没锁。
+  it('keeps dirty fields and takes incoming values for the rest', () => {
+    const baseline = editFieldsFromApp(app())
+    const current = { ...baseline, location: '北京' }
+    const incoming = editFieldsFromApp(app({ version: 4, location: '深圳', notes: '别人加的备注', company_name: 'Acme' }))
+    const next = rebaseEditFields(current, baseline, incoming)
+    expect(next.location).toBe('北京')
+    expect(next.notes).toBe('别人加的备注')
+    expect(next.company_name).toBe('Acme')
+  })
+
+  it('takes the whole incoming row when nothing was edited', () => {
+    const baseline = editFieldsFromApp(app())
+    const incoming = editFieldsFromApp(app({ location: 'Berlin', salary_min: 30000 }))
+    expect(rebaseEditFields(baseline, baseline, incoming)).toEqual(incoming)
+  })
+
+  it('keeps every locally edited field even if the incoming row changed them too', () => {
+    const baseline = editFieldsFromApp(app())
+    const current = { ...baseline, location: '北京', notes: '我的备注' }
+    const incoming = editFieldsFromApp(app({ location: '深圳', notes: '别人的备注' }))
+    const next = rebaseEditFields(current, baseline, incoming)
+    expect(next.location).toBe('北京')
+    expect(next.notes).toBe('我的备注')
   })
 })

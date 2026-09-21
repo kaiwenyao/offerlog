@@ -293,6 +293,25 @@ export function databaseDrawerPath(appId: number | null, search = ''): { pathnam
   }
 }
 
+const DATABASE_LIST_OR_DRAWER = /^\/database(?:\/\d+)?$/
+
+export function isDatabaseListOrDrawer(pathname: string): boolean {
+  return DATABASE_LIST_OR_DRAWER.test(pathname)
+}
+
+/**
+ * 只是在列表和抽屉之间切 pathname（query 没变）。这种导航不该重置页码 / 筛选。
+ */
+export function isDrawerOnlyNavigation(
+  fromPath: string,
+  toPath: string,
+  fromSearch: string,
+  toSearch: string,
+): boolean {
+  if (fromSearch !== toSearch || fromPath === toPath) return false
+  return isDatabaseListOrDrawer(fromPath) && isDatabaseListOrDrawer(toPath)
+}
+
 export interface BoardBucket {
   title: string
   dot: string

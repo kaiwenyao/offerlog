@@ -14,7 +14,7 @@ import {
 } from '../../lib/milestones'
 import { Button, Checkbox, Input, Select, Textarea } from '../../ds'
 import { ErrorText, Modal, Spinner } from '../../components/ui'
-import { buildApplicationPatch, editFieldsFromApp, type ApplicationEditFields } from './edit'
+import { buildApplicationPatch, editFieldsFromApp, rebaseEditFields, type ApplicationEditFields } from './edit'
 import {
   actionEditFields,
   assessmentEditFields,
@@ -494,7 +494,9 @@ export function ApplicationEditForm({
   onDone: () => void
 }) {
   const qc = useQueryClient()
-  const [fields, setFields] = useState<ApplicationEditFields>(() => editFieldsFromApp(app))
+  const initial = editFieldsFromApp(app)
+  const [fields, setFields] = useState<ApplicationEditFields>(initial)
+  const [baseline, setBaseline] = useState<ApplicationEditFields>(initial)
   const [err, setErr] = useState('')
   const [pulling, setPulling] = useState(false)
 
@@ -503,13 +505,17 @@ export function ApplicationEditForm({
 
   const canSave = fields.company_name.trim() !== '' && fields.position.trim() !== ''
 
-  // 409 之后必须把 ['app', id] 换成最新行：version 来自这份缓存，不失效的话
-  // 用户再点多少次保存都是同一条冲突。只更新缓存、不重填表单，已经改过的字段还在。
+  // 409 之后必须把 ['app', id] 换成最新行，并且把没改过的字段接到新值上：
+  // version 来自这份缓存，不失效的话再点多少次都是同一条冲突；不 rebase 的话
+  // PATCH 会把别人改过、自己没动的字段用旧值写回去。
   const pullLatest = async (): Promise<boolean> => {
     setPulling(true)
     try {
       const fresh = await api.get<AppRow>(`/api/v1/applications/${app.id}`)
       qc.setQueryData(['app', app.id], fresh)
+      const incoming = editFieldsFromApp(fresh)
+      setFields((current) => rebaseEditFields(current, baseline, incoming))
+      setBaseline(incoming)
       return true
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : '刷新失败')
