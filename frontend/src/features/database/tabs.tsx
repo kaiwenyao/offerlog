@@ -9,7 +9,7 @@ import { Button, Card, Eyebrow, LinkButton, PanelTitle } from '../../ds'
 import { Icon } from '../../components/Icon'
 import { ErrorText, ConfirmDialog, Num, Spinner } from '../../components/ui'
 import { CategorySelect, FileViewerModal, useDropUpload, useUpdateCategory } from '../files/shared'
-import { ActionEditForm, ActionForm, AssessmentEditForm, AssessmentForm, InterviewEditForm, InterviewForm, NoteEditForm, NoteForm } from './forms'
+import { ActionEditForm, ActionForm, AssessmentEditForm, AssessmentForm, InterviewEditForm, InterviewForm, NoteEditForm, NoteForm, formatLabel } from './forms'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
 
@@ -434,7 +434,7 @@ export function OverviewTab({
               <span className="grow">
                 <span style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>
                   {i.round_name || '面试'}
-                  {i.format ? ` · ${i.format}` : ''}
+                  {i.format ? ` · ${formatLabel(i.format)}` : ''}
                   {i.schedule?.cancelled && (
                     <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)', border: '1px solid var(--border)', padding: '1px 6px' }}>
                       已取消
