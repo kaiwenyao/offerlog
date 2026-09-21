@@ -5,7 +5,7 @@
 //   * 薪资留空发 null（清空），不是 0；负数 / 非数字 / 下限高于上限直接拒绝；
 //   * 一定带上 version——PATCH 走乐观锁，缺了会被后端当成 0 而必然 409。
 import { describe, expect, it } from 'vitest'
-import { buildApplicationPatch, editFieldsFromApp, rebaseEditFields } from '../src/features/database/edit'
+import { buildApplicationPatch, clearLegacyNextActionPatch, editFieldsFromApp, rebaseEditFields } from '../src/features/database/edit'
 import type { AppRow } from '../src/lib/types'
 
 function app(over: Partial<AppRow> = {}): AppRow {
@@ -128,5 +128,11 @@ describe('rebaseEditFields: 409 之后只保住自己改过的字段', () => {
     const next = rebaseEditFields(current, baseline, incoming)
     expect(next.location).toBe('北京')
     expect(next.notes).toBe('我的备注')
+  })
+})
+
+describe('clearLegacyNextActionPatch: 完成迁移遗留待办', () => {
+  it('sends empty strings so the backend treats them as clears, not omitted fields', () => {
+    expect(clearLegacyNextActionPatch(7)).toEqual({ version: 7, next_action: '', next_action_due_at: '' })
   })
 })

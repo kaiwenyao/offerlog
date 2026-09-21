@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, fmtBytes, fmtDate } from '../../lib/api'
+import { queryListState } from '../../lib/queryState'
 import { FILE_CATEGORIES } from '../../lib/files'
 import type { FileItem } from '../../lib/types'
 import { Button, Card, LinkButton, Tag } from '../../ds'
@@ -72,6 +73,7 @@ export function FilesPage() {
 
   const used = files.reduce((sum, f) => sum + f.size_bytes, 0)
   const shown = filter === 'all' ? files : files.filter((f) => f.category === filter)
+  const filesState = queryListState(q)
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -133,8 +135,15 @@ export function FilesPage() {
 
       {err && <ErrorText>{err}</ErrorText>}
 
-      {q.isLoading ? (
+      {filesState === 'loading' ? (
         <PageSpinner />
+      ) : filesState === 'error' ? (
+        <EmptyHint>
+          <ErrorText>文件列表加载失败，请重试</ErrorText>
+          <Button variant="secondary" size="sm" onClick={() => q.refetch()} style={{ marginTop: 10 }}>
+            重试
+          </Button>
+        </EmptyHint>
       ) : shown.length === 0 ? (
         <EmptyHint>
           <p style={{ margin: 0 }}>{files.length === 0 ? '还没有文件' : '这个分类下还没有文件'}</p>

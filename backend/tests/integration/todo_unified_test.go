@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	appservice "offerlog/backend/internal/applications/service"
 	"offerlog/backend/internal/home"
 )
 
@@ -172,5 +173,51 @@ func TestCompletedMigratedActionDoesNotResurrectDerived(t *testing.T) {
 	}
 	if s2.Todos.Open != 0 || len(s2.TodoItems) != 0 {
 		t.Fatalf("after done: open=%d items=%d want 0/0 — legacy next_action must NOT resurrect as derived", s2.Todos.Open, len(s2.TodoItems))
+	}
+}
+
+// Completing a legacy derived todo (no standalone action row) must clear the
+// next_action mirror so it drops off the home list and the sidebar badge.
+func TestClearingLegacyNextActionRemovesDerivedTodo(t *testing.T) {
+	ctx := context.Background()
+	db, svc, _, owner := setup(t)
+	var tz string
+	_ = db.Pool().QueryRow(ctx, `SELECT timezone FROM users WHERE id=$1`, owner).Scan(&tz)
+
+	app := mustCreate(t, svc, owner, "StuckLegacyCo", "Role")
+	if _, err := db.Pool().Exec(ctx, `UPDATE applications SET next_action='写跟进邮件', next_action_due_at=CURRENT_DATE+2 WHERE id=$1`, app.ID); err != nil {
+		t.Fatal(err)
+	}
+	repo := home.New(db)
+	s, err := repo.Get(ctx, owner, tz, time.Monday, time.Now(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Todos.Open != 1 || len(s.TodoItems) != 1 {
+		t.Fatalf("before clear: open=%d items=%d, want 1 derived row", s.Todos.Open, len(s.TodoItems))
+	}
+	if s.TodoItems[0].ActionID != nil {
+		t.Fatalf("before clear: action_id=%v, want nil (derived)", s.TodoItems[0].ActionID)
+	}
+
+	empty := ""
+	if _, err := svc.Update(ctx, owner, app.ID, &appservice.UpdateInput{
+		Version:         app.Version,
+		NextAction:      &empty,
+		NextActionDueAt: appservice.NullableTime{Set: true},
+	}); err != nil {
+		t.Fatalf("clear next_action: %v", err)
+	}
+
+	s2, err := repo.Get(ctx, owner, tz, time.Monday, time.Now(), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Todos.Open != 0 || len(s2.TodoItems) != 0 {
+		t.Fatalf("after clear: open=%d items=%d want 0/0", s2.Todos.Open, len(s2.TodoItems))
+	}
+	action, due := legacyMirror(t, db, app.ID)
+	if action != "" || due != nil {
+		t.Fatalf("mirror after clear: action=%q due=%v, want empty", action, due)
 	}
 }

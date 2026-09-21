@@ -38,10 +38,11 @@ func New(auth *idservice.Store, cfg Config) *Handler {
 	}
 }
 
-// Routes mounts auth endpoints. Login/register/logout/me sit outside CSRF
-// because the session itself is the CSRF anchor; the Origin check in CSRF
-// middleware protects them from cross-site requests when a cookie is already
-// present.
+// Routes mounts auth endpoints. Login/register/logout sit outside CSRF
+// because the session itself is the CSRF anchor; GET /me is a read (and
+// re-issues csrf_token); PATCH /me is a session-bearing write and must
+// present the token. The Origin check in CSRF middleware protects the
+// exempted POSTs from cross-site requests when a cookie is already present.
 func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.POST("/login", h.login)
 	g.POST("/register", h.register)
@@ -168,10 +169,19 @@ func (h *Handler) me(c *gin.Context) {
 		httpx.WriteErr(c, httpx.Unauthorized("未登录"))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	body := gin.H{
 		"id": u.ID, "email": u.Email, "display_name": u.DisplayName,
 		"timezone": u.Timezone, "locale": u.Locale,
-	})
+	}
+	// Re-issue the session CSRF token. Login/register are the only other
+	// writers; if localStorage is wiped while the cookie still lives, the SPA
+	// would otherwise sit "logged in" with csrfToken=null and every write 403s.
+	if tok, err := c.Cookie(httpx.SessionCookieName); err == nil {
+		if csrf, ok := h.auth.CSRFForToken(c.Request.Context(), tok); ok {
+			body["csrf_token"] = csrf
+		}
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 // updateMe persists display name / timezone from the settings page. It runs

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api, dayToInstant, fmtDateTime } from '../../lib/api'
+import { queryListState } from '../../lib/queryState'
 import type { CalendarEvent } from '../../lib/types'
 import { effectiveZone } from '../../lib/tz'
 import { Button, Card, PanelTitle, Tabs } from '../../ds'
@@ -132,6 +133,7 @@ export function CalendarPage() {
   })
 
   const events = q.data?.items ?? []
+  const calState = queryListState(q)
 
   const weeks = useMemo(
     () => (view === 'month' ? monthGrid(events, monthKey, zone, weekStart) : []),
@@ -203,9 +205,9 @@ export function CalendarPage() {
         </span>
       </div>
 
-      {q.isLoading ? (
+      {calState === 'loading' ? (
         <PageSpinner />
-      ) : q.isError ? (
+      ) : calState === 'error' ? (
         <Card padding="18px">
           <ErrorText>日程加载失败</ErrorText>
           <Button variant="secondary" size="sm" onClick={() => q.refetch()} style={{ marginTop: 10 }}>

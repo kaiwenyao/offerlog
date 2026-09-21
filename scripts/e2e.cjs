@@ -118,6 +118,13 @@ async function addEvent(page, kind, opts = {}) {
   // 6. reload persistence + cross-view consistency
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForSelector('text=求职数据库', { timeout: 7000 });
+  // reload 会把 /database/:id 带回来，抽屉和它的 backdrop 一起出现。backdrop
+  // 是 position:fixed; inset:0; z-index:40，盖住没有 z-index 的侧栏，点
+  // 「求职数据库」会被拦住（和下面第 14 步同一类问题）。
+  if (await page.locator('.drawer-backdrop').count()) {
+    await page.click('.drawer button[aria-label="关闭"]');
+    await page.waitForSelector('.drawer-backdrop', { state: 'hidden' });
+  }
   await page.locator('a:has-text("求职数据库")').first().click();
   await page.waitForSelector(`tbody tr:has-text("${company}")`, { timeout: 7000 });
   const rowTxt = (await page.locator(`tbody tr:has-text("${company}")`).textContent()) || '';
