@@ -140,7 +140,16 @@ func TestHomeSummaryWeekWindows(t *testing.T) {
 	ws, we := timeutil.WeekBounds(now, loc, time.Monday)
 	// one submit inside the week, one exactly at the start boundary, one just
 	// before the week (last week).
+	//
+	// Create 拒绝未来的 submitted_at。周一跑的时候 ws+24h 是明天，会报
+	// 「投递时间不能晚于现在」——和周日晚上 OA chip 一样的日历边界 flake。
 	inside := ws.Add(24 * time.Hour)
+	if !inside.Before(now) {
+		inside = now.Add(-time.Minute)
+		if inside.Before(ws) {
+			inside = ws
+		}
+	}
 	atBoundary := ws
 	before := ws.AddDate(0, 0, -1)
 	mustCreateWithSubmit(t, svc, owner, "InsideCo", "R", inside)
