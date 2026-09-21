@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError, dayToInstant, fmtDate, fmtDay, localDateTimeToInstant, toDayString } from '../../lib/api'
+import { queryListState } from '../../lib/queryState'
 import { effectiveZone } from '../../lib/tz'
 import type { AppRow, CalendarEvent, SavedView } from '../../lib/types'
 import { addDaysToKey, weekStartKeyOf } from '../calendar/grid'
@@ -33,6 +34,8 @@ import {
   archivedSearchHref,
   databaseDrawerPath,
   isDrawerOnlyNavigation,
+  layoutForView,
+  trashModeFromParams,
   viewIdFromParams,
   boardBuckets,
   buildFilters,
@@ -128,12 +131,17 @@ export function DatabasePage() {
   const qc = useQueryClient()
 
   const [viewId, setViewId] = useState(() => viewIdFromParams(params))
-  const [layout, setLayout] = useState<Layout>(() => (params.get('layout') as Layout) || 'table')
+  const [layout, setLayout] = useState<Layout>(() => {
+    const trash = params.get('q') === null && trashModeFromParams(params)
+    const l = params.get('layout')
+    const next: Layout = l === 'board' || l === 'list' || l === 'table' ? l : 'table'
+    return layoutForView(next, trash)
+  })
   const [search, setSearch] = useState(() => params.get('q') ?? '')
   const [page, setPage] = useState(1)
   const [showCreate, setShowCreate] = useState(false)
   const [extraFilters, setExtraFilters] = useState<FilterNode[]>([])
-  const [trashMode, setTrashMode] = useState(false)
+  const [trashMode, setTrashMode] = useState(() => params.get('q') === null && trashModeFromParams(params))
   const [selRows, setSelRows] = useState<Set<number>>(new Set())
   const [bulkTag, setBulkTag] = useState('')
   const [bulkPriority, setBulkPriority] = useState('')
@@ -152,9 +160,9 @@ export function DatabasePage() {
     [nav, loc.search],
   )
 
-  // 视图与布局是**导航状态**，不是个人偏好：不写回 URL 的话，切到「已归档」再
-  // 刷新就回到了「全部机会」，也没法把当前这一屏复制给别人（侧栏的快捷视图反而
-  // 是带参数的，两边行为对不上）。用 replace 写，不往后退栈里塞垃圾。
+  // 视图、布局、回收站是**导航状态**，不是个人偏好：不写回 URL 的话，切到「已归档」
+  // 或回收站再刷新就回到了「全部机会」，也没法把当前这一屏复制给别人（侧栏的快捷
+  // 视图反而带参数，两边行为对不上）。用 replace 写，不往后退栈里塞垃圾。
   //
   // selfWrite 记下「我自己刚写成什么样」，好让下面那个同步 effect 认出这次
   // params 变化不是一次外部导航：否则带着 ?q= 时点一下视图 chip 会被当成新的
@@ -183,7 +191,7 @@ export function DatabasePage() {
     // 只切换筛选，不动布局：这些 chip 是「筛选」而不是布局开关，用户当前停留在
     // 表格 / 看板 / 列表哪个布局就保持哪个（需求：点筛选不要把人拽到看板）。
     // 布局只能由布局 Tabs（或带 layout 参数的显式导航）改变。
-    writeParams({ view: String(id) })
+    writeParams({ view: String(id), trash: null })
   }
 
   const selectLayout = (next: Layout) => {
@@ -219,12 +227,12 @@ export function DatabasePage() {
     // 携带 q 的导航（⌘K 面板选岗位/公司、顶栏搜索）是全局搜索意图：清掉快捷
     // 筛选、退出回收站。抽屉开不开跟 pathname（/database vs /database/:id）走，
     // 顶栏搜索本身就会导航到 /database?q=…，不必在这里另 setSelApp。
-    if (q !== null) {
-      setExtraFilters([])
-      setTrashMode(false)
-    }
-    const l = params.get('layout') as Layout | null
-    if (l) setLayout(l)
+    if (q !== null) setExtraFilters([])
+    const trash = q !== null ? false : trashModeFromParams(params)
+    setTrashMode(trash)
+    const l = params.get('layout')
+    if (l === 'board' || l === 'list' || l === 'table') setLayout(layoutForView(l, trash))
+    else if (trash) setLayout('table')
     if (params.get('new') === '1') {
       setShowCreate(true)
       // Consume the flag so re-clicking the header button re-opens the dialog
@@ -415,16 +423,19 @@ export function DatabasePage() {
   // 已筛选的视图（回收站 / 快捷视图）里「＋ 新增岗位」帮不上忙：新建的岗位既不在
   // 回收站里，也不会带着归档旗标出现，点了只会让空列表看起来像没生效。
   const offerCreateInEmptyState = !trashMode && !isShortcutView(viewId)
+  const shownLayout = layoutForView(layout, trashMode)
+  const appsState = queryListState(appsQ)
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <Tabs
           items={LAYOUT_TABS}
-          value={layout}
+          value={shownLayout}
           onChange={(v) => selectLayout(v as Layout)}
           size="sm"
-          ariaLabel="视图布局"
+          disabled={trashMode}
+          ariaLabel={trashMode ? '视图布局（回收站仅表格）' : '视图布局'}
         />
         <span aria-hidden style={{ width: 1, height: 22, background: 'var(--border-alt)' }} />
 
@@ -449,11 +460,17 @@ export function DatabasePage() {
             // 落到一个空页上，看起来像「回收站是空的」。
             const entering = !trashMode
             setTrashMode(entering)
-            // 「恢复」按钮只画在表格布局里。停在看板 / 列表上点进回收站，会看到
-            // 一堆已删除的卡片却没有任何恢复入口——所以进回收站就切回表格。
-            // （写 URL 的副作用放在事件处理里，不放进 setState 的 updater。）
-            if (entering) selectLayout('table')
             setPage(1)
+            // 「恢复」按钮只画在表格布局里。停在看板 / 列表上点进回收站，会看到
+            // 一堆已删除的卡片却没有任何恢复入口——所以进回收站就切回表格，
+            // 并且锁住布局 Tabs（单向切进去不够，之后还能再切走）。
+            // trash 是导航状态：写进 URL，刷新 / 分享 / 前进后退才不会丢。
+            if (entering) {
+              setLayout('table')
+              writeParams({ trash: '1', layout: 'table' })
+            } else {
+              writeParams({ trash: null })
+            }
           }}
         >
           回收站
@@ -568,9 +585,9 @@ export function DatabasePage() {
             重试
           </Button>
         </Card>
-      ) : appsQ.isLoading || !weekReady ? (
+      ) : appsState === 'loading' || !weekReady ? (
         <PageSpinner />
-      ) : appsQ.isError ? (
+      ) : appsState === 'error' ? (
         <EmptyHint>
           <ErrorText>加载失败，请刷新重试</ErrorText>
         </EmptyHint>
@@ -601,9 +618,9 @@ export function DatabasePage() {
             </Button>
           ) : null}
         </EmptyHint>
-      ) : layout === 'board' ? (
+      ) : shownLayout === 'board' ? (
         <BoardView groups={boardGroups} onOpen={openApp} />
-      ) : layout === 'list' ? (
+      ) : shownLayout === 'list' ? (
         <ListView rows={rows} onOpen={openApp} />
       ) : (
         <TableView

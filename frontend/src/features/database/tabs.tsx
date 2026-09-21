@@ -10,6 +10,7 @@ import { Icon } from '../../components/Icon'
 import { ErrorText, ConfirmDialog, Num, Spinner } from '../../components/ui'
 import { CategorySelect, FileViewerModal, useDropUpload, useUpdateCategory } from '../files/shared'
 import { ActionEditForm, ActionForm, AssessmentEditForm, AssessmentForm, InterviewEditForm, InterviewForm, NoteEditForm, NoteForm, formatLabel } from './forms'
+import { clearLegacyNextActionPatch } from './edit'
 
 const ACCEPTED_UPLOADS = '.pdf,.docx,.txt,.png,.jpg,.jpeg'
 
@@ -240,6 +241,18 @@ export function OverviewTab({
     },
     onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '延期失败，请重试'),
   })
+  const clearLegacyMut = useMutation({
+    mutationFn: async () => {
+      const fresh = await api.get<AppRow>(`/api/v1/applications/${app.id}`)
+      return api.patch(`/api/v1/applications/${app.id}`, clearLegacyNextActionPatch(fresh.version))
+    },
+    onSuccess: () => {
+      setActionErr('')
+      invalidateAfterAction()
+      qc.invalidateQueries({ queryKey: ['app', app.id] })
+    },
+    onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '操作失败，请重试'),
+  })
   const delActionMut = useMutation({
     mutationFn: (id: number) => api.del(`/api/v1/actions/${id}`),
     onSuccess: () => {
@@ -394,6 +407,9 @@ export function OverviewTab({
                     {app.next_action_due_at ? `截止 ${fmtDay(app.next_action_due_at)}` : ''} · 旧记录（迁移后并入统一待办）
                   </span>
                 </span>
+                <Button variant="secondary" size="sm" disabled={clearLegacyMut.isPending} onClick={() => clearLegacyMut.mutate()}>
+                  完成
+                </Button>
               </div>
             )}
             {recentDone.length > 0 && (

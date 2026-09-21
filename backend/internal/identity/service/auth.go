@@ -293,11 +293,25 @@ func (s *Store) Logout(ctx context.Context, token string) error {
 }
 
 func (s *Store) ValidateCSRF(ctx context.Context, token, csrf string) bool {
-	th := hashToken(token)
-	var stored string
-	err := s.db.Pool().QueryRow(ctx, `SELECT csrf_token FROM sessions WHERE token_hash = $1`, th).Scan(&stored)
-	if err != nil {
+	stored, ok := s.CSRFForToken(ctx, token)
+	if !ok {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(stored), []byte(csrf)) == 1
+}
+
+// CSRFForToken returns the CSRF token bound to a live session cookie.
+// GET /auth/me uses this so a surviving session can re-hydrate the SPA after
+// localStorage is cleared (the token is otherwise only returned at login).
+func (s *Store) CSRFForToken(ctx context.Context, token string) (string, bool) {
+	if token == "" {
+		return "", false
+	}
+	th := hashToken(token)
+	var stored string
+	err := s.db.Pool().QueryRow(ctx, `SELECT csrf_token FROM sessions WHERE token_hash = $1`, th).Scan(&stored)
+	if err != nil || stored == "" {
+		return "", false
+	}
+	return stored, true
 }

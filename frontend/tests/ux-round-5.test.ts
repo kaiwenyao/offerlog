@@ -7,6 +7,8 @@ import {
   databaseDrawerPath,
   hrefWithoutSearch,
   isDrawerOnlyNavigation,
+  layoutForView,
+  trashModeFromParams,
   viewIdFromParams,
 } from '../src/features/database/views'
 
@@ -52,6 +54,31 @@ describe('viewIdFromParams: 裸 /database 就是全部机会', () => {
   })
 })
 
+describe('trashModeFromParams: 回收站跟地址栏走', () => {
+  it('reads trash=1 / trash=true and ignores other values', () => {
+    expect(trashModeFromParams(new URLSearchParams())).toBe(false)
+    expect(trashModeFromParams(new URLSearchParams('view=-1'))).toBe(false)
+    expect(trashModeFromParams(new URLSearchParams('trash=1'))).toBe(true)
+    expect(trashModeFromParams(new URLSearchParams('trash=true'))).toBe(true)
+    expect(trashModeFromParams(new URLSearchParams('trash=0'))).toBe(false)
+    expect(trashModeFromParams(new URLSearchParams('view=-3&layout=board&trash=1'))).toBe(true)
+  })
+})
+
+describe('layoutForView: 回收站强制表格', () => {
+  it('locks board/list to table inside the recycle bin', () => {
+    expect(layoutForView('board', true)).toBe('table')
+    expect(layoutForView('list', true)).toBe('table')
+    expect(layoutForView('table', true)).toBe('table')
+  })
+
+  it('leaves the chosen layout alone outside the recycle bin', () => {
+    expect(layoutForView('board', false)).toBe('board')
+    expect(layoutForView('list', false)).toBe('list')
+    expect(layoutForView('table', false)).toBe('table')
+  })
+})
+
 describe('hrefWithoutSearch: 搜索 chip 的 × 只拿掉 q', () => {
   it('keeps the active view so URL and chips still agree', () => {
     expect(hrefWithoutSearch(`view=${ARCHIVED_VIEW}&q=字节`)).toBe(`/database?view=${ARCHIVED_VIEW}`)
@@ -61,6 +88,11 @@ describe('hrefWithoutSearch: 搜索 chip 的 × 只拿掉 q', () => {
   it('bare search falls back to /database', () => {
     expect(hrefWithoutSearch('q=字节')).toBe('/database')
     expect(hrefWithoutSearch('')).toBe('/database')
+  })
+
+  it('keeps trash so cancelling search does not eject the recycle bin', () => {
+    expect(hrefWithoutSearch('trash=1&q=字节')).toBe('/database?trash=1')
+    expect(hrefWithoutSearch('view=-1&layout=table&trash=1&q=腾讯')).toBe('/database?view=-1&layout=table&trash=1')
   })
 })
 

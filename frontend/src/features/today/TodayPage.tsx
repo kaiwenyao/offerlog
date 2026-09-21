@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api, ApiError, fmtDate, fmtDateTime, fmtDay, toDayString } from '../../lib/api'
-import type { HomeSummary } from '../../lib/types'
+import type { AppRow, HomeSummary } from '../../lib/types'
 import { statusMeta } from '../../lib/status'
 import { Button, Card, PanelTitle } from '../../ds'
 import { Dot, EmptyHint, ErrorText, Num, PageSpinner, StatusChip } from '../../components/ui'
 import { effectiveZone } from '../../lib/tz'
 import { buildWeek, CHIP_TONES, groupActions, type TodoItem } from './week'
 import { formatLabel } from '../database/forms'
+import { clearLegacyNextActionPatch } from '../database/edit'
 
 /** Panels are edge-to-edge frames; the corner marks must not be clipped. */
 const PANEL: React.CSSProperties = { padding: 0 }
@@ -48,10 +49,14 @@ export function TodayPage() {
   }
 
   const doneMut = useMutation({
-    mutationFn: ({ id, actionId }: { id: number; actionId: number | null }) =>
-      actionId != null
-        ? api.post(`/api/v1/actions/${actionId}/done`, { done: true })
-        : Promise.reject(new ApiError('derived_todo', '该待办来自岗位记录，请到岗位详情更新', 409)),
+    mutationFn: async ({ actionId, applicationId }: { actionId: number | null; applicationId: number | null }) => {
+      if (actionId != null) return api.post(`/api/v1/actions/${actionId}/done`, { done: true })
+      if (applicationId == null) {
+        throw new ApiError('derived_todo', '该待办没有关联岗位，无法完成', 409)
+      }
+      const fresh = await api.get<AppRow>(`/api/v1/applications/${applicationId}`)
+      return api.patch(`/api/v1/applications/${applicationId}`, clearLegacyNextActionPatch(fresh.version))
+    },
     onSuccess: () => {
       setToast('')
       invalidateAfterTodo()
@@ -83,7 +88,7 @@ export function TodayPage() {
   // The checklist renders the same unified rows the badge counts. Server rows
   // with an action_id are standalone actions (complete/postpone live on
   // /actions/:id); rows without one are legacy derived from the application's
-  // next_action and can only be edited via the application.
+  // next_action — completing them clears that mirror via PATCH /applications/:id.
   const groups = useMemo(() => {
     const items: TodoItem[] = (summary?.todo_items ?? []).map((r) => ({
       id: r.id,
@@ -222,7 +227,7 @@ export function TodayPage() {
                     onOpen={() => t.application_id && nav(`/apps/${t.application_id}`)}
                     onDone={() => {
                       setBusyTodoId(t.id)
-                      doneMut.mutate({ id: t.id, actionId: t.action_id ?? null })
+                      doneMut.mutate({ actionId: t.action_id ?? null, applicationId: t.application_id ?? null })
                     }}
                     onPostpone={() => {
                       if (t.action_id == null) return
@@ -413,8 +418,8 @@ function TodoRow({
           延期
         </Button>
       )}
-      <Button variant="secondary" size="sm" disabled={busy} onClick={derived ? onOpen : onDone}>
-        {derived ? '查看' : '完成'}
+      <Button variant="secondary" size="sm" disabled={busy} onClick={onDone}>
+        完成
       </Button>
     </div>
   )

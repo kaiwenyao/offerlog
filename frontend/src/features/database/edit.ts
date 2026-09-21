@@ -81,6 +81,14 @@ export function buildApplicationPatch(app: AppRow, f: ApplicationEditFields): Re
   }
 }
 
+/**
+ * 清掉岗位行上没有对应独立待办的迁移遗留 next_action。
+ * 空串才是清空：JSON null 在后端等于「这个字段没传」。
+ */
+export function clearLegacyNextActionPatch(version: number): Record<string, unknown> {
+  return { version, next_action: '', next_action_due_at: '' }
+}
+
 const EDIT_FIELD_KEYS: Array<keyof ApplicationEditFields> = [
   'company_name',
   'position',

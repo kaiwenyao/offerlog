@@ -5,12 +5,29 @@ import type { Me } from './types'
 
 const CSRF_KEY = 'offerlog.csrf'
 
-let csrfToken: string | null = localStorage.getItem(CSRF_KEY)
+/** localStorage 在禁用站点存储的浏览器里会抛 SecurityError；不能让它炸掉整个 bundle。 */
+export function readCsrfStorage(): string | null {
+  try {
+    return localStorage.getItem(CSRF_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function writeCsrfStorage(token: string | null): void {
+  try {
+    if (token) localStorage.setItem(CSRF_KEY, token)
+    else localStorage.removeItem(CSRF_KEY)
+  } catch {
+    /* private mode / storage disabled: keep the in-memory token */
+  }
+}
+
+let csrfToken: string | null = readCsrfStorage()
 
 export function setCsrf(token: string | null) {
   csrfToken = token
-  if (token) localStorage.setItem(CSRF_KEY, token)
-  else localStorage.removeItem(CSRF_KEY)
+  writeCsrfStorage(token)
 }
 
 export class ApiError extends Error {
@@ -86,6 +103,9 @@ export const api = {
 export async function fetchMe(): Promise<Me | null> {
   try {
     const me = await api.get<Me>('/api/v1/auth/me')
+    // GET /auth/me re-issues csrf_token so a surviving session cookie can
+    // recover after localStorage is cleared (login/register are the other writers).
+    if (me.csrf_token) setCsrf(me.csrf_token)
     return me
   } catch (e) {
     if (e instanceof ApiError && e.status === 401) return null

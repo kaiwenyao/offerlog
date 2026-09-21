@@ -272,7 +272,24 @@ export function viewIdFromParams(params: URLSearchParams): number {
 }
 
 /**
- * 拿掉搜索词 `q`，保留 view / layout。搜索 chip 的 × 应该只取消搜索，
+ * 回收站是导航状态（和 view / layout / q 一样）：不写进 URL 的话，F5 / 分享 /
+ * 前进后退都会从回收站掉回「全部机会」。
+ */
+export function trashModeFromParams(params: URLSearchParams): boolean {
+  const v = params.get('trash')
+  return v === '1' || v === 'true'
+}
+
+/**
+ * 回收站只有表格布局画了「恢复」按钮。看板 / 列表上的卡片没有入口，所以
+ * 进回收站时强制表格——布局 Tabs 也必须一起锁住，否则还能切回去。
+ */
+export function layoutForView(layout: Layout, trashMode: boolean): Layout {
+  return trashMode ? 'table' : layout
+}
+
+/**
+ * 拿掉搜索词 `q`，保留 view / layout / trash。搜索 chip 的 × 应该只取消搜索，
  * 不能把人从「已归档」踢回「全部机会」。
  */
 export function hrefWithoutSearch(search: string): string {
@@ -283,7 +300,7 @@ export function hrefWithoutSearch(search: string): string {
 }
 
 /**
- * 抽屉开/关只改 pathname，当前的 view / layout / q 留在 search 里。
+ * 抽屉开/关只改 pathname，当前的 view / layout / q / trash 留在 search 里。
  * 用同一条路由 `/database/:id?`，组件不会因为开抽屉而重挂。
  */
 export function databaseDrawerPath(appId: number | null, search = ''): { pathname: string; search: string } {

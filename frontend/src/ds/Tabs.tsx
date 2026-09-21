@@ -8,6 +8,7 @@ export interface TabsProps {
   onChange: (value: string) => void
   size?: 'sm' | 'md'
   fullWidth?: boolean
+  disabled?: boolean
   ariaLabel?: string
   style?: CSSProperties
 }
@@ -16,16 +17,18 @@ export interface TabsProps {
  * Segmented control in the Industry idiom: one hairline box divided by
  * hairlines, the active segment filled with the accent. No pills, no shadow.
  */
-export function Tabs({ items, value, onChange, size = 'md', fullWidth = false, ariaLabel, style }: TabsProps) {
+export function Tabs({ items, value, onChange, size = 'md', fullWidth = false, disabled = false, ariaLabel, style }: TabsProps) {
   const h = size === 'sm' ? 28 : 34
   return (
     <div
       role="tablist"
       aria-label={ariaLabel}
+      aria-disabled={disabled || undefined}
       style={{
         display: 'inline-flex',
         border: '1px solid var(--border)',
         width: fullWidth ? '100%' : undefined,
+        opacity: disabled ? 0.45 : undefined,
         ...style,
       }}
     >
@@ -39,6 +42,7 @@ export function Tabs({ items, value, onChange, size = 'md', fullWidth = false, a
             type="button"
             role="tab"
             aria-selected={on}
+            disabled={disabled}
             onClick={() => onChange(v)}
             style={{
               all: 'unset',
@@ -51,7 +55,7 @@ export function Tabs({ items, value, onChange, size = 'md', fullWidth = false, a
               fontWeight: 600,
               letterSpacing: '.04em',
               fontSize: size === 'sm' ? 12 : 13,
-              cursor: 'pointer',
+              cursor: disabled ? 'default' : 'pointer',
               background: on ? 'var(--accent)' : 'transparent',
               color: on ? 'var(--text-on-accent)' : 'var(--text)',
               borderLeft: i === 0 ? undefined : '1px solid var(--border)',

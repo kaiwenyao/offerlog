@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: |
     求职追踪系统后端契约（计划 §9）。所有业务端点位于 /api/v1 且要求会话；
-    写请求需携带 X-CSRF-Token（登录返回 csrf_token）。错误统一为
+    写请求需携带 X-CSRF-Token（登录或 GET /auth/me 返回 csrf_token）。错误统一为
     {code,message,request_id}。
 servers:
   - url: /api/v1
@@ -142,7 +142,9 @@ paths:
   /auth/logout:
     post: { summary: 注销 }
   /auth/me:
-    get: { summary: 当前用户 }
+    get:
+      summary: 当前用户
+      description: 会话有效时同时返回 csrf_token，供前端在 localStorage 丢失后补发。
     patch:
       summary: 更新当前账号显示名/时区（persist 到 users + 会话同步）
       requestBody:
