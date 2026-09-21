@@ -15,7 +15,7 @@ HTTP (gin, /api/v1)  →  应用服务（用例/事务/权限）  →  领域（
 - **activities**：面试轮次、行动项、备注（挂在 /applications/:id/...），另有 /actions 供“今日待办”。
 - **views**：自定义属性定义（JSONB）、筛选 DSL（校验→参数化 SQL，深 3/条件 30）、保存视图、排序分组。
 - **files**：上传流式 + MIME/SHA-256 校验 → staging key → promote → ready；仅 ready 可下载/关联；引用保护。
-- **analytics**：指标定义（§5.2）、桑基 A（当前快照三层守恒）、桑基 B（事件重建历史路径，防环、(step,status) 节点）、快照 token 下钻。
+- **analytics**：指标定义（§5.2）、桑基 A（未投递/已投递 + 实际走过的阶段链，终态挂在最后一程）、桑基 B（事件重建历史路径，防环、(step,status) 节点）、快照 token 下钻。
 - **transfers**：CSV 预检导入（映射/类型/重复候选/幂等提交）与导出（公式注入转义）。
 - **platform**：config、database(事务)、migrate（嵌入式版本化 SQL）、objectstore、jobs、httpx、observability。
 

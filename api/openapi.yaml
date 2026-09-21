@@ -391,7 +391,7 @@ paths:
     post: { summary: 指标（§5.2 口径） }
   /analytics/sankey:
     post:
-      summary: 桑基 A（当前快照）或 B（历史路径 mode=history）
+      summary: 桑基 A（当前进度：已投递按实际走过的阶段展开）或 B（历史路径 mode=history）
   /analytics/drilldowns/{token}:
     get: { summary: 快照下钻成员（过期返回 404） }
   /imports/preview:
