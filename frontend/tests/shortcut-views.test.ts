@@ -10,6 +10,7 @@ import {
   FOLLOW_UP_VIEW,
   SHORTCUT_VIEWS,
   WEEK_INTERVIEWS_VIEW,
+  appliedExtraFilters,
   archivedSearchHref,
   boardBuckets,
   buildFilters,
@@ -19,6 +20,7 @@ import {
   shouldOfferArchivedSearch,
   statusesForView,
   trashQueryPath,
+  workingSetQueryKeys,
 } from '../src/features/database/views'
 
 const ctx = { today: '2026-09-17', weekInterviewIds: [11, 42] }
@@ -227,5 +229,30 @@ describe('pruneSelection', () => {
     const out = pruneSelection(selected, page1)
     expect(out).not.toBe(selected)
     expect([...selected]).toEqual([1, 9])
+  })
+})
+
+describe('appliedExtraFilters: 回收站里快捷筛选不算已应用', () => {
+  const high: { field: string; op: string; value: string } = { field: 'priority', op: 'eq', value: 'high' }
+
+  it('passes chips through on the live list', () => {
+    expect(appliedExtraFilters(false, [high])).toEqual([high])
+  })
+
+  it('hides chips in the recycle bin so highlight and 「已应用 N 个条件」 cannot lie', () => {
+    expect(appliedExtraFilters(true, [high])).toEqual([])
+    expect(appliedExtraFilters(true, [])).toEqual([])
+  })
+
+  it('does not mutate the callers array', () => {
+    const extra = [high]
+    appliedExtraFilters(true, extra)
+    expect(extra).toEqual([high])
+  })
+})
+
+describe('workingSetQueryKeys: 侧栏计数跟列表一起失效', () => {
+  it('includes both the table cache and the sidebar badge cache', () => {
+    expect(workingSetQueryKeys()).toEqual([['apps'], ['home']])
   })
 })

@@ -47,6 +47,8 @@ import {
   isShortcutView,
   shouldOfferArchivedSearch,
   trashQueryPath,
+  appliedExtraFilters,
+  workingSetQueryKeys,
   type BoardBucket,
   type FilterContext,
   type FilterNode,
@@ -230,6 +232,9 @@ export function DatabasePage() {
     if (q !== null) setExtraFilters([])
     const trash = q !== null ? false : trashModeFromParams(params)
     setTrashMode(trash)
+    // 快捷筛选只喂给 /views/query。进回收站时必须一起清掉，否则 chip 保持高亮、
+    // 计数写着「已应用 N 个条件」，列表却完全不过滤。
+    if (trash) setExtraFilters([])
     const l = params.get('layout')
     if (l === 'board' || l === 'list' || l === 'table') setLayout(layoutForView(l, trash))
     else if (trash) setLayout('table')
@@ -372,7 +377,7 @@ export function DatabasePage() {
     mutationFn: (id: number) => api.post(`/api/v1/applications/${id}/restore`),
     onSuccess: () => {
       setActionErr('')
-      qc.invalidateQueries({ queryKey: ['apps'] })
+      for (const queryKey of workingSetQueryKeys()) qc.invalidateQueries({ queryKey: [...queryKey] })
     },
     onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '恢复失败，请重试'),
   })
@@ -381,7 +386,7 @@ export function DatabasePage() {
     mutationFn: (id: number) => api.post(`/api/v1/applications/${id}/unarchive`),
     onSuccess: () => {
       setActionErr('')
-      qc.invalidateQueries({ queryKey: ['apps'] })
+      for (const queryKey of workingSetQueryKeys()) qc.invalidateQueries({ queryKey: [...queryKey] })
     },
     onError: (e: unknown) => setActionErr(e instanceof ApiError ? e.message : '取消归档失败，请重试'),
   })
@@ -399,6 +404,11 @@ export function DatabasePage() {
   }
 
   const toggleQuickFilter = (cond: FilterNode) => {
+    // 快捷筛选不作用于回收站。点 chip 时退出回收站再应用，和点视图 chip 一样。
+    if (trashMode) {
+      setTrashMode(false)
+      writeParams({ trash: null })
+    }
     const key = JSON.stringify(cond)
     setExtraFilters((prev) =>
       prev.some((f) => JSON.stringify(f) === key) ? prev.filter((f) => JSON.stringify(f) !== key) : [...prev, cond],
@@ -406,12 +416,13 @@ export function DatabasePage() {
     setPage(1)
   }
 
-  const isFilterOn = (cond: FilterNode) => extraFilters.some((f) => JSON.stringify(f) === JSON.stringify(cond))
+  const shownExtraFilters = appliedExtraFilters(trashMode, extraFilters)
+  const isFilterOn = (cond: FilterNode) => shownExtraFilters.some((f) => JSON.stringify(f) === JSON.stringify(cond))
 
   // 空列表的说法必须对得上当前视图：在「本周面试」上说「还没有岗位记录」、或在
   // 回收站里让人「＋ 新增岗位」都是答非所问，而「名字与结果一致」正是这次修的东西。
   const emptyMessage =
-    search || extraFilters.length
+    search || shownExtraFilters.length
       ? '没有符合条件的记录'
       : trashMode
         ? '回收站是空的'
@@ -466,6 +477,7 @@ export function DatabasePage() {
             // 并且锁住布局 Tabs（单向切进去不够，之后还能再切走）。
             // trash 是导航状态：写进 URL，刷新 / 分享 / 前进后退才不会丢。
             if (entering) {
+              setExtraFilters([])
               setLayout('table')
               writeParams({ trash: '1', layout: 'table' })
             } else {
@@ -504,10 +516,10 @@ export function DatabasePage() {
           </span>
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
             共 <Num color="var(--text)">{total}</Num> 条
-            {extraFilters.length > 0 && (
+            {shownExtraFilters.length > 0 && (
               <>
                 {' '}
-                · 已应用 <Num color="var(--text)">{extraFilters.length}</Num> 个条件
+                · 已应用 <Num color="var(--text)">{shownExtraFilters.length}</Num> 个条件
               </>
             )}
           </span>
@@ -1133,10 +1145,7 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
       submitted_at?: string
     }) => api.post('/api/v1/applications', b),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['apps'] })
-      // 侧栏「求职数据库」徽标读的是 ['home']，不是 ['apps']。layout 常驻且
-      // refetchOnWindowFocus 关着，不失效这块缓存的话计数会一直停在旧值。
-      qc.invalidateQueries({ queryKey: ['home'] })
+      for (const queryKey of workingSetQueryKeys()) qc.invalidateQueries({ queryKey: [...queryKey] })
       onCreated()
     },
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '创建失败'),

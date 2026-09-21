@@ -459,7 +459,7 @@ func (r *Repo) Get(ctx context.Context, ownerID int64, tz string, weekStartDay t
 
 	// Recent activity feed (active rows, updated desc).
 	recent, err := q.Query(ctx, `SELECT id, company_name, position, status, next_action, updated_at
-		FROM applications WHERE owner_id=$1 AND deleted_at IS NULL
+		FROM applications WHERE owner_id=$1 AND deleted_at IS NULL AND archived_at IS NULL
 		ORDER BY updated_at DESC, id DESC LIMIT 6`, ownerID)
 	if err != nil {
 		return nil, err

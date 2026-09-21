@@ -121,34 +121,20 @@ export function ActionForm({ app, onClose, onDone }: { app: AppRow; onClose: () 
   const [err, setErr] = useState('')
 
   const mut = useMutation({
-    mutationFn: async () => {
+    mutationFn: () => {
       // The standalone action is the source of truth for the unified todo
-      // list (§5.3). Creating one also mirrors it onto the application's
-      // legacy next_action fields so older surfaces (table column, list
-      // view) stay in sync; completing/undoing happens on the action row.
+      // list (§5.3). POST /actions 在同一事务里把岗位行的 next_action 镜像
+      // 重写成「最早的未完成待办」。这里曾经有一段前端补偿：无条件把刚建的
+      // 这条写回镜像，于是更早到期的逾期待办从表格「下一步 / 截止」上消失。
       //
       // due_date is a calendar day: send it as the plain YYYY-MM-DD string
       // (never a browser-local-midnight instant — that shifts the stored day
       // for non-UTC users). The backend stores it in a DATE column.
-      const created = await api.post<{ id: number }>(`/api/v1/applications/${app.id}/actions`, {
+      return api.post<{ id: number }>(`/api/v1/applications/${app.id}/actions`, {
         title: title.trim(),
         due_date: due || null,
         priority: app.priority,
       })
-      // Mirror onto the row (best-effort; the action is authoritative).
-      try {
-        const fresh = await api.get<AppRow>(`/api/v1/applications/${app.id}`)
-        await api.patch(`/api/v1/applications/${app.id}`, {
-          version: fresh.version,
-          next_action: title.trim() || null,
-          // 空串才是「清空」：JSON null 在后端等于「这个字段没传」，会把上一条
-          // 待办留下的旧截止日原样留在岗位行上。
-          next_action_due_at: due,
-        })
-      } catch {
-        /* the standalone action still exists — surface stays consistent via it */
-      }
-      return created
     },
     onSuccess: onDone,
     onError: (e: unknown) => setErr(e instanceof ApiError ? e.message : '保存失败'),

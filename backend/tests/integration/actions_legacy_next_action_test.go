@@ -124,4 +124,63 @@ func TestCompletingOnlyActionClearsLegacyNextAction(t *testing.T) {
 	}
 }
 
+func postAppAction(t *testing.T, srvURL string, appID int64, body string) int {
+	t.Helper()
+	req, _ := http.NewRequest("POST", srvURL+"/api/v1/applications/"+itoa(appID)+"/actions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	return res.StatusCode
+}
+
+func TestCreateActionKeepsEarliestOpenAsMirror(t *testing.T) {
+	// 原始 bug：POST /applications/:id/actions 不调 SyncNextActionMirror，前端
+	// 再无条件把刚建的这条写回镜像。已有一条 09/15 逾期待办时再加 12/31 的，
+	// 表格「下一步 / 截止」就指向更晚那条，逾期红字消失。
+	db, svc, _, owner := setup(t)
+	ctx := context.Background()
+	app := mustCreate(t, svc, owner, "Meituan", "Role")
+	insertAction(t, db, app.ID, owner, "比较美团 offer 细节", ptr("2026-09-15"))
+	if _, err := db.Pool().Exec(ctx,
+		`UPDATE applications SET next_action='比较美团 offer 细节', next_action_due_at='2026-09-15' WHERE id=$1`, app.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newFullActivityServer(t, db, owner)
+	defer srv.Close()
+
+	if status := postAppAction(t, srv.URL, app.ID, `{"title":"测试：更晚的待办","due_date":"2026-12-31"}`); status != http.StatusCreated {
+		t.Fatalf("create later action -> %d, want 201", status)
+	}
+	action, due := legacyMirror(t, db, app.ID)
+	if action != "比较美团 offer 细节" {
+		t.Fatalf("mirror title = %q, want the earliest open todo", action)
+	}
+	if due == nil || *due != "2026-09-15" {
+		t.Fatalf("mirror due = %v, want 2026-09-15", due)
+	}
+}
+
+func TestCreateFirstActionWritesMirror(t *testing.T) {
+	// 前端补偿删掉之后，第一条待办也必须由后端把镜像写上，否则表格「下一步」空白。
+	db, svc, _, owner := setup(t)
+	app := mustCreate(t, svc, owner, "FirstTodoCo", "Role")
+	srv := newFullActivityServer(t, db, owner)
+	defer srv.Close()
+
+	if status := postAppAction(t, srv.URL, app.ID, `{"title":"跟进 HR","due_date":"2026-09-30"}`); status != http.StatusCreated {
+		t.Fatalf("create first action -> %d, want 201", status)
+	}
+	action, due := legacyMirror(t, db, app.ID)
+	if action != "跟进 HR" {
+		t.Fatalf("first action should write the mirror, got %q", action)
+	}
+	if due == nil || *due != "2026-09-30" {
+		t.Fatalf("first action due = %v, want 2026-09-30", due)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }

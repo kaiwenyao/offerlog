@@ -544,7 +544,7 @@ function ActivityFeed({ rows, onOpen }: { rows: HomeSummary['recent']; onOpen: (
             <span style={{ marginTop: 5 }}>
               <Dot color={statusMeta(r.status).dot} />
             </span>
-            <span className="grow" style={{ fontSize: 13, lineHeight: 1.45, textAlign: 'left' }}>
+            <span className="grow ellipsis" style={{ fontSize: 13, lineHeight: 1.45, textAlign: 'left' }}>
               {r.company_name} · {statusMeta(r.status).label}
               {r.next_action ? ` — ${r.next_action}` : ''}
             </span>
