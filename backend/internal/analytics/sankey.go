@@ -41,23 +41,23 @@ type Sankey struct {
 // interviewing legitimately carry no submitted_at but are past 未投递.
 //
 // v3: the submitted branch is no longer a flat split by current status.
-// Each submitted row walks the process stages it actually reached (from
-// application_stage_points), then hangs a terminal outcome off the last
-// stage — so 「笔试后被拒」flows through 笔试作业 instead of collapsing
-// onto 已投递 → 被拒绝. Skipped stages are not invented.
+// Each submitted row walks later process stages it actually reached
+// (笔试 / 初筛 / 面试 / Offer), then hangs a terminal off the last stage —
+// so 「笔试后被拒」flows through 笔试作业. 已投递 itself is the waiting
+// column (applied / 准备材料回退 stay there as residual). Skipped stages
+// and still_<status> leaves are not invented.
 const DefinitionVersion = 3
 
 // SankeyA builds the "current progress" graph:
 //
-//	全部机会 → 已投递 / 未投递 → 已投递按实际走过的阶段展开 → 终态挂在链尾
+//	全部机会 → 已投递 / 未投递 → 已投递按实际走过的后段展开 → 终态挂在链尾
 //
-// Every application is a leaf exactly once (未投递, still_<status>, or a
-// terminal). The middle layer reuses the
-// 待投递 metric definition verbatim (toApplyFactSQL in repo.go): 未投递 =
-// still saved/preparing with neither a submission nor a response fact.
-// Records past the preparing phase ride the submitted branch even when
-// submitted_at is NULL (内推 / 猎头直接约面 rows legitimately carry no
-// submitted_at). 未投递 is a leaf — only the submitted branch expands.
+// People still waiting after submit sit on 已投递 (inflow > outflow). The
+// middle layer reuses the 待投递 metric definition verbatim (toApplyFactSQL
+// in repo.go): 未投递 = still saved/preparing with neither a submission nor
+// a response fact. Records past the preparing phase ride the submitted
+// branch even when submitted_at is NULL (内推 / 猎头直接约面). 未投递 is a
+// leaf — only the submitted branch expands.
 func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, error) {
 	where, args := r.whereClause(req)
 	rows, err := r.db.Pool().Query(ctx, `SELECT id, status,
@@ -126,12 +126,6 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 			linkCount[[2]string{prev, next}]++
 			prev = next
 		}
-		// In-progress rows need their own leaf. Sharing s_assessment between
-		// "still in OA" and "OA → rejected" would leave the former as residual
-		// inflow: no detail-table row, and leaf inflow < cohort (review P1).
-		if len(path) > 0 && !domain.IsTerminal(a.status) {
-			linkCount[[2]string{prev, stillNodeName(path[len(path)-1])}]++
-		}
 	}
 
 	nodes := []Node{
@@ -176,21 +170,18 @@ func (r *Repo) SankeyA(ctx context.Context, req *SnapshotRequest) (*Sankey, erro
 		Nodes: nodes, Links: links, CohortCount: cohort,
 		AsOf: now.UTC().Format(time.RFC3339), DefinitionVersion: DefinitionVersion,
 		Mode:  "current",
-		Notes: "当前快照：全部机会先分为已投递 / 未投递（与「待投递」指标同口径）；已投递按实际走过的招聘阶段展开，终态挂在最后一程，仍在该阶段接到「当前：…」叶子。未走过的阶段不出现。未投递不再细分。",
+		Notes: "当前快照：全部机会先分为已投递 / 未投递（与「待投递」指标同口径）；已投递即等待反馈，后续只展开真正走过的笔试 / 初筛 / 面试 / Offer，终态挂在最后一程。未走过的阶段不出现。未投递不再细分。",
 	}, nil
 }
 
-// pipelineProcessRank is the current-progress column order. Matches
-// domain.flowOrder minus 建档 saved (always dropped — it is the create
-// event, not a recruiting stage) and accepted (a sink, not a column).
-// Rank-order edges are a DAG, so ECharts cannot see 面试 → 初筛 → 面试.
+// pipelineProcessRank is the current-progress column order after 已投递.
+// saved / preparing / applied are absorbed into the submitted node;
+// accepted is a sink. Rank-order edges are a DAG.
 var pipelineProcessRank = map[string]int{
-	domain.StatusPreparing:    1,
-	domain.StatusApplied:      2,
-	domain.StatusAssessment:   3,
-	domain.StatusScreening:    4,
-	domain.StatusInterviewing: 5,
-	domain.StatusOffer:        6,
+	domain.StatusAssessment:   1,
+	domain.StatusScreening:    2,
+	domain.StatusInterviewing: 3,
+	domain.StatusOffer:        4,
 }
 
 func happened(now time.Time, occurred *time.Time) bool {
@@ -230,8 +221,9 @@ func (r *Repo) happenedStagesFor(ctx context.Context, ids []int64, now time.Time
 }
 
 // currentProgressPath turns one application's happened statuses into the
-// submitted-branch walk: unique process stages in pipeline order, then the
-// current terminal (if any). In-progress rows stop at the current stage
+// walk after 已投递: unique later process stages in pipeline order, then
+// the current terminal (if any). applied / preparing / saved never become
+// their own nodes. In-progress rows stop at the current later stage
 // (later-rank visits from a rollback are dropped — those belong on 历史路径).
 func currentProgressPath(stages []string, current string) []string {
 	seen := map[string]bool{}
@@ -242,9 +234,6 @@ func currentProgressPath(stages []string, current string) []string {
 			continue
 		}
 		prev = st
-		if st == domain.StatusSaved {
-			continue
-		}
 		if _, ok := pipelineProcessRank[st]; !ok {
 			continue
 		}
@@ -267,13 +256,8 @@ func currentProgressPath(stages []string, current string) []string {
 
 	maxRank, ok := pipelineProcessRank[current]
 	if !ok {
-		if len(process) == 0 {
-			if current == "" {
-				return nil
-			}
-			return []string{current}
-		}
-		return process
+		// still at 已投递 / 准备材料: no later-stage columns
+		return nil
 	}
 	var out []string
 	for _, st := range process {
@@ -287,52 +271,19 @@ func currentProgressPath(stages []string, current string) []string {
 			return pipelineProcessRank[out[i]] < pipelineProcessRank[out[j]]
 		})
 	}
-	if len(out) == 0 {
-		return []string{current}
-	}
 	return out
 }
 
-const stillPrefix = "still_"
-
-func stillNodeName(st string) string { return stillPrefix + st }
-
-func statusFromNode(name string) string {
-	if strings.HasPrefix(name, stillPrefix) {
-		return strings.TrimPrefix(name, stillPrefix)
-	}
-	return strings.TrimPrefix(name, "s_")
-}
-
-func stageLabel(st string) string {
+func stageNode(name string) Node {
+	st := strings.TrimPrefix(name, "s_")
 	label := StatusName[st]
 	if label == "" {
 		label = st
-	}
-	// 已投递 → 已投递 reads like a self-loop; disambiguate the plain
-	// applied status under the submitted branch.
-	if st == domain.StatusApplied {
-		label = "已投递 · 等待反馈"
-	}
-	return label
-}
-
-func stageNode(name string) Node {
-	label := stageLabel(statusFromNode(name))
-	if strings.HasPrefix(name, stillPrefix) {
-		label = "当前：" + label
 	}
 	return Node{Name: name, Label: label}
 }
 
 func stageSortKey(name string) int {
-	if strings.HasPrefix(name, stillPrefix) {
-		st := strings.TrimPrefix(name, stillPrefix)
-		if r, ok := pipelineProcessRank[st]; ok {
-			return 30 + r
-		}
-		return 40
-	}
 	st := strings.TrimPrefix(name, "s_")
 	if r, ok := pipelineProcessRank[st]; ok {
 		return r
