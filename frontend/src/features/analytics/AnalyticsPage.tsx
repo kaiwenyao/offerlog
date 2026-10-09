@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import * as echarts from 'echarts'
 import { api, fmtDate } from '../../lib/api'
+import { resolve } from '../../lib/tokens'
 import type { ChannelRow, Metrics, SankeyData } from '../../lib/types'
 import { Button, Card, PanelTitle, Tabs } from '../../ds'
 import { ErrorText, Num, PageSpinner, Spinner } from '../../components/ui'
+import { HeatmapPanel } from './HeatmapPanel'
 
 type SankeyMode = 'current' | 'history'
 
@@ -13,13 +15,6 @@ type SankeyMode = 'current' | 'history'
 const FLOW_BLUE = 'var(--info)'
 const DROPPED = 'var(--neutral-400)'
 const GOOD = 'var(--positive)'
-
-/** echarts paints to canvas, where var() does not resolve — read the token. */
-function resolve(color: string): string {
-  if (!color.startsWith('var(')) return color
-  const v = getComputedStyle(document.documentElement).getPropertyValue(color.slice(4, -1)).trim()
-  return v || color
-}
 
 const NODE_COLORS: Record<string, string> = {
   all: 'var(--accent)',
@@ -87,6 +82,9 @@ export function AnalyticsPage() {
       ) : metrics ? (
         <MetricGrid metrics={metrics} />
       ) : null}
+
+      {/* 热力图放在指标卡和桑基图之间（方案 §4.1）：先看总量，再看每天做了什么。 */}
+      <HeatmapPanel />
 
       <SankeyPanel
         mode={mode}

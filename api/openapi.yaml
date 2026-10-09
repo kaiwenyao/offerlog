@@ -394,6 +394,44 @@ paths:
       summary: 桑基 A（当前进度：已投递按实际走过的阶段展开）或 B（历史路径 mode=history）
   /analytics/drilldowns/{token}:
     get: { summary: 快照下钻成员（过期返回 404） }
+  /analytics/heatmap:
+    get:
+      summary: 投递热力图（按用户时区把 submitted_at 切天计数；已归档计入、回收站不计；无投递日期的单独返回 undated）
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+          description: 起始日（YYYY-MM-DD，用户时区，闭区间）；缺省时为 to 往前 364 天（to 也缺省则 to=今天）
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+          description: 结束日（YYYY-MM-DD，用户时区，闭区间）；只给 from 时为 from 往后 364 天，两者都缺省时为用户时区的今天
+      responses:
+        '200':
+          description: 只返回有投递的日期；补零与连续天数由前端负责
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timezone: { type: string, description: 与 users.timezone 一致（经 SafeLocation 校正） }
+                  from: { type: string, format: date }
+                  to: { type: string, format: date }
+                  today: { type: string, format: date, description: 服务端按用户时区算好的今天，前端算连续天数用它 }
+                  days:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: { type: string, format: date }
+                        count: { type: integer }
+                  total: { type: integer }
+                  undated: { type: integer, description: 没有 submitted_at 但确实进入过招聘流程（有回复或走过初筛及之后的阶段）的记录（内推 / 猎头免投递）；不随 from/to 变化 }
+                  years:
+                    type: array
+                    items: { type: integer }
+                    description: 有投递记录的年份，供年份切换器使用
+        '400': { description: from > to、跨度超过 366 天或日期格式错误 }
   /imports/preview:
     post: { summary: CSV 预检（映射/类型错误/重复候选） }
   /imports/{batch_id}/commit:
