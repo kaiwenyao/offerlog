@@ -138,7 +138,25 @@ spec:
     stages {
         stage('1. Pull Code') {
             steps {
-                checkout scm
+                script {
+                    // skipDefaultCheckout() + an explicit `checkout scm` does NOT
+                    // reliably export GIT_COMMIT into env — main build #51 died
+                    // in the image stage with an empty GIT_COMMIT. Take the
+                    // revision from checkout's own return value instead, and if
+                    // that is empty too, ask git directly — in the jnlp container,
+                    // which always ships git. safe.directory is passed inline
+                    // because the workspace may be owned by another container's
+                    // uid, and git would otherwise refuse the repo.
+                    def scmVars = checkout scm
+                    def commit = (scmVars?.GIT_COMMIT ?: '').trim()
+                    if (!(commit ==~ /^[0-9a-f]{40}$/)) {
+                        container('jnlp') {
+                            commit = sh(script: "git -c safe.directory='*' rev-parse HEAD", returnStdout: true).trim()
+                        }
+                    }
+                    env.BUILD_COMMIT = commit
+                    echo "Building commit ${env.BUILD_COMMIT}"
+                }
             }
         }
 
@@ -304,9 +322,10 @@ spec:
                         // write:packages). Tag = commit short SHA — immutable,
                         // no `latest`.
                         withCredentials([usernamePassword(credentialsId: 'ghcr-token', usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_PASS')]) {
-                            def gitCommit = (env.GIT_COMMIT ?: '').trim()
+                            // Resolved in stage 1 (see there for why not env.GIT_COMMIT).
+                            def gitCommit = (env.BUILD_COMMIT ?: '').trim()
                             if (!(gitCommit ==~ /^[0-9a-f]{7,40}$/)) {
-                                error("GIT_COMMIT is missing or invalid (got: ${gitCommit})")
+                                error("BUILD_COMMIT is missing or invalid (got: ${gitCommit})")
                             }
                             env.FULL_IMAGE = "ghcr.io/${env.GHCR_USER.toLowerCase()}/offerlog-web:${gitCommit.take(7)}"
                             echo "Pushing ${env.FULL_IMAGE}"
