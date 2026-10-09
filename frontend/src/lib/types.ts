@@ -257,13 +257,18 @@ export interface SankeyData {
 // 看到，不改变那天确实投过）。`days` 只包含有投递的日期，补零与连续天数由前端
 // frontend/src/features/analytics/heatmap.ts 负责。`undated` 是没有 submitted_at
 // 但已进入流程的记录（内推 / 猎头免投递）。
+export interface HeatmapDay {
+  date: string // YYYY-MM-DD，用户时区
+  count: number
+}
+
 export interface HeatmapData {
   timezone: string
   from: string
   to: string
   /** 服务端按用户时区算好的今天；连续天数用它，不看浏览器时区。 */
   today: string
-  days: Array<{ date: string; count: number }>
+  days: HeatmapDay[]
   total: number
   undated: number
   /** 有投递记录的年份，供年份切换器使用。 */

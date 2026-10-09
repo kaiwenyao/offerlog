@@ -16,9 +16,6 @@ const FLOW_BLUE = 'var(--info)'
 const DROPPED = 'var(--neutral-400)'
 const GOOD = 'var(--positive)'
 
-/** echarts paints to canvas, where var() does not resolve — the shared
-    helper lives in lib/tokens (also used by HeatmapPanel). */
-
 const NODE_COLORS: Record<string, string> = {
   all: 'var(--accent)',
   submitted: FLOW_BLUE,

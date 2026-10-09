@@ -84,7 +84,6 @@ describe('fillDays', () => {
 describe('heatmapStats', () => {
   it('is all zeros for empty data', () => {
     expect(heatmapStats([], '2026-10-09')).toEqual({
-      total: 0,
       activeDays: 0,
       maxDay: 0,
       currentStreak: 0,
@@ -102,7 +101,6 @@ describe('heatmapStats', () => {
     const s = heatmapStats(days, '2026-10-09')
     expect(s.currentStreak).toBe(3)
     expect(s.longestStreak).toBe(3)
-    expect(s.total).toBe(6)
     expect(s.activeDays).toBe(3)
     expect(s.maxDay).toBe(3)
   })
@@ -144,13 +142,12 @@ describe('heatmapStats', () => {
     expect(s.maxDay).toBe(9)
     // count=0 的日期不算「活跃」。
     expect(s.activeDays).toBe(6)
-    expect(s.total).toBe(14)
     // 今天（01-21）当天是 0，但昨天 01-20 有投 → 连续 1 天，不算断。
     expect(s.currentStreak).toBe(1)
   })
 
   it('ignores unparseable dates rather than corrupting the streak', () => {
     const s = heatmapStats([{ date: 'not-a-day', count: 5 }], '2026-10-09')
-    expect(s).toEqual({ total: 0, activeDays: 0, maxDay: 0, currentStreak: 0, longestStreak: 0 })
+    expect(s).toEqual({ activeDays: 0, maxDay: 0, currentStreak: 0, longestStreak: 0 })
   })
 })

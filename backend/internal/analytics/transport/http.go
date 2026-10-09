@@ -179,8 +179,8 @@ func (h *Handler) overview(c *gin.Context) {
 // heatmap returns the 投递热力图 payload (docs/投递热力图方案.md §3.1).
 //
 // from/to are date-only (YYYY-MM-DD) calendar days in the USER'S timezone,
-// closed interval; each is independently optional and defaults to a 365-day
-// window ending on 用户时区的今天. 今天 is resolved server-side so the frontend's
+// closed interval. With neither given the window is the 365 days ending on
+// 用户时区的今天; with only one given, the other is that bound ± 364 days. 今天 is resolved server-side so the frontend's
 // 当前连续天数 never depends on the browser timezone.
 func (h *Handler) heatmap(c *gin.Context) {
 	user := httpx.UserFrom(c)
@@ -191,23 +191,33 @@ func (h *Handler) heatmap(c *gin.Context) {
 		httpx.WriteErr(c, err)
 		return
 	}
-	from := today.AddDate(0, 0, -(defaultHeatmapDays - 1))
-	to := today
-	if s := c.Query("from"); s != "" {
-		t, err := day.Parse(s)
-		if err != nil {
+	var from, to time.Time
+	fromStr, toStr := c.Query("from"), c.Query("to")
+	if fromStr != "" {
+		if from, err = day.Parse(fromStr); err != nil {
 			httpx.WriteErr(c, httpx.BadRequest("invalid_from", err.Error()))
 			return
 		}
-		from = t
 	}
-	if s := c.Query("to"); s != "" {
-		t, err := day.Parse(s)
-		if err != nil {
+	if toStr != "" {
+		if to, err = day.Parse(toStr); err != nil {
 			httpx.WriteErr(c, httpx.BadRequest("invalid_to", err.Error()))
 			return
 		}
-		to = t
+	}
+	// A missing bound is anchored to the bound that WAS given, not to today:
+	// `?to=2025-06-30` alone means the year ending that day, and `?from=2024-01-01`
+	// alone the year starting that day — never a window that is inverted or
+	// wider than 366 days just because today is far away.
+	span := defaultHeatmapDays - 1
+	switch {
+	case fromStr == "" && toStr == "":
+		to = today
+		from = today.AddDate(0, 0, -span)
+	case fromStr == "":
+		from = to.AddDate(0, 0, -span)
+	case toStr == "":
+		to = from.AddDate(0, 0, span)
 	}
 	if from.After(to) {
 		httpx.WriteErr(c, httpx.BadRequest("invalid_range", "from 不能晚于 to"))

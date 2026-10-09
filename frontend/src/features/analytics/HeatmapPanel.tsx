@@ -45,8 +45,13 @@ export function HeatmapPanel() {
           ? '/api/v1/analytics/heatmap'
           : `/api/v1/analytics/heatmap?from=${range}-01-01&to=${range}-12-31`,
       ),
+    // 切换年份时先留着上一份数据：否则 data 变成 undefined，年份选项（来自
+    // data.years）缩成只剩「最近一年」，受控的 <select> 找不到当前值。
+    placeholderData: (prev) => prev,
   })
   const data = q.data
+  // 首次加载或正在换范围（画的还是上一份数据）都算「在等」。
+  const busy = q.isLoading || q.isPlaceholderData
 
   const filled = useMemo(() => (data ? fillDays(data.days, data.from, data.to) : []), [data])
   const stats = useMemo(() => (data ? heatmapStats(data.days, data.today) : null), [data])
@@ -110,7 +115,13 @@ export function HeatmapPanel() {
   useEffect(() => () => chart.current?.dispose(), [])
 
   const years = data?.years ?? []
-  const scopeLabel = range === RECENT ? '最近一年' : `${range} 年`
+  // 文案跟着「画出来的那份数据」走，而不是跟着下拉框：换范围的请求还在路上时，
+  // 图和数字仍是上一份，标签不能先变。
+  const scopeLabel = data ? labelForWindow(data.from, data.to) : range === RECENT ? '最近一年' : `${range} 年`
+  // 「当前连续」只在窗口包含今天时有意义；看往年时换成那一年的最长连续。
+  const showsToday = !!data && data.from <= data.today && data.today <= data.to
+  const streakLabel = showsToday ? '当前连续' : '最长连续'
+  const streakValue = stats ? (showsToday ? stats.currentStreak : stats.longestStreak) : 0
 
   return (
     <Card padding="18px">
@@ -144,10 +155,10 @@ export function HeatmapPanel() {
 
       {stats && data && data.total > 0 && (
         <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-          {scopeLabel}投递 <Num color="var(--text)">{stats.total}</Num> 个 · 活跃{' '}
+          {scopeLabel}投递 <Num color="var(--text)">{data.total}</Num> 个 · 活跃{' '}
           <Num color="var(--text)">{stats.activeDays}</Num> 天 · 单日最多{' '}
-          <Num color="var(--text)">{stats.maxDay}</Num> · 当前连续{' '}
-          <Num color="var(--text)">{stats.currentStreak}</Num> 天
+          <Num color="var(--text)">{stats.maxDay}</Num> · {streakLabel}{' '}
+          <Num color="var(--text)">{streakValue}</Num> 天
         </p>
       )}
 
@@ -163,8 +174,8 @@ export function HeatmapPanel() {
                 style={{ width: '100%', height: CANVAS_H }}
                 role="img"
                 aria-label={
-                  stats
-                    ? `${scopeLabel}投递热力图：投递 ${stats.total} 个，活跃 ${stats.activeDays} 天，单日最多 ${stats.maxDay} 个，当前连续 ${stats.currentStreak} 天`
+                  stats && data
+                    ? `${scopeLabel}投递热力图：投递 ${data.total} 个，活跃 ${stats.activeDays} 天，单日最多 ${stats.maxDay} 个，${streakLabel} ${streakValue} 天`
                     : '投递热力图'
                 }
               />
@@ -172,7 +183,7 @@ export function HeatmapPanel() {
           </div>
         )}
 
-        {data && data.total === 0 && !q.isLoading && (
+        {data && data.total === 0 && !busy && (
           <div
             style={{
               border: '1px dashed var(--border)',
@@ -186,14 +197,14 @@ export function HeatmapPanel() {
           </div>
         )}
 
-        {q.isLoading && (
+        {busy && (
           <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center' }}>
             <Spinner size={22} />
           </div>
         )}
 
         {/* 图挂掉时必须说出来，不能留一块空白（沿用桑基图的写法）。 */}
-        {!q.isLoading && q.isError && (
+        {!busy && q.isError && (
           <div
             style={{
               position: 'absolute',
@@ -253,6 +264,12 @@ export function HeatmapPanel() {
       )}
     </Card>
   )
+}
+
+/** 自然年窗口显示「2025 年」，其余（缺省的滚动窗口）显示「最近一年」。 */
+function labelForWindow(from: string, to: string): string {
+  const y = from.slice(0, 4)
+  return from === `${y}-01-01` && to === `${y}-12-31` ? `${y} 年` : '最近一年'
 }
 
 function buildOption(

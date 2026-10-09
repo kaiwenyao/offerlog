@@ -6,13 +6,12 @@
 // 直接退到 10-08）。「今天」也由服务端按用户时区算好传进来（`today`），所以
 // 连续天数的口径不随浏览器时区漂移。
 
-export interface HeatmapDay {
-  date: string
-  count: number
-}
+import type { HeatmapDay } from '../../lib/types'
 
+export type { HeatmapDay }
+
+/** 总数不在这里算：响应里已经有 `total`，面板只用那一个。 */
 export interface HeatmapStats {
-  total: number
   activeDays: number
   maxDay: number
   currentStreak: number
@@ -123,10 +122,8 @@ export function heatmapStats(days: HeatmapDay[], today: string): HeatmapStats {
     counts.set(d.date, (counts.get(d.date) ?? 0) + d.count)
   }
 
-  let total = 0
   let maxDay = 0
   for (const n of counts.values()) {
-    total += n
     if (n > maxDay) maxDay = n
   }
 
@@ -150,5 +147,5 @@ export function heatmapStats(days: HeatmapDay[], today: string): HeatmapStats {
     }
   }
 
-  return { total, activeDays: counts.size, maxDay, currentStreak, longestStreak }
+  return { activeDays: counts.size, maxDay, currentStreak, longestStreak }
 }

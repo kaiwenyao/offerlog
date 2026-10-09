@@ -150,6 +150,17 @@ func TestHeatmapUndatedCountsPipelineRowsOnly(t *testing.T) {
 		t.Fatalf("no-formal-submission transition: %v", err)
 	}
 
+	// 收藏后直接关闭 / 放弃、从没投出去：也没有 submitted_at，但不是「免投递」，
+	// 不能被算进 undated（那样面板会把它说成内推 / 猎头）。
+	for _, to := range []string{"closed", "withdrawn"} {
+		gaveUp := mustCreate(t, svc, owner, "GaveUp-"+to, "岗位")
+		if _, err := svc.Transition(ctx, owner, gaveUp.ID, &appservice.TransitionInput{
+			ToStatus: to, Reason: "没投就不考虑了", Version: 1,
+		}); err != nil {
+			t.Fatalf("saved -> %s: %v", to, err)
+		}
+	}
+
 	from, to := heatmapWindow(t)
 	h, err := repo.Heatmap(ctx, owner, "UTC", from, to)
 	if err != nil {
@@ -159,7 +170,7 @@ func TestHeatmapUndatedCountsPipelineRowsOnly(t *testing.T) {
 		t.Fatalf("days = %+v total = %d, want none (no submitted_at anywhere)", h.Days, h.Total)
 	}
 	if h.Undated != 1 {
-		t.Fatalf("undated = %d, want 1 (interviewing row with no submitted_at)", h.Undated)
+		t.Fatalf("undated = %d, want 1 (only the interviewing row; never-sent closed/withdrawn rows excluded)", h.Undated)
 	}
 }
 
@@ -312,8 +323,14 @@ func TestHeatmapHTTPValidationAndDefaults(t *testing.T) {
 		t.Fatalf("default span = %d days, want 365 (53 week columns)", days)
 	}
 
-	// An open-ended window is accepted: one bound may be given on its own.
-	if code, _ := get("?from=2026-10-01"); code != http.StatusOK {
-		t.Fatalf("from-only -> %d, want 200", code)
+	// One bound on its own anchors the other to IT, not to today: a window far
+	// from today must be neither inverted nor wider than 366 days.
+	code, fo := get("?from=2024-01-01")
+	if code != http.StatusOK || fo.From != "2024-01-01" || fo.To != "2024-12-30" {
+		t.Fatalf("from-only -> %d %s..%s, want 200 2024-01-01..2024-12-30", code, fo.From, fo.To)
+	}
+	code, to := get("?to=2025-06-30")
+	if code != http.StatusOK || to.From != "2024-07-01" || to.To != "2025-06-30" {
+		t.Fatalf("to-only -> %d %s..%s, want 200 2024-07-01..2025-06-30", code, to.From, to.To)
 	}
 }

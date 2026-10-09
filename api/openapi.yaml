@@ -401,11 +401,11 @@ paths:
         - name: from
           in: query
           schema: { type: string, format: date }
-          description: 起始日（YYYY-MM-DD，用户时区，闭区间）；缺省为今天往前 364 天
+          description: 起始日（YYYY-MM-DD，用户时区，闭区间）；缺省时为 to 往前 364 天（to 也缺省则 to=今天）
         - name: to
           in: query
           schema: { type: string, format: date }
-          description: 结束日（YYYY-MM-DD，用户时区，闭区间）；缺省为用户时区的今天
+          description: 结束日（YYYY-MM-DD，用户时区，闭区间）；只给 from 时为 from 往后 364 天，两者都缺省时为用户时区的今天
       responses:
         '200':
           description: 只返回有投递的日期；补零与连续天数由前端负责
@@ -426,7 +426,7 @@ paths:
                         date: { type: string, format: date }
                         count: { type: integer }
                   total: { type: integer }
-                  undated: { type: integer, description: 已进入流程但没有 submitted_at 的记录（内推 / 猎头免投递） }
+                  undated: { type: integer, description: 没有 submitted_at 但确实进入过招聘流程（有回复或走过初筛及之后的阶段）的记录（内推 / 猎头免投递）；不随 from/to 变化 }
                   years:
                     type: array
                     items: { type: integer }

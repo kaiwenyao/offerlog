@@ -42,6 +42,13 @@ type Heatmap struct {
 	Years    []int        `json:"years"` // 有投递记录的年份，供年份切换器使用（避免点开空年份）
 }
 
+// enteredPipelineSQL: the row reached the employer even without a submission
+// fact — it holds a response, or the timeline has a point at 初筛 or later.
+// 已拒 counts (a rejection means the employer saw it); 撤回 / 关闭 alone do not.
+const enteredPipelineSQL = `first_response_at IS NOT NULL OR EXISTS (SELECT 1 FROM application_stage_points p
+	WHERE p.application_id = applications.id
+	  AND p.status IN ('screening','assessment','interviewing','offer','accepted','rejected'))`
+
 // Heatmap buckets submissions into user-timezone calendar days in [from, to]
 // (inclusive, date-only values at UTC midnight per the day package).
 //
@@ -91,35 +98,29 @@ func (r *Repo) Heatmap(ctx context.Context, ownerID int64, tz string, from, to t
 		return nil, err
 	}
 
+	// Years and Undated don't depend on the window, so they share one pass
+	// over the owner's rows instead of two extra round trips.
+	//
 	// Years spans ALL submissions (not just the requested window) so the year
 	// switcher can offer every year the user actually has data for.
-	yrows, err := q.Query(ctx, `SELECT DISTINCT EXTRACT(YEAR FROM (submitted_at AT TIME ZONE $2))::int AS y
+	//
+	// 另有 N 条没有投递日期: no submitted_at, yet the row provably entered the
+	// hiring pipeline — a response, or a stage point at 初筛 or later (内推 /
+	// 猎头 直接约面). NOT just 「not toApplyFactSQL」: that complement also
+	// matches a job closed or withdrawn straight from 收藏 without ever being
+	// sent, which the panel would then mislabel as 免投递. Archived rows count
+	// here too, matching the day cells.
+	var years []int32
+	if err := q.QueryRow(ctx, `SELECT
+		COALESCE(array_agg(DISTINCT EXTRACT(YEAR FROM (submitted_at AT TIME ZONE $2))::int)
+		         FILTER (WHERE submitted_at IS NOT NULL), '{}'),
+		count(*) FILTER (WHERE submitted_at IS NULL AND (`+enteredPipelineSQL+`))
 		FROM applications
-		WHERE owner_id = $1 AND deleted_at IS NULL AND submitted_at IS NOT NULL
-		ORDER BY y`, ownerID, tz)
-	if err != nil {
+		WHERE owner_id = $1 AND deleted_at IS NULL`, ownerID, tz).Scan(&years, &h.Undated); err != nil {
 		return nil, err
 	}
-	defer yrows.Close()
-	for yrows.Next() {
-		var y int
-		if err := yrows.Scan(&y); err != nil {
-			return nil, err
-		}
-		h.Years = append(h.Years, y)
-	}
-	if err := yrows.Err(); err != nil {
-		return nil, err
-	}
-
-	// 另有 N 条没有投递日期: past 未投递 (the complement of toApplyFactSQL —
-	// single source of truth for 「还没投出去」) but with no submitted_at, so
-	// they cannot land on a day. Archived rows count here too, matching the
-	// day cells.
-	if err := q.QueryRow(ctx, `SELECT count(*) FROM applications
-		WHERE owner_id = $1 AND deleted_at IS NULL AND submitted_at IS NULL
-		  AND NOT `+toApplyFactSQL, ownerID).Scan(&h.Undated); err != nil {
-		return nil, err
+	for _, y := range years {
+		h.Years = append(h.Years, int(y))
 	}
 
 	return h, nil
