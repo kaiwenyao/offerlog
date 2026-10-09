@@ -11,7 +11,9 @@ import (
 
 	"offerlog/backend/internal/analytics"
 	"offerlog/backend/internal/platform/database"
+	"offerlog/backend/internal/platform/day"
 	"offerlog/backend/internal/platform/httpx"
+	"offerlog/backend/internal/platform/timeutil"
 )
 
 type Handler struct {
@@ -28,7 +30,16 @@ func (h *Handler) Routes(g *gin.RouterGroup) {
 	g.POST("/sankey", h.sankey)
 	g.GET("/drilldowns/:token", h.drilldown)
 	g.GET("/overview", h.overview)
+	g.GET("/heatmap", h.heatmap)
 }
+
+// heatmapMaxDays bounds the requested window: 366 inclusive days fits a full
+// leap year (2028-01-01 … 2028-12-31) while capping the response size.
+const heatmapMaxDays = 366
+
+// defaultHeatmapDays is 365 inclusive days — 用户时区的今天往前 364 天 — which
+// lays out as exactly 53 week columns on the frontend.
+const defaultHeatmapDays = 365
 
 // scopeReq mirrors the shared filter inputs of the analytics endpoints.
 type scopeReq struct {
@@ -163,6 +174,58 @@ func (h *Handler) overview(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, m)
+}
+
+// heatmap returns the 投递热力图 payload (docs/投递热力图方案.md §3.1).
+//
+// from/to are date-only (YYYY-MM-DD) calendar days in the USER'S timezone,
+// closed interval; each is independently optional and defaults to a 365-day
+// window ending on 用户时区的今天. 今天 is resolved server-side so the frontend's
+// 当前连续天数 never depends on the browser timezone.
+func (h *Handler) heatmap(c *gin.Context) {
+	user := httpx.UserFrom(c)
+	loc, tz := timeutil.SafeLocation(user.Timezone)
+	todayStr := timeutil.DateOnly(time.Now(), loc)
+	today, err := day.Parse(todayStr)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	from := today.AddDate(0, 0, -(defaultHeatmapDays - 1))
+	to := today
+	if s := c.Query("from"); s != "" {
+		t, err := day.Parse(s)
+		if err != nil {
+			httpx.WriteErr(c, httpx.BadRequest("invalid_from", err.Error()))
+			return
+		}
+		from = t
+	}
+	if s := c.Query("to"); s != "" {
+		t, err := day.Parse(s)
+		if err != nil {
+			httpx.WriteErr(c, httpx.BadRequest("invalid_to", err.Error()))
+			return
+		}
+		to = t
+	}
+	if from.After(to) {
+		httpx.WriteErr(c, httpx.BadRequest("invalid_range", "from 不能晚于 to"))
+		return
+	}
+	// Both bounds are UTC-midnight instants (day.Parse), so the arithmetic is
+	// exact — no DST-shortened day can skew the count.
+	if days := int(to.Sub(from).Hours()/24) + 1; days > heatmapMaxDays {
+		httpx.WriteErr(c, httpx.BadRequest("range_too_wide", "时间跨度不能超过 366 天"))
+		return
+	}
+	hm, err := h.repo.Heatmap(c.Request.Context(), user.ID, tz, from, to)
+	if err != nil {
+		httpx.WriteErr(c, err)
+		return
+	}
+	hm.Today = todayStr
+	c.JSON(http.StatusOK, hm)
 }
 
 func newToken() string {
