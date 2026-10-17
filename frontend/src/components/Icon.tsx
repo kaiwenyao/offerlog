@@ -7,7 +7,9 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Clock,
+  Copy,
   Download,
   ExternalLink,
   FileText,
@@ -69,6 +71,8 @@ const GLYPHS = {
   prev: ChevronLeft,
   next: ChevronRight,
   bell: Bell,
+  snippet: ClipboardList,
+  copy: Copy,
 } satisfies Record<string, LucideIcon>
 
 export type IconName = keyof typeof GLYPHS

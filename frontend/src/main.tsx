@@ -25,6 +25,7 @@ import { TodayPage } from './features/today/TodayPage'
 import { DatabasePage } from './features/database/DatabasePage'
 import { DetailPage } from './features/detail/DetailPage'
 import { FilesPage } from './features/files/FilesPage'
+import { SnippetsPage } from './features/snippets/SnippetsPage'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { NotificationsPage } from './features/notifications/Page'
 import { CalendarPage } from './features/calendar/CalendarPage'
@@ -141,6 +142,7 @@ export default function App() {
               }
             />
             <Route path="/files" element={<FilesPage />} />
+            <Route path="/snippets" element={<SnippetsPage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/settings" element={<SettingsPage me={me} />} />
           </Route>

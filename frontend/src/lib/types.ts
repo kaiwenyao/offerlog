@@ -418,3 +418,14 @@ export interface CalendarEvent {
   round_name: string
   format: string
 }
+
+// Snippet is one reusable piece of text (/api/v1/snippets) — 实习经历描述、
+// 自我介绍等投递时反复粘贴的内容。category 是自由文本，"" = 未分类。
+export interface Snippet {
+  id: number
+  title: string
+  content: string
+  category: string
+  created_at: string
+  updated_at: string
+}

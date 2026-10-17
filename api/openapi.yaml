@@ -467,6 +467,33 @@ paths:
                 remind_interview: { type: boolean }
                 remind_stale_days: { type: integer, minimum: 0, maximum: 365 }
                 remind_weekly: { type: boolean }
+  /snippets:
+    get: { summary: 常用片段列表（按分类分组、未分类在后，组内最近编辑在前） }
+    post:
+      summary: 新建片段（标题必填 ≤100 字；内容 ≤10000 字原样保存；分类 ≤40 字，空 = 未分类）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, maxLength: 100 }
+                content: { type: string, maxLength: 10000 }
+                category: { type: string, maxLength: 40 }
+  /snippets/{id}:
+    patch:
+      summary: 编辑片段（只改传了的字段；category 传空串 = 移到未分类；非本人返回 404）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, maxLength: 100 }
+                content: { type: string, maxLength: 10000 }
+                category: { type: string, maxLength: 40 }
+    delete: { summary: 删除片段（硬删除） }
   /notifications:
     get: { summary: 站内提醒列表（open=1 只看未读未忽略） }
   /notifications/read-all:

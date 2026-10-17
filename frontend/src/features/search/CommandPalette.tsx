@@ -6,9 +6,15 @@ import type { SavedView } from '../../lib/types'
 import { Dialog } from '../../ds/Dialog'
 import { Icon, type IconName } from '../../components/Icon'
 import { moveHighlight, applicationSearchQuery, paletteRows, paletteEmptyCopy } from './paletteNav'
+import { useSnippets } from '../snippets/SnippetsPage'
+import { copyText, matchSnippet } from '../snippets/filter'
+
+/** 片段命中在面板里最多列几条——它们排在服务端结果之后，不该把命令挤出视野。 */
+const MAX_SNIPPET_HITS = 5
 
 export interface SearchItem {
-  kind: 'application' | 'company' | 'file'
+  /** snippet 行由前端用缓存的片段列表本地过滤得到，不来自 /search。 */
+  kind: 'application' | 'company' | 'file' | 'snippet'
   id: number | string
   label: string
   hint: string
@@ -18,12 +24,14 @@ const KIND_ICON: Record<SearchItem['kind'], IconName> = {
   application: 'database',
   company: 'folder',
   file: 'file',
+  snippet: 'snippet',
 }
 
 const KIND_LABEL: Record<SearchItem['kind'], string> = {
   application: '岗位',
   company: '公司',
   file: '文件',
+  snippet: '片段 · 回车复制',
 }
 
 interface Cmd {
@@ -77,7 +85,9 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     enabled: open,
   })
 
-  const items = searchQ.data?.items ?? []
+  const snippetsQ = useSnippets(open)
+  // 回车复制片段后在面板底部报一句结果，再关闭——否则用户不知道剪贴板里有没有东西。
+  const [copyMsg, setCopyMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const navCmds: Cmd[] = useMemo(() => {
     const base: Cmd[] = [
@@ -86,6 +96,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       { key: 'cal', label: '面试日历', sub: '周 / 月 / 议程', icon: 'calendar', run: () => nav('/calendar') },
       { key: 'stats', label: '统计分析', sub: '漏斗 · 桑基', icon: 'analytics', run: () => nav('/analytics') },
       { key: 'files', label: '文件库', sub: '私有附件', icon: 'files', run: () => nav('/files') },
+      { key: 'snippets', label: '常用片段', sub: '实习经历 · 自我介绍', icon: 'snippet', run: () => nav('/snippets') },
       { key: 'settings', label: '设置', sub: '账号 · 字段', icon: 'settings', run: () => nav('/settings') },
       { key: 'new', label: '记一个岗位', sub: '新建申请', icon: 'plus', run: () => nav('/database?new=1') },
     ]
@@ -105,6 +116,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   useEffect(() => {
     if (open) {
       setQ('')
+      setCopyMsg(null)
       setHighlight(0)
       // Let the dialog mount before focusing its input.
       const t = setTimeout(() => inputRef.current?.focus(), 10)
@@ -118,6 +130,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   }, [q])
 
   const jump = (it: SearchItem) => {
+    if (it.kind === 'snippet') {
+      const sn = snippetsQ.data?.items.find((x) => x.id === it.id)
+      if (!sn) return
+      void copyText(sn.content).then((ok) => {
+        setCopyMsg(ok ? { ok, text: `已复制「${sn.title}」` } : { ok, text: '浏览器拒绝了剪贴板，请到常用片段页手动复制' })
+        if (ok) setTimeout(onClose, 700)
+      })
+      return
+    }
     // 岗位行不再跳 /database/:id 去开抽屉：从数据库页上方打开面板时
     // /database → /database/:id 的路由变化不会重开抽屉（同一组件实例），
     // Enter 看起来毫无反应。改为把「公司 + 岗位」填进搜索框——与公司行
@@ -139,6 +160,22 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const filteredCmds = (trimmed === '' || isCommandQuery)
     ? navCmds.filter((c) => trimmed === '' || c.label.toLowerCase().includes(trimmed) || c.sub.toLowerCase().includes(trimmed))
     : []
+
+  // 片段只在输入了非命令关键字时参与：空输入展示的是「最近打开」，片段不算。
+  const snippetHits: SearchItem[] = useMemo(() => {
+    if (trimmed === '' || isCommandQuery) return []
+    return (snippetsQ.data?.items ?? [])
+      .filter((sn) => matchSnippet(sn, q))
+      .slice(0, MAX_SNIPPET_HITS)
+      .map((sn) => ({
+        kind: 'snippet' as const,
+        id: sn.id,
+        label: sn.title,
+        hint: [sn.category, sn.content.split('\n')[0]].filter(Boolean).join(' · '),
+      }))
+  }, [snippetsQ.data, q, trimmed, isCommandQuery])
+  const serverItems = searchQ.data?.items ?? []
+  const items = useMemo(() => [...serverItems, ...snippetHits], [serverItems, snippetHits])
 
   // ↑↓ 键在“搜索结果 + 命令”的完整列表上移动；↵ 执行高亮行。
   const rows = useMemo(() => paletteRows(items, filteredCmds), [items, filteredCmds])
@@ -305,6 +342,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           </div>
         )}
       </div>
+      {copyMsg && (
+        <div role="status" style={{ marginTop: 8, fontSize: 12, color: copyMsg.ok ? 'var(--text-muted)' : 'var(--danger)' }}>
+          {copyMsg.text}
+        </div>
+      )}
     </Dialog>
   )
 }
