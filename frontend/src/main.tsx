@@ -81,7 +81,13 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const onUnauthorized = () => setState('anon')
+    // 会话失效时清空整个查询缓存：queryClient 是模块级的，登录页只是把业务界面
+    // 卸载掉，不清的话下一个登录的账号（不刷新页面）会先看到上一个账号缓存的
+    // 岗位、文件、片段等私有数据。
+    const onUnauthorized = () => {
+      queryClient.clear()
+      setState('anon')
+    }
     window.addEventListener('offerlog:unauthorized', onUnauthorized)
     // After a profile/preferences save, re-read /auth/me so the sidebar and
     // session name reflect the new display name/timezone immediately.
@@ -113,6 +119,8 @@ export default function App() {
     return (
       <LoginPage
         onLoggedIn={(m) => {
+          // 登录前也清一次：首屏 bootstrap 期间发出的匿名请求可能留下缓存条目。
+          queryClient.clear()
           // Same hydration guarantee as the initial session: the model may
           // have failed to load before login (anon bootstrap races it).
           void fetchStatusModel().then(applyStatusModel)
