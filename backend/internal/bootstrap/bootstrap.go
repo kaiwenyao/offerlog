@@ -36,6 +36,8 @@ import (
 	prefstransport "offerlog/backend/internal/prefs/transport"
 	searchrepo "offerlog/backend/internal/search"
 	searchtransport "offerlog/backend/internal/search/transport"
+	snippetsrepo "offerlog/backend/internal/snippets"
+	snippetstransport "offerlog/backend/internal/snippets/transport"
 	trrepo "offerlog/backend/internal/transfers"
 	trtransport "offerlog/backend/internal/transfers/transport"
 	vrepo "offerlog/backend/internal/views/repository"
@@ -175,6 +177,10 @@ func (a *App) Handler() http.Handler {
 	// cross-entity search (⌘K command palette)
 	srchH := searchtransport.New(searchrepo.New(a.DB))
 	srchH.Routes(api.Group("/search"))
+
+	// snippets (常用片段：实习经历描述、自我介绍等可复用文本)
+	snipH := snippetstransport.New(snippetsrepo.New(a.DB))
+	snipH.Routes(api.Group("/snippets"))
 
 	// meta: server-owned status / substatus whitelist for the client
 	appH.MetaRoutes(api.Group("/meta"))

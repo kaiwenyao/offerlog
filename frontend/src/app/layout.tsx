@@ -19,19 +19,20 @@ interface NavEntry {
   count?: 'open' | 'apps' | 'files' | 'unread'
 }
 
-/** Seven numbered stations, matching the canvas's 01–07 sidebar index. */
+/** Numbered stations, matching the canvas's sidebar index. */
 const NAV: NavEntry[] = [
   { to: '/', label: '今日待办', short: '今日', icon: 'today', end: true, count: 'open' },
   { to: '/database', label: '求职数据库', short: '岗位', icon: 'database', count: 'apps' },
   { to: '/calendar', label: '面试日历', short: '日历', icon: 'calendar' },
   { to: '/analytics', label: '统计分析', short: '统计', icon: 'analytics' },
   { to: '/files', label: '文件库', short: '文件', icon: 'files', count: 'files' },
+  { to: '/snippets', label: '常用片段', short: '片段', icon: 'snippet' },
   { to: '/notifications', label: '通知中心', short: '通知', icon: 'bell', count: 'unread' },
   { to: '/settings', label: '设置', short: '设置', icon: 'settings' },
 ]
 
 /** The five entries that fit the mobile bottom bar. */
-const BOTTOM_NAV = NAV.filter((n) => n.to !== '/notifications' && n.to !== '/analytics')
+const BOTTOM_NAV = NAV.filter((n) => n.to !== '/notifications' && n.to !== '/analytics' && n.to !== '/snippets')
 
 /** Saved views mirror the canvas's 已保存视图 list; each seeds the database page. */
 const SAVED_VIEWS: Array<{ label: string; dot: string; view: number; layout: string }> = [
@@ -47,6 +48,7 @@ const PAGE_META: Record<string, { eyebrow: string; title: string }> = {
   '/calendar': { eyebrow: 'CALENDAR / 跨岗位日程', title: '面试日历' },
   '/analytics': { eyebrow: 'ANALYTICS / 全量聚合', title: '统计分析' },
   '/files': { eyebrow: 'FILES / 私有存储', title: '文件库' },
+  '/snippets': { eyebrow: 'SNIPPETS / 可复用文本', title: '常用片段' },
   '/notifications': { eyebrow: 'INBOX / 站内通知', title: '通知中心' },
   '/settings': { eyebrow: 'SETTINGS / 账号与字段', title: '设置' },
 }
